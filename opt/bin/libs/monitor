@@ -1,0 +1,566 @@
+#!/bin/sh
+
+MONITOR_PID_FILE=/var/run/kvas-monitor.pid
+MONITOR_WEB_PID_FILE=/var/run/kvas-monitor-web.pid
+MONITOR_DNS_LOG=/tmp/kvas-dns.log
+MONITOR_DATA_DIR=/tmp/kvas-monitor
+MONITOR_WWW_DIR=/opt/apps/kvas/bin/monitor/www
+MONITOR_PORT=8085
+MONITOR_WEB_LOG=/tmp/kvas-monitor-web.log
+
+monitor__enable_dns_log() {
+	# DO NOT modify system dnsmasq.conf or restart dnsmasq
+	# This breaks VPN routing!
+	# Just ensure log file exists
+	: > "$MONITOR_DNS_LOG" 2>/dev/null
+}
+
+monitor__disable_dns_log() {
+	# DO NOT modify system dnsmasq.conf or restart dnsmasq
+	# This breaks VPN routing!
+	rm -f "$MONITOR_DNS_LOG" 2>/dev/null
+}
+
+monitor__get_conntrack() {
+	local ips="$1"
+	[ -z "$ips" ] && return
+	if command -v conntrack >/dev/null 2>&1; then
+		for ip in $(echo "$ips" | tr ',' ' '); do
+			conntrack -L -s "$ip" 2>/dev/null
+			conntrack -L -d "$ip" 2>/dev/null
+		done | sort -u
+	else
+		local ip
+		for ip in $(echo "$ips" | tr ',' ' '); do
+			cat /proc/net/nf_conntrack 2>/dev/null | grep -E "src=${ip}[^0-9]|dst=${ip}[^0-9]"
+		done | sort -u
+	fi
+}
+
+monitor__get_dns_queries() {
+	local ips="$1"
+	[ -z "$ips" ] && return
+	[ ! -f "$MONITOR_DNS_LOG" ] && return
+	local ip
+	for ip in $(echo "$ips" | tr ',' ' '); do
+		grep "from ${ip}$" "$MONITOR_DNS_LOG" 2>/dev/null
+	done | sort -u
+}
+
+monitor__parse_conntrack_line() {
+	local line="$1"
+	local proto=""
+	proto=$(echo "$line" | awk '{print $3}')
+	local orig_src="" orig_dst="" orig_sport="" orig_dport=""
+	local got_orig=false
+	for part in $line; do
+		case "$part" in
+			src=*)
+				if ! $got_orig; then
+					orig_src=$(echo "$part" | cut -d= -f2)
+				fi
+				;;
+			dst=*)
+				if ! $got_orig; then
+					orig_dst=$(echo "$part" | cut -d= -f2)
+				fi
+				;;
+			sport=*)
+				if ! $got_orig; then
+					orig_sport=$(echo "$part" | cut -d= -f2)
+				fi
+				;;
+			dport=*)
+				if ! $got_orig; then
+					orig_dport=$(echo "$part" | cut -d= -f2)
+				fi
+				;;
+			UNREPLIED|ASSURED|SEEN_REPLY)
+				got_orig=true
+				;;
+		esac
+	done
+	echo "${proto}|${orig_src}|${orig_sport}|${orig_dst}|${orig_dport}"
+}
+
+monitor__web_log() {
+	local ts
+	ts=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+	[ -z "$ts" ] && ts="unknown-time"
+	echo "[$ts] $*" >> "$MONITOR_WEB_LOG"
+}
+
+monitor__web_log_reset() {
+	: > "$MONITOR_WEB_LOG"
+}
+
+monitor__web_log_show() {
+	echo ""
+	echo "--- monitor web log: $MONITOR_WEB_LOG ---"
+	if [ -f "$MONITOR_WEB_LOG" ]; then
+		tail -40 "$MONITOR_WEB_LOG" 2>/dev/null
+	else
+		echo "(log file not found)"
+	fi
+	echo "--- end log ---"
+}
+
+MONITOR_ACTIVE_IPS=""
+
+cmd_monitor() {
+	trap 'echo; echo "Выход..."; break 2>/dev/null; exit 0' INT
+	nets__set_known_ips
+	local GREEN='[1;32m'
+	local YELLOW='[1;33m'
+	local CYAN='[36m'
+	local NOCL='[m'
+	local MONITOR_ACTIVE_IPS_SAVED="$MONITOR_ACTIVE_IPS"
+	while true; do
+		clear
+		echo -e "${GREEN}=== Мониторинг трафика ===${NOCL}"
+		print_line
+		if [ -n "$MONITOR_ACTIVE_IPS_SAVED" ]; then
+			echo -e "${YELLOW}Отслеживаются:${NOCL} $MONITOR_ACTIVE_IPS_SAVED"
+			echo ""
+		fi
+		echo -e "${YELLOW}Устройства:${NOCL}"
+		local num=0
+		local dev_list=""
+		if [ -n "${IPS_KNOWN}" ]; then
+			# Sort devices by IP
+			local sorted
+			sorted=$(echo "${IPS_KNOWN}" | sort -t' ' -k1)
+			local line
+			while IFS= read -r line; do
+				[ -z "$line" ] && continue
+				num=$((num + 1))
+				local lip=$(echo "$line" | cut -d' ' -f1 | tr -d '"')
+				local lname=$(echo "$line" | cut -d'"' -f2)
+				[ -z "$lname" ] && lname="-"
+				local status=""
+				[ -d /proc/net/nf_conntrack ] || command -v conntrack >/dev/null 2>&1 && status="${CYAN}гот${NOCL}" || status="${YELLOW}нет${NOCL}"
+				if [ -n "$MONITOR_ACTIVE_IPS_SAVED" ] && echo " $MONITOR_ACTIVE_IPS_SAVED " | grep -q " $lip "; then
+					status="${GREEN}✓${NOCL}"
+				fi
+				printf "  %2d) %-15s %-20s %s
+" "${num}" "${lip}" "${lname}" "$status"
+				dev_list="${dev_list}${dev_list:+ }${lip}"
+			done << DEVICES
+${sorted}
+DEVICES
+		else
+			echo "  (нет устройств с IP)"
+		fi
+		echo ""
+		echo -e "${YELLOW}Действия:${NOCL}"
+		echo "  m) Мониторить устройства (номера через , или all или IP)"
+		echo "  l) Лог соединений (фильтры: устройство, протокол, порт)"
+		echo "  w) Запустить веб-интерфейс"
+		echo "  W) Остановить веб-интерфейс"
+		echo "  q) Выход"
+		echo ""
+		echo -n "Выбор: "
+		read choice
+		case "$choice" in
+			m)
+				if [ "${num}" -eq 0 ]; then
+					echo "Нет устройств. Укажите IP вручную."
+				fi
+				echo -n "Номера (1-${num}, all) или IP: "
+				read dev_choice
+				local selected_ips=""
+				case "$dev_choice" in
+					all)
+						selected_ips="$dev_list" ;;
+					*)
+						local d; for d in $(echo "$dev_choice" | tr ',' ' '); do
+							if echo "$d" | grep -qE '^[0-9]+$' && [ "$d" -ge 1 ] && [ "$d" -le "${num}" ]; then
+								selected_ips="${selected_ips}${selected_ips:+ }$(echo "$dev_list" | cut -d' ' -f"$d")"
+							else
+								echo "$d" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && selected_ips="${selected_ips}${selected_ips:+ }$d"
+							fi
+						done ;;
+				esac
+				if [ -z "$selected_ips" ]; then
+					echo "IP не указан."; echo -n "Enter..."; read dummy; continue
+				fi
+				MONITOR_ACTIVE_IPS="$selected_ips"
+				MONITOR_ACTIVE_IPS_SAVED="$selected_ips"
+				cmd_monitor_start "$selected_ips"
+				;;
+			l)
+				cmd_monitor_log "$MONITOR_ACTIVE_IPS_SAVED"
+				;;
+			w)
+				cmd_monitor_web_start
+			echo "Web UI: http://$(hostname):8085/"
+				;;
+			W)
+				cmd_monitor_web_stop
+			echo "Web UI остановлен"
+				;;
+			q|Q) break ;;
+			*) echo -n "Enter..."; read dummy ;;
+		esac
+	done
+}
+
+cmd_monitor_log() {
+	local filter_ips="$1"
+	local GREEN='[1;32m'
+	local YELLOW='[1;33m'
+	local CYAN='[36m'
+	local NOCL='[m'
+	local filter_proto=""
+	local filter_port=""
+	local log_lines=60
+
+	while true; do
+		clear
+		echo -e "${GREEN}=== Лог соединений ===${NOCL}"
+		echo -e "${YELLOW}Фильтры:${NOCL} устройство=${filter_ips:-all} протокол=${filter_proto:-all} порт=${filter_port:-all}"
+		echo -e "${GREEN}p) Протокол (tcp/udp/all)  o) Порт (номер/all)  d) Устройство  q) Назад${NOCL}"
+		echo ""
+
+		local log_data=""
+		if [ -n "$filter_ips" ]; then
+			log_data=$(monitor__get_conntrack "$(echo "$filter_ips" | tr ' ' ',')" 2>/dev/null)
+		else
+			if command -v conntrack >/dev/null 2>&1; then
+				log_data=$(conntrack -L 2>/dev/null | head -200)
+			elif [ -r /proc/net/nf_conntrack ]; then
+				log_data=$(cat /proc/net/nf_conntrack 2>/dev/null | head -200)
+			fi
+		fi
+
+		# Apply protocol filter
+		if [ -n "$filter_proto" ]; then
+			log_data=$(echo "$log_data" | awk -v p="$filter_proto" '{if(tolower($3)==tolower(p)) print}')
+		fi
+
+		# Apply port filter
+		if [ -n "$filter_port" ]; then
+			log_data=$(echo "$log_data" | grep -E "sport=${filter_port}[^0-9]|dport=${filter_port}[^0-9]")
+		fi
+
+		if [ -n "$log_data" ]; then
+			local count=0
+			echo "$log_data" | while IFS= read -r line; do
+				count=$((count + 1))
+				[ $count -gt $log_lines ] && break
+				local parsed=$(monitor__parse_conntrack_line "$line")
+				local proto=$(echo "$parsed" | cut -d'|' -f1)
+				local src=$(echo "$parsed" | cut -d'|' -f2)
+				local sport=$(echo "$parsed" | cut -d'|' -f3)
+				local dst=$(echo "$parsed" | cut -d'|' -f4)
+				local dport=$(echo "$parsed" | cut -d'|' -f5)
+				printf "  %s %-15s:%-5s -> %-15s:%-5s
+" "$proto" "$src" "$sport" "$dst" "$dport"
+			done
+			echo ""
+			echo "--- всего строк: $(echo "$log_data" | wc -l), показано: $log_lines ---"
+		else
+			echo "  (нет данных)"
+		fi
+		echo ""
+		echo -n "Выбор: "
+		read ans
+		case "$ans" in
+			p)
+				echo -n "Протокол (tcp/udp/all): "; read filter_proto
+				;;
+			o)
+				echo -n "Порт (номер/all): "; read filter_port
+				;;
+			d)
+				echo -n "IP устройств (через запятую или all): "; read ans
+				[ "$ans" != "all" ] && [ -n "$ans" ] && filter_ips="$ans" || filter_ips=""
+				;;
+			q|Q) break ;;
+		esac
+	done
+}
+
+cmd_monitor_start() {
+	local selected_ips="$1"
+	local GREEN='[1;32m'
+	local YELLOW='[1;33m'
+	local CYAN='[36m'
+	local NOCL='[m'
+
+	monitor__enable_dns_log
+	mkdir -p "$MONITOR_DATA_DIR"
+
+	local dns_pid=""
+	{
+		tail -f "$MONITOR_DNS_LOG" 2>/dev/null | while IFS= read -r line; do
+			for ip in $selected_ips; do
+				if echo "$line" | grep -q "from ${ip}$" 2>/dev/null; then
+					echo "$line" >> "$MONITOR_DATA_DIR/dns_live"
+				fi
+			done
+		done
+	} &
+	dns_pid=$!
+
+	{
+		while true; do
+			sleep 2
+			local data=$(monitor__get_conntrack "$(echo "$selected_ips" | tr ' ' ',')")
+			echo "$data" > "$MONITOR_DATA_DIR/conntrack_live"
+		done
+	} &
+	local conntrack_pid=$!
+
+	local cache_file="$MONITOR_DATA_DIR/rdns_cache"
+	: > "$cache_file"
+
+	monitor__resolve_ip() {
+		local ip=$1
+		local cached
+		cached=$(grep "^${ip}=" "$cache_file" 2>/dev/null | cut -d= -f2)
+		[ -n "$cached" ] && echo "$cached" && return
+		local name
+		name=$(nslookup "$ip" 2>/dev/null | grep 'name = ' | sed "s/.*name = //; s/\.$//")
+		[ -z "$name" ] && name=$(dig +short -x "$ip" 2>/dev/null)
+		[ -z "$name" ] && name="$ip"
+		echo "${ip}=${name}" >> "$cache_file"
+		echo "$name"
+	}
+
+	local filter_proto=""
+	local filter_port=""
+	local running=true
+	local refresh_sec=3
+	trap 'running=false; echo; echo "Остановка..."' INT
+	while $running; do
+		clear
+		echo -e "${GREEN}=== Мониторинг трафика ===${NOCL}"
+		echo -e "${GREEN}Устройства: ${YELLOW}$selected_ips${NOCL}"
+		[ -n "$filter_proto" ] && echo -e "${CYAN}Протокол:${NOCL} $filter_proto"
+		[ -n "$filter_port" ] && echo -e "${CYAN}Порт:${NOCL} $filter_port"
+		echo -e "${GREEN}q) Выход | f) Фильтры${NOCL}"
+		echo ""
+		echo -e "${YELLOW}--- DNS запросы ---${NOCL}"
+		local dns_lines=$(tail -40 "$MONITOR_DATA_DIR/dns_live" 2>/dev/null)
+		if [ -n "$dns_lines" ]; then
+			local dline
+			echo "$dns_lines" | while IFS= read -r dline; do
+				local query=$(echo "$dline" | grep -o 'query\[A\].*is' | sed 's/query\[A\] //; s/ is$//' 2>/dev/null)
+				local reply=$(echo "$dline" | grep -o 'is [0-9.]*' | cut -d' ' -f2 2>/dev/null)
+				if [ -n "$query" ]; then
+					printf "  %-50s -> %s
+" "$query" "${reply:-...}"
+				fi
+			done
+		else
+			echo "  (нет данных)"
+		fi
+		echo ""
+		echo -e "${YELLOW}--- Соединения ---${NOCL}"
+		local conns=$(cat "$MONITOR_DATA_DIR"/conntrack_live 2>/dev/null)
+		if [ -n "$conns" ]; then
+			# Apply filters
+			if [ -n "$filter_proto" ]; then
+				conns=$(echo "$conns" | awk -v p="$filter_proto" '{if(tolower($3)==tolower(p)) print}')
+			fi
+			if [ -n "$filter_port" ]; then
+				conns=$(echo "$conns" | grep -E "sport=${filter_port}[^0-9]|dport=${filter_port}[^0-9]")
+			fi
+			local cline
+			echo "$conns" | head -50 | while IFS= read -r cline; do
+				local parsed=$(monitor__parse_conntrack_line "$cline")
+				local proto=$(echo "$parsed" | cut -d'|' -f1)
+				local src=$(echo "$parsed" | cut -d'|' -f2)
+				local sport=$(echo "$parsed" | cut -d'|' -f3)
+				local dst=$(echo "$parsed" | cut -d'|' -f4)
+				local dport=$(echo "$parsed" | cut -d'|' -f5)
+				local is_outgoing=false
+				for myip in $selected_ips; do
+					if [ "$src" = "$myip" ]; then is_outgoing=true; break; fi
+				done
+				local src_name=$(monitor__resolve_ip "$src")
+				local dst_name=$(monitor__resolve_ip "$dst")
+				if $is_outgoing; then
+					printf "  %s %s:%s -> %s:%s
+" "$proto" "$src_name" "$sport" "$dst_name" "$dport"
+				else
+					printf "  %s %s:%s <- %s:%s
+" "$proto" "$src_name" "$sport" "$dst_name" "$dport"
+				fi
+			done
+		else
+			echo "  (нет данных)"
+		fi
+		echo ""
+		$running || break
+		read -t $refresh_sec key 2>/dev/null || true
+		case "$key" in
+			q|Q) running=false ;;
+			f|F)
+				echo -n "Фильтр протокол (tcp/udp/all): "; read filter_proto
+				echo -n "Фильтр порт (номер/all): "; read filter_port
+				;;
+		esac
+		key=""
+	done 2>/dev/null
+	trap - INT
+
+	kill "$dns_pid" 2>/dev/null
+	kill "$conntrack_pid" 2>/dev/null
+	monitor__disable_dns_log
+	rm -rf "$MONITOR_DATA_DIR"
+}
+
+cmd_monitor_web_start() {
+	if [ -f "$MONITOR_WEB_PID_FILE" ] && kill -0 "$(cat "$MONITOR_WEB_PID_FILE")" 2>/dev/null; then
+		echo "Веб-интерфейс уже запущен на порту $MONITOR_PORT"
+		echo "Откройте: http://$(hostname):$MONITOR_PORT/"
+		monitor__web_log "web ui already running on port $MONITOR_PORT"
+		monitor__web_log_show
+		return
+	fi
+
+	monitor__web_log_reset
+	monitor__web_log "starting web ui on port $MONITOR_PORT"
+
+	# Diagnostic: check dependencies
+	local has_socat=0 has_conntrack=0 has_python=0 has_curl=0 has_jq=0
+	command -v socat >/dev/null 2>&1 && has_socat=1
+	command -v conntrack >/dev/null 2>&1 && has_conntrack=1
+	command -v python3 >/dev/null 2>&1 && has_python=1
+	command -v curl >/dev/null 2>&1 && has_curl=1
+	command -v jq >/dev/null 2>&1 && has_jq=1
+
+	monitor__web_log "deps: socat=$has_socat conntrack=$has_conntrack python=$has_python curl=$has_curl jq=$has_jq"
+	# Auto-install socat if missing
+	if [ "$has_socat" -eq 0 ]; then
+		echo "Устанавливаю socat..."
+		opkg update >/dev/null 2>&1
+		opkg install socat >/dev/null 2>&1
+		if command -v socat >/dev/null 2>&1; then
+			has_socat=1
+			echo "socat установлен"
+			monitor__web_log "socat installed"
+		fi
+	fi
+
+
+	if [ "$has_socat" -eq 0 ] && [ "$has_python" -eq 0 ]; then
+		echo "ОШИБКА: Нет HTTP backend для web UI"
+		echo "Установите: opkg install socat"
+		monitor__web_log "no http backend: socat and python missing"
+		monitor__web_log_show
+		return
+	fi
+
+	# Prepare web root
+	mkdir -p "$MONITOR_WWW_DIR/cgi-bin"
+	[ -f "$MONITOR_WWW_DIR/cgi-bin/data.sh" ] && chmod 755 "$MONITOR_WWW_DIR/cgi-bin/data.sh"
+	[ -f "$MONITOR_WWW_DIR/index.html" ] || { echo "ОШИБКА: $MONITOR_WWW_DIR/index.html не найден"; monitor__web_log "index.html missing"; monitor__web_log_show; return; }
+	monitor__web_log "web root ready at $MONITOR_WWW_DIR"
+
+	# DNS log
+	monitor__enable_dns_log
+	monitor__web_log "dns log enabled at $MONITOR_DNS_LOG"
+
+	# Auto-install conntrack if missing
+	if [ "$has_conntrack" -eq 0 ]; then
+		echo "Устанавливаю conntrack..."
+		monitor__web_log "conntrack not found, installing via opkg"
+		{ opkg update; opkg install conntrack; } >> "$MONITOR_WEB_LOG" 2>&1
+		if command -v conntrack >/dev/null 2>&1; then
+			echo "conntrack установлен"
+			monitor__web_log "conntrack installed"
+			has_conntrack=1
+		else
+			echo "ВНИМАНИЕ: conntrack не установлен — соединения не будут отслеживаться"
+			monitor__web_log "conntrack install failed"
+		fi
+	fi
+
+	# Show what's available
+	echo "Компоненты: socat=$([ $has_socat -eq 1 ] && echo ok || echo нет) conntrack=$([ $has_conntrack -eq 1 ] && echo ok || echo нет) curl=$([ $has_curl -eq 1 ] && echo ok || echo нет) jq=$([ $has_jq -eq 1 ] && echo ok || echo нет)"
+
+	# Start server
+	local result
+	result=$(MONITOR_WEB_LOG="$MONITOR_WEB_LOG" sh /opt/apps/kvas/bin/monitor/launcher.sh 2>&1)
+	local rc=$?
+	[ -n "$result" ] && monitor__web_log "launcher output: $result"
+	monitor__web_log "launcher exit code: $rc"
+
+	case "$result" in
+		OK*)
+			local tool=$(echo "$result" | cut -d' ' -f2)
+			echo ""
+			echo "Web UI запущен ($tool) на порту $MONITOR_PORT"
+			echo "Откройте: http://$(hostname):$MONITOR_PORT/"
+			[ "$has_conntrack" -eq 0 ] && echo "ВНИМАНИЕ: conntrack не установлен — данные о соединениях не будут отображаться"
+			[ "$has_curl" -eq 0 ] && echo "ВНИМАНИЕ: curl не установлен — список DHCP устройств не будет загружен"
+			monitor__web_log "web ui started: backend=$tool port=$MONITOR_PORT"
+			;;
+		ERROR*)
+			echo "ОШИБКА запуска: $result"
+			monitor__web_log "web ui start failed: $result"
+			rm -f "$MONITOR_WEB_PID_FILE"
+			;;
+		*)
+			if [ "$rc" -ne 0 ]; then
+				echo "ОШИБКА запуска web UI (код $rc): $result"
+				monitor__web_log "web ui start failed: rc=$rc output=$result"
+				rm -f "$MONITOR_WEB_PID_FILE"
+			fi
+			;;
+	esac
+	monitor__web_log_show
+}
+
+cmd_monitor_web_stop() {
+	monitor__web_log "stopping web ui on port $MONITOR_PORT"
+
+	# Kill ALL socat processes on this port (main + children)
+	if command -v pkill >/dev/null 2>&1; then
+		# pkill kills all matching processes
+		pkill -f "socat.*TCP-LISTEN:${MONITOR_PORT}" 2>/dev/null
+		monitor__web_log "killed socat processes via pkill"
+	elif command -v killall >/dev/null 2>&1; then
+		killall socat 2>/dev/null
+		monitor__web_log "killed all socat via killall"
+	fi
+
+	# Kill by PID file and its children
+	if [ -f "$MONITOR_WEB_PID_FILE" ]; then
+		local pid=$(cat "$MONITOR_WEB_PID_FILE" 2>/dev/null)
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			monitor__web_log "killing pid $pid and children"
+			# Kill process group (negative PID = kill group)
+			kill -- -"$pid" 2>/dev/null
+			# Also kill directly
+			kill "$pid" 2>/dev/null
+			sleep 1
+			kill -9 "$pid" 2>/dev/null
+			kill -9 -- -"$pid" 2>/dev/null
+		fi
+	fi
+
+	# Kill by port (catch orphan socat/httpd processes)
+	if command -v netstat >/dev/null 2>&1; then
+		local pids=$(netstat -tulnp 2>/dev/null | grep ":${MONITOR_PORT} " | awk '{print $NF}' | cut -d/ -f1)
+		for pid in $pids; do
+			monitor__web_log "killing port listener pid $pid"
+			kill "$pid" 2>/dev/null
+			kill -9 "$pid" 2>/dev/null
+		done
+	fi
+
+	# Kill any remaining handler scripts
+	pkill -f "kvas-httpd-handler" 2>/dev/null
+	pkill -f "data.sh" 2>/dev/null
+
+	# Also call launcher stop for cleanup
+	sh /opt/apps/kvas/bin/monitor/launcher.sh stop 2>/dev/null
+	rm -f "$MONITOR_WEB_PID_FILE"
+	monitor__disable_dns_log
+	echo "Веб-интерфейс остановлен"
+	monitor__web_log "web ui stopped"
+}
