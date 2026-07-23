@@ -6,7 +6,10 @@
 . /opt/apps/kvas/bin/libs/tags
 . /opt/apps/kvas/bin/libs/update
 . /opt/apps/kvas/bin/libs/vless
+. /opt/apps/kvas/bin/libs/hysteria
+. /opt/apps/kvas/bin/libs/failover
 . /opt/apps/kvas/bin/libs/vpn
+. /opt/apps/kvas/bin/libs/monitor
 . /opt/apps/kvas/bin/main/setup
 
 #------------------------------------------------------------------------------
@@ -45,13 +48,13 @@ cmd_show_kvas_list(){
 	fi
 }
 
-if  echo "${1}" | grep -qvEi 'uninstall' && [ -z "$(get_config_value "SETUP_FINISHED")" ]; then
+if  echo "${1}" | grep -qvEi 'uninstall|hysteria|failover|vpn|route|ver|help' && [ -z "$(get_config_value "SETUP_FINISHED")" ]; then
 	print_line
-	echo "${2}" | grep -q "upgrade" && warning "Запускаем настройку пакета" || {
+	echo "${2}" | grep -qE 'upgrade|true' && warning "Запускаем настройку пакета" || {
 		error "Настройка пакета не завершена, запускаем настройку пакета" "1"
 		print_line
 	}
-	cmd_install "${3}"
+	cmd_install "${2}"
 	print_line
 	exit 0
 fi
@@ -61,6 +64,7 @@ fi
 print_line
 case "${1}" in
 	setup)
+							cmd_install "${2}"
 							echo "Настройка пакета КВАС завершена!"
 							echo "Для удаления пакета наберите 'kvas uninstall'"
 							;;
@@ -78,9 +82,97 @@ case "${1}" in
 	export)					cmd_export_hosts "${2}"
 		;;
 
-	add | new)				cmd_add_one_host "${2}" "yes" "${3}"
+	add | new)
+		_wild=""
+		_skip_first=1
+		_added=false
+		for _arg; do
+			[ -n "$_skip_first" ] && { _skip_first=; continue; }
+			case "$_arg" in
+				-w|--wildcard|--wild) _wild="yes" ;;
+				*) _domains="$_domains${_domains:+ }$_arg" ;;
+			esac
+		done
+		[ -z "$_wild" ] && [ $# -eq 3 ] && echo "${3}" | grep -qiE '^yes$|^y$|^wild$' && _wild="yes" && _domains="${2}"
+		for _dom in $_domains; do
+			[ -n "$_dom" ] && cmd_add_one_host "$_dom" "no" "$_wild" && _added=true
+		done
+		if $_added; then
+			update_ipset refresh &>/dev/null
+			if [ -f /opt/etc/init.d/S56dnsmasq ]; then
+				/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+			else
+				/opt/etc/init.d/S99adguardhome restart &>/dev/null
+			fi
+			for _dom in $_domains; do
+				[ -n "$_dom" ] && ipset__fill_by_domain "$_dom" &>/dev/null
+			done
+		fi
 		;;
-	del | rm  )				cmd_del_one_host "${2}"
+	del | rm  )
+		_skip_first=1
+		_deleted=false
+		for _arg; do
+			[ -n "$_skip_first" ] && { _skip_first=; continue; }
+			_domains="$_domains${_domains:+ }$_arg"
+		done
+		for _dom in $_domains; do
+			[ -z "$_dom" ] && continue
+			ready "Удаляем $_dom из списка защищенных..."
+			_esc_dom=$(echo "$_dom" | sed 's/\//\\\//g')
+			if grep -qe "${_dom}$" "$KVAS_LIST_FILE" 2>/dev/null; then
+				sed -i "/${_esc_dom}/d" "$KVAS_LIST_FILE" 2>/dev/null
+				cmd_adguardhome_status | grep -q ВКЛЮЧЕН 2>/dev/null && sed -i "/${_esc_dom}/d" "$ADGUARD_IPSET_FILE" 2>/dev/null
+				for _ip in $(dns__get_ips_by_domain "$_dom" 2>/dev/null); do
+					/opt/sbin/ipset -exist del "${IPSET_TABLE_NAME}" "$_ip" &>/dev/null
+				done
+				_deleted=true
+				when_ok "УДАЛЕН"
+			else
+				when_bad "НЕТ В СПИСКЕ"
+			fi
+		done
+		if $_deleted; then
+			update_ipset refresh &>/dev/null
+			if [ -f /opt/etc/init.d/S56dnsmasq ]; then
+				/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+			else
+				/opt/etc/init.d/S99adguardhome restart &>/dev/null
+			fi
+		fi
+		;;
+
+	backup)
+		BKPDIR="/opt/kvas_backup_$(date +%Y%m%d-%H%M%S)"
+		mkdir -p "$BKPDIR"
+		cp -f "$KVAS_LIST_FILE" "$BKPDIR/" 2>/dev/null
+		cp -f "$KVAS_CONF_FILE" "$BKPDIR/" 2>/dev/null
+		cp -f "$HYSTERIA_CONFIG" "$BKPDIR/" 2>/dev/null
+		cp -f "$HYSTERIA_ENV_FILE" "$BKPDIR/" 2>/dev/null
+		cp -f "$SHADOWSOCKS_CONF" "$BKPDIR/" 2>/dev/null
+		cp -f "$DNSMASQ_CONFIG" "$BKPDIR/" 2>/dev/null
+		cp -f "$DNSMASQ_IPSET_HOSTS" "$BKPDIR/" 2>/dev/null
+		cp -f "$DNSCRYPT_CONFIG" "$BKPDIR/" 2>/dev/null
+		cp -f "$ADGUARDHOME_CONFIG" "$BKPDIR/" 2>/dev/null
+		cp -f "$ADGUARD_IPSET_FILE" "$BKPDIR/" 2>/dev/null
+		cp -f "$VLESS_CONFIG_FILE" "$BKPDIR/" 2>/dev/null
+		[ -f "$KVAS_WEB_PASS" ] && cp -f "$KVAS_WEB_PASS" "$BKPDIR/" 2>/dev/null
+		[ -f /opt/apps/kvas/hysteria/bin/hysteria ] && cp -f /opt/apps/kvas/hysteria/bin/hysteria "$BKPDIR/"
+		echo "Резервная копия сохранена: $BKPDIR"
+		;;
+	restore)
+		if [ -n "$2" ]; then
+			BKP="$2"
+		else
+			BKP=$(ls -dt /opt/kvas_backup_* 2>/dev/null | head -1)
+			[ -z "$BKP" ] && echo "Нет резервных копий" && exit 1
+		fi
+		for _f in "$KVAS_LIST_FILE" "$KVAS_CONF_FILE" "$HYSTERIA_CONFIG" "$HYSTERIA_ENV_FILE" "$SHADOWSOCKS_CONF" "$DNSMASQ_CONFIG" "$DNSMASQ_IPSET_HOSTS" "$DNSCRYPT_CONFIG" "$ADGUARDHOME_CONFIG" "$ADGUARD_IPSET_FILE" "$VLESS_CONFIG_FILE"; do
+			_b="${BKP}/$(basename $_f)"
+			[ -f "$_b" ] && cp -f "$_b" "$_f" 2>/dev/null && echo "Восстановлен: $(basename $_f)"
+		done
+		_f="$KVAS_WEB_PASS"; _b="${BKP}/$(basename $_f)"; [ -f "$_b" ] && cp -f "$_b" "$_f" 2>/dev/null && echo "Восстановлен: $(basename $_f)"
+		[ -f "${BKP}/hysteria" ] && cp -f "${BKP}/hysteria" /opt/apps/kvas/hysteria/bin/hysteria 2>/dev/null && chmod 755 /opt/apps/kvas/hysteria/bin/hysteria && echo "Восстановлен бинарник hysteria"
 		;;
 
 	tags)
@@ -107,6 +199,23 @@ case "${1}" in
 		esac	
 			;;
 
+	hysteria)
+		case "${2}" in
+			install)	cmd_hysteria_install ;;
+			uninstall)	cmd_hysteria_uninstall ;;
+			new)		cmd_hysteria_new ;;
+			test)		cmd_hysteria_test ;;
+			start)		cmd_hysteria_start ;;
+			stop)		cmd_hysteria_stop ;;
+			restart)	cmd_hysteria_restart ;;
+			status | *)	cmd_hysteria_status ;;
+		esac
+		;;
+
+	failover)
+		cmd_failover "${2}" "${3}" "${4}"
+		;;
+
 	ssr)
 		case "${2}" in
 			new)			cmd_shadowsocks_read_new_data ;;
@@ -118,7 +227,99 @@ case "${1}" in
 
 	vpn)
 		case "${2}" in
-			set) 			cmd_interface_change no && update_iptables ;;
+			set)
+				case "${3}" in
+					vless|hysteria)
+						LOG="/tmp/kvas-vpn-set.log"
+						: > "$LOG"
+						
+						_ts() { date '+%H:%M:%S'; }
+						_sec() { date +%s; }
+						
+						_t=$(_ts); echo "[KVAS_SET] $_t === Начало переключения на ${3} ===" >&2; echo "[KVAS_SET] $_t === Начало переключения на ${3} ===" >> "$LOG"
+						
+						proto="${3}"
+						iface_ent=""
+						iface_cli=""
+						
+						_t=$(_ts); echo "[KVAS_SET] $_t Инициализация: proto=$proto" >&2; echo "[KVAS_SET] $_t Инициализация: proto=$proto" >> "$LOG"
+						
+						if [ "$proto" = "vless" ]; then
+							_t=$(_ts); echo "[KVAS_SET] $_t Определение iface для vless" >&2; echo "[KVAS_SET] $_t Определение iface для vless" >> "$LOG"
+							iface_cli="${PROXY_VLESS_NAME:-Proxy21}"
+							_t=$(_ts); echo "[KVAS_SET] $_t PROXY_VLESS_NAME=[${PROXY_VLESS_NAME}]" >&2; echo "[KVAS_SET] $_t PROXY_VLESS_NAME=[${PROXY_VLESS_NAME}]" >> "$LOG"
+							iface_ent=$(grep "^${iface_cli}|" "${INFACE_NAMES_FILE}" 2>/dev/null | cut -d'|' -f2)
+							_t=$(_ts); echo "[KVAS_SET] $_t grep из INFACE_NAMES_FILE: iface_ent=[$iface_ent]" >&2; echo "[KVAS_SET] $_t grep из INFACE_NAMES_FILE: iface_ent=[$iface_ent]" >> "$LOG"
+							[ -z "$iface_ent" ] && iface_ent="$iface_cli" && _t=$(_ts); echo "[KVAS_SET] $_t iface_ent пуст, использую iface_cli=$iface_cli" >&2; echo "[KVAS_SET] $_t iface_ent пуст, использую iface_cli=$iface_cli" >> "$LOG"
+						else
+							_t=$(_ts); echo "[KVAS_SET] $_t Определение iface для hysteria" >&2; echo "[KVAS_SET] $_t Определение iface для hysteria" >> "$LOG"
+							iface_cli="Proxy41"
+							iface_ent=$(grep "^${iface_cli}|" "${INFACE_NAMES_FILE}" 2>/dev/null | cut -d'|' -f2)
+							_t=$(_ts); echo "[KVAS_SET] $_t grep из INFACE_NAMES_FILE: iface_ent=[$iface_ent]" >&2; echo "[KVAS_SET] $_t grep из INFACE_NAMES_FILE: iface_ent=[$iface_ent]" >> "$LOG"
+							[ -z "$iface_ent" ] && iface_ent="$iface_cli" && _t=$(_ts); echo "[KVAS_SET] $_t iface_ent пуст, использую iface_cli=$iface_cli" >&2; echo "[KVAS_SET] $_t iface_ent пуст, использую iface_cli=$iface_cli" >> "$LOG"
+						fi
+						
+						_t=$(_ts); echo "[KVAS_SET] $_t INFACE_NAMES_FILE=${INFACE_NAMES_FILE}" >&2; echo "[KVAS_SET] $_t INFACE_NAMES_FILE=${INFACE_NAMES_FILE}" >> "$LOG"
+						_t=$(_ts); echo "[KVAS_SET] $_t iface_ent=[${iface_ent}] iface_cli=[${iface_cli}]" >&2; echo "[KVAS_SET] $_t iface_ent=[${iface_ent}] iface_cli=[${iface_cli}]" >> "$LOG"
+						if [ -f "${INFACE_NAMES_FILE}" ]; then
+							while IFS= read -r line; do _t=$(_ts); echo "[KVAS_SET] $_t   $line" >&2; echo "[KVAS_SET] $_t   $line" >> "$LOG"; done < "${INFACE_NAMES_FILE}"
+						else
+							_t=$(_ts); echo "[KVAS_SET] $_t ФАЙЛ НЕ СУЩЕСТВУЕТ!" >&2; echo "[KVAS_SET] $_t ФАЙЛ НЕ СУЩЕСТВУЕТ!" >> "$LOG"
+							ls -la /opt/etc/ 2>&1 | while IFS= read -r line; do _t=$(_ts); echo "[KVAS_SET] $_t   $line" >&2; echo "[KVAS_SET] $_t   $line" >> "$LOG"; done
+						fi
+						
+						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> stop_failover_daemon" >&2; echo "[KVAS_SET] $_t >>> stop_failover_daemon" >> "$LOG"
+						stop_failover_daemon > /dev/null 2>&1
+						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< stop_failover_daemon (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< stop_failover_daemon (${_d}s)" >> "$LOG"
+						
+						is_install_stage=no
+						_t=$(_ts); echo "[KVAS_SET] $_t is_install_stage=no" >&2; echo "[KVAS_SET] $_t is_install_stage=no" >> "$LOG"
+						
+						# Не даём switch_vpn_on остановить xray (нужен для failover)
+						_XRAY_INIT_SAVE="$XRAY_INIT"
+						XRAY_INIT="/bin/true"
+						_t=$(_ts); echo "[KVAS_SET] $_t XRAY_INIT=/bin/true (предотвращаем остановку xray)" >&2; echo "[KVAS_SET] $_t XRAY_INIT=/bin/true (предотвращаем остановку xray)" >> "$LOG"
+						
+						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> switch_vpn_on(ent=${iface_ent}, cli=${iface_cli})" >&2; echo "[KVAS_SET] $_t >>> switch_vpn_on(ent=${iface_ent}, cli=${iface_cli})" >> "$LOG"
+						switch_vpn_on "${iface_ent}" "${iface_cli}"
+						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< switch_vpn_on (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< switch_vpn_on (${_d}s)" >> "$LOG"
+						
+						XRAY_INIT="$_XRAY_INIT_SAVE"
+						_t=$(_ts); echo "[KVAS_SET] $_t XRAY_INIT восстановлен" >&2; echo "[KVAS_SET] $_t XRAY_INIT восстановлен" >> "$LOG"
+						
+						# Убеждаемся что xray запущен (для failover check_vless)
+						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> service_action S97xray start" >&2; echo "[KVAS_SET] $_t >>> service_action S97xray start" >> "$LOG"
+						service_action S97xray start > /dev/null 2>&1
+						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< service_action S97xray start (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< service_action S97xray start (${_d}s)" >> "$LOG"
+						sleep 1
+						
+						if [ "$proto" = "hysteria" ]; then
+							_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> service_action S99hysteria start" >&2; echo "[KVAS_SET] $_t >>> service_action S99hysteria start" >> "$LOG"
+							service_action S99hysteria start > /dev/null 2>&1
+							_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< service_action S99hysteria start (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< service_action S99hysteria start (${_d}s)" >> "$LOG"
+						fi
+						
+						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> load_failover_conf + save" >&2; echo "[KVAS_SET] $_t >>> load_failover_conf + save" >> "$LOG"
+						load_failover_conf
+						PRIMARY="$proto"
+						save_failover_conf
+						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< PRIMARY обновлён на $proto (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< PRIMARY обновлён на $proto (${_d}s)" >> "$LOG"
+						
+						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> update_iptables" >&2; echo "[KVAS_SET] $_t >>> update_iptables" >> "$LOG"
+						update_iptables
+						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< update_iptables (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< update_iptables (${_d}s)" >> "$LOG"
+						
+						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> start_failover_daemon" >&2; echo "[KVAS_SET] $_t >>> start_failover_daemon" >> "$LOG"
+						start_failover_daemon > /dev/null 2>&1 &
+						echo $! > /var/run/kvas-failover.pid
+						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< failover daemon запущен PID $! (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< failover daemon запущен PID $! (${_d}s)" >> "$LOG"
+						
+						_t=$(_ts); echo "[KVAS_SET] $_t === Переключение на $proto завершено ===" >&2; echo "[KVAS_SET] $_t === Переключение на $proto завершено ===" >> "$LOG"
+						;;
+					*)
+						cmd_interface_change no && update_iptables ;;
+				esac
+				;;
 			gateway) 		cmd_manual_gateway_set "${3}" ;;
 			reset) 			update_iptables && all_services_restart ;;
 			net | guest)
@@ -206,6 +407,9 @@ case "${1}" in
 	route)
 		case "${2}" in
 			refresh | recreate) cmd_route_refresh ;;
+			add)                cmd_route_add "${3}" "${4}" ;;
+			del)                cmd_route_del "${3}" "${4}" ;;
+			list)               cmd_route_list ;;
 			*)                  cmd_route         ;;
 		esac
 		;;
@@ -214,8 +418,31 @@ case "${1}" in
 
 	log)
 		case "${2}" in
-			error | err) syslog__show "${2}" 'КВАС' 'Ошибки Кваса:'                   "${3}" ;;
+			error | err)
+				if [ "${3}" = "detail" ] || [ "${3}" = "full" ]; then
+					# Показываем ВСЕ ошибки из лог-файла
+					print_line
+					echo "Полные ошибки КВАС:"
+					print_line
+					if [ -f /opt/tmp/kvas_errors.log ] && [ -s /opt/tmp/kvas_errors.log ]; then
+						tail -n "${4:-50}" /opt/tmp/kvas_errors.log
+					else
+						echo "Лог-файл пуст."
+					fi
+				else
+					# Показываем из лог-файла (полные сообщения)
+					if [ -f /opt/tmp/kvas_errors.log ] && [ -s /opt/tmp/kvas_errors.log ]; then
+						print_line
+						echo "Ошибки КВАС:"
+						print_line
+						tail -n "${3:-20}" /opt/tmp/kvas_errors.log
+					else
+						syslog__show "${2}" 'КВАС' 'Ошибки Кваса:' "${3}"
+					fi
+				fi
+			;;
 			info)        syslog__show "${2}" 'КВАС' 'Информационные сообщения Кваса:' "${3}" ;;
+			clear)       > /opt/tmp/kvas_errors.log 2>/dev/null; echo "Лог очищен." ;;
 			*)           syslog__show ''     'КВАС' 'События Кваса:'                  "${2}" ;;
 		esac
 	;;
@@ -250,6 +477,19 @@ case "${1}" in
 	                      [ -n "${2}" ] && exit 0
 	;;
 
+	monitor|monitoring)
+		case "${2}" in
+			web)
+				case "${3}" in
+					stop|off) cmd_monitor_web_stop ;;
+					*)        cmd_monitor_web_start ;;
+				esac ;;
+			start|on)  cmd_monitor_web_start ;;
+			stop|off)  cmd_monitor_web_stop ;;
+			*)         cmd_monitor ;;
+		esac
+		;;
+
 	reset | init)	        cmd_kvas_init
 		;;
 
@@ -259,7 +499,9 @@ case "${1}" in
 
 	version | ver)			version
 		;;
-	upgrade | update)		sh /opt/apps/kvas/bin/main/upgrade "${2}" "${3}"; exit 0
+	upgrade)			sh /opt/apps/kvas/bin/main/upgrade "${2}" "${3}"; exit 0
+		;;
+	update)				sh /opt/apps/kvas/bin/main/update "${2}"; exit 0
 		;;
 	rollback)				sh /opt/apps/kvas/bin/main/upgrade rollback "${2}"; exit 0
 		;;
@@ -275,6 +517,8 @@ case "${1}" in
 	# Команды
 
 	help|-h|--h ) 			[ -n "${2}" ] && cmd_help | grep "${2}" || cmd_help
+		;;
+	"")						cmd_help
 		;;
 	*)						error "Команда '${1}' не известна, список доступных команд:"
 							print_line

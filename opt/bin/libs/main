@@ -12,7 +12,7 @@
 # ------------------------------------------------------------------------------------------
 RED="\033[1;31m";
 GREEN="\033[1;32m";
-BLUE="\033[36m";
+BLUE="\033[33m";
 YELLOW="\033[33m";
 NOCL="\033[m";
 QST="${RED}?${NOCL}"
@@ -60,6 +60,14 @@ DNSCRYPT_CONFIG_BACKUP=${KVAS_BACKUP_PATH}/dnscrypt-proxy.toml
 ADBLOCK_LIST_EXCEPTION_BACKUP=${KVAS_BACKUP_PATH}/exception.list
 ADBLOCK_HOSTS_FILE_BACKUP=${KVAS_BACKUP_PATH}/ads.kvas.list
 ADBLOCK_SOURCES_LIST_BACKUP=${KVAS_BACKUP_PATH}/sources.list
+
+HYSTERIA_CONFIG=/opt/etc/hysteria/config.yaml
+HYSTERIA_CONFIG_BACKUP=${KVAS_BACKUP_PATH}/hysteria_config.yaml
+HYSTERIA_ENV_FILE=/opt/apps/kvas/hysteria/etc/conf/env.sh
+HYSTERIA_ENV_BACKUP=${KVAS_BACKUP_PATH}/hysteria_env.sh
+
+KVAS_WEB_PASS=/opt/kvas_web_pass
+KVAS_WEB_PASS_BACKUP=${KVAS_BACKUP_PATH}/kvas_web_pass
 
 ADGUARDHOME_LOG=/opt/var/log/AdGuardHome.log
 ADGUARDHOME_DEMON=/opt/etc/init.d/S99adguardhome
@@ -139,7 +147,7 @@ service_action(){
 	# если нет демона - выходим
 	[ -z "${_service}" ] && return 1
 	# если демон есть - выполняем действия
-	find /opt/etc/init.d/ -name *"${_service}"*  -exec {} start \; &> /dev/null && return 0 || return 1
+	find /opt/etc/init.d/ -name "*${_service}*" -exec {} start \; &> /dev/null && return 0 || return 1
 
 }
 
@@ -159,7 +167,7 @@ post_api_query(){
 	else
 		curl -s -d "${_data}" "localhost:79/rci/${_query}" && _result=true || _result=false
 	fi
-	return ${result}
+	return ${_result}
 }
 #-------------------------------------------------------------------------------
 # 
@@ -184,7 +192,7 @@ is_dns_server_online(){
 
 dns__get_ips_by_domain() {
 	if [ -z "${1}" ]; then
-		error "[${FUNCNAME}] Не передан обязательный параметр — имя домена"
+		error "[func] Не передан обязательный параметр — имя домена"
 		return
 	fi
 	local host=${1}
@@ -200,7 +208,7 @@ dns__get_ips_by_domain() {
 
 ipset__fill_by_domain() {
 	if [ -z "${1}" ]; then
-		error "[${FUNCNAME}] Не передан обязательный параметр — имя домена"
+		error "[func] Не передан обязательный параметр — имя домена"
 		return
 	fi
 	# удаление * если есть
@@ -319,7 +327,7 @@ has_no_internet_here(){
 #---------------------------------------------------------------------------------
 is_interface_online() {
 	if [ -z "${1}" ] ; then
-		error "[${FUNCNAME}] Не передан обязательный параметр — Keenetic-имя"
+		error "[func] Не передан обязательный параметр — Keenetic-имя"
 		return
 	fi
 	local keenetic_name="${1}"
@@ -424,17 +432,17 @@ get_entware_ikev2_inface() {
 
 get_from_json() {
 	if [ -z "${1}" ] ; then
-		error "[${FUNCNAME}] Не задан обязательный аргумент — файл"
+		error "[func] Не задан обязательный аргумент — файл"
 		return
 	fi
 	if ! [ -f "${1}" ] ; then
-		error "[${FUNCNAME}] Указанный файл не найден"
+		error "[func] Указанный файл не найден"
 		return
 	fi
 	file="${1}"
 
 	if [ -z "${2}" ] ; then
-		error "[${FUNCNAME}] Не задан обязательный аргумент — ключ"
+		error "[func] Не задан обязательный аргумент — ключ"
 		return
 	fi
 	key="${2}"
@@ -582,7 +590,7 @@ nets__get_param_by_fields() {
 			api | keenetic)      field_num=3 ;;
 			title | description) field_num=4 ;;
 			*)
-				error "[${FUNCNAME}] Передано неизвестное имя поля ${field_name}"
+				error "[func] Передано неизвестное имя поля ${field_name}"
 				return
 			;;
 		esac
@@ -595,13 +603,13 @@ nets__get_param_by_fields() {
 nets__get() {
 	# для работы в отдельном контексте передаём его, а не берём из глобальной
 	if [ -z "${1}" ] ; then
-		error "[${FUNCNAME}] Не передан обязательный параметр — список сетей"
+		error "[func] Не передан обязательный параметр — список сетей"
 		return
 	fi
 	local nets_dictionary="${1}"
 
 	if [ -z "${2}" ] ; then
-		error "[${FUNCNAME}] Не передан обязательный аргумент, по которому ищется сетевой интерфейс"
+		error "[func] Не передан обязательный аргумент, по которому ищется сетевой интерфейс"
 		return
 	fi
 	local find_string="${2}"
@@ -643,7 +651,7 @@ is_vless_over_proxy_enabled() {
 	local tunnel_keenetic_name
 	tunnel_keenetic_name=$(get_config_value 'INFACE_CLI')
 	if [ -z "${tunnel_keenetic_name}" ] ; then
-		error "[${FUNCNAME}] В конфигурации Квас не найдена информация о тоннеле"
+		error "[func] В конфигурации Квас не найдена информация о тоннеле"
 		false
 		return
 	fi
@@ -735,13 +743,11 @@ pause()(read -r pause &> /dev/null)
 # ------------------------------------------------------------------------------------------
 get_config_value() {
 	if [ -z "${1}" ] ; then
-		error "[${FUNCNAME}] Не задан обязательный аргумент — ключ конфигурации"
 		return
 	fi
 	local key="${1}"
 
 	if ! [ -f "${KVAS_CONF_FILE}" ] ; then
-		error "[${FUNCNAME}] Файл конфигурации ${KVAS_CONF_FILE} не найден"
 		return
 	fi
 
@@ -752,9 +758,11 @@ APP_VERSION=$(get_config_value APP_VERSION)
 APP_RELEASE=$(get_config_value APP_RELEASE)
 
 version(){
-	[ -n "${APP_RELEASE}" ] && APP_RELEASE=" ${APP_RELEASE}"
-	APP_VERSION=$(echo "${APP_VERSION}" | tr '-' ' ')
-	warning "Версия пакета ${APP_VERSION}${APP_RELEASE}"
+	if [ -n "${APP_RELEASE}" ]; then
+		warning "Версия пакета ${APP_VERSION}-${APP_RELEASE}"
+	else
+		warning "Версия пакета ${APP_VERSION}"
+	fi
 }
 
 # ------------------------------------------------------------------------------------------
@@ -767,6 +775,7 @@ version(){
 #
 # ------------------------------------------------------------------------------------------
 set_config_value() {
+	[ -f "${KVAS_CONF_FILE}" ] || touch "${KVAS_CONF_FILE}"
 	if grep -oq "${1}" "${KVAS_CONF_FILE}"; then
 		sed -i "s/\(${1}=\).*/\1${2}/; s/^,//; s/\,/ /g;" "${KVAS_CONF_FILE}"
 	else
@@ -837,14 +846,14 @@ get_external_ip() {
 
 vpn__get_tunnel_addresses() {
 	if [ -z "${1}" ] ; then
-		error "[${FUNCNAME}] Не задан обязательный аргумент — название соединения"
+		error "[func] Не задан обязательный аргумент — название соединения"
 		return
 	fi
 	local api_interface="${1}"
 
 	local api_response=$(curl -s "${INFACE_PART_REQUEST}/${api_interface}")
 	if [ -z "${api_response}" ] ; then
-		error "[${FUNCNAME}] Не найдено соединение ${api_interface}"
+		error "[func] Не найдено соединение ${api_interface}"
 		return
 	fi
 
@@ -974,7 +983,7 @@ get_inface_by_ip() {
 # ------------------------------------------------------------------------------------------
 get_ip_by_inface() {
 	if [ -z "${1}" ] ; then
-		error "[${FUNCNAME}] Не задан обязательный аргумент — сетевой интерфейс"
+		error "[func] Не задан обязательный аргумент — сетевой интерфейс"
 		return
 	fi
 	local net_interface="${1}"
@@ -984,13 +993,13 @@ get_ip_by_inface() {
 
 get_net_by_ip() {
 	if [ -z "${1}" ] ; then
-		error "[${FUNCNAME}] Не задан обязательный аргумент — IP"
+		error "[func] Не задан обязательный аргумент — IP"
 		return
 	fi
 	local ipa="${1}"
 
 	if ! echo "${ipa}" | grep -qE "^${IP_FILTER}$" ; then
-		error "[${FUNCNAME}] Переданный аргумент — не IP"
+		error "[func] Переданный аргумент — не IP"
 		return
 	fi
 
@@ -1075,10 +1084,14 @@ echo_debug() {
 		echo -e "${2}"; printf "\n"
 	fi
 }
+_char_count() {
+	printf '%s' "$1" | wc -m
+}
+
 diff_len() {
-	len=${2:-${LENGTH}}			# максим длинна строки
-	charlen=$(echo "${1}" | sed -r "s/[\]033\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g")
-	charlen=${#charlen}
+	len=${2:-${LENGTH}}
+	clean=$(printf '%s' "$1" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g")
+	charlen=$(_char_count "$clean")
 	echo $(( len - charlen ))
 }
 
@@ -1111,33 +1124,24 @@ warning() {
 }
 #--------------------------------------------------------------------------------------------------------------
 when_ok() {
-#	Функция работает в купе с ready и применяется следующим образом для примера:
-#	ready 'Запускаем в работу...' {исполняемый код} && when_ok || when_err
-#	печатает слово ГОТОВО зеленым цветом на одной строке с выводимым ready сообщением
-# 	в случае, когда исполняемый код успешно выполнен
 	ok_text=${1:-ГОТОВО}
-	num_left=$((${#ok_text} + 2))
+	num_left=$(($(_char_count "$ok_text") + 2))
 	to_left="\033[${num_left}D"
 	echo -e " ${GREEN}${to_left}${ok_text}${NOCL}"
 }
 
-#--------------------------------------------------------------------------------------------------------------
 when_bad() {
-#	Функция работает в купе с ready и применяется следующим образом для примера:
-#	ready 'Запускаем в работу...' {исполняемый код} && when_ok || when_err
-#	печатает слово ОШИБКА красным цветом на одной строке с выводимым ready сообщением
-# 	в случае, когда исполняемый код выполнен с ошибкой
 	err_text=${1:-ОШИБКА}
-	num_left=$((${#err_text} + 1))
+	num_left=$(($(_char_count "$err_text") + 1))
 	to_left="\033[${num_left}D"
 	echo -e "${RED}${to_left}${err_text}${NOCL}"
 }
 
 when_alert() {
 	alert_text=${1}
-	num_left=$((${#alert_text} + 1))
+	num_left=$(($(_char_count "$alert_text") + 1))
 	to_left="\033[${num_left}D"
-	echo -e "${BLUE}${to_left}${alert_text}${NOCL}"
+	echo -e "${YELLOW}${to_left}${alert_text}${NOCL}"
 }
 #функция перчатает заданное число раз один и тот же символ
 print_line() {
@@ -1409,10 +1413,21 @@ ready_status(){
 when_error()(ready_status "${1}" "${2}" ERROR 0)
 
 log_warning(){
-	logger -t "${APP_NAME_DESC}" "${1}"
+	logger -t "${APP_NAME_DESC}" "[W] ${1}"
+	# Пишем в лог-файл для детальной диагностики
+	mkdir -p /opt/tmp
+	echo "[W] ${1}" >> /opt/tmp/kvas_errors.log
 }
 log_error(){
-	logger -p err -t "${APP_NAME_DESC}" "ОШИБКА::${1}"
+	logger -p err -t "${APP_NAME_DESC}" "[E] ${1}"
+	# Создаем директорию если нет
+	mkdir -p /opt/tmp
+	# Пишем полное сообщение в лог-файл
+	local _ts=$(date '+%Y-%m-%d %H:%M:%S')
+	echo "[$_] ${1}" >> /opt/tmp/kvas_errors.log
+	# Ограничиваем размер лога (500 строк)
+	local _lines=$(wc -l < /opt/tmp/kvas_errors.log 2>/dev/null || echo 0)
+	[ "$_lines" -gt 500 ] && tail -n 300 /opt/tmp/kvas_errors.log > /opt/tmp/kvas_errors.log.tmp && mv /opt/tmp/kvas_errors.log.tmp /opt/tmp/kvas_errors.log
 }
 log_alert(){
 	header=${2:-${APP_NAME_DESC}}

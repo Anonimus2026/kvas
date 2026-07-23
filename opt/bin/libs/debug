@@ -653,7 +653,6 @@ kvas_list_ipset_check(){
 	echo "Проверка наличия ip адресов хостов в таблице ipset"
 
 	HAS_NO_ADDRESS=;NOT_IN_TABLE=;
-	sleep 2
 	local bad_ipset_list=""
 	if [ -f "${KVAS_LIST_FILE}" ]; then
 		result_ipset=$(ipset list ${IPSET_TABLE_NAME} | grep -vEi '^[a-z]' | sort )
@@ -661,7 +660,6 @@ kvas_list_ipset_check(){
 			while read -r line || [ -n "${line}" ]; do
 				[  -z "${line}" ] && continue
 				[ "${line::1}" = "#" ] && continue
-				#  Удаляем из слова первую * и затем меняем все 
 				line="${line/\*/}"
 				hided_line="$(hide_num_letters "${line}")"
 
@@ -670,11 +668,12 @@ kvas_list_ipset_check(){
 				if echo "${line}" | grep -qE "${IP_FILTER}|${NET_FILTER}" ; then
 					ips=${line}; ips=${ips//,/ }
 				else
-					ips=$(get_iplist_from_domain "${line}" "${dns_ip}" | tr '\n' ',')
+					ips=$(kdig +retry=0 +timeout=1 +short "${line}" "@${dns_ip}" 2>/dev/null \
+						| grep -Eo "${IP_FILTER}" | grep -v '0.0.0.0' | head -5 | tr '\n' ',')
 					ips="${ips::-1}"
 				fi
 				if [ -z "$ips" ] || [ "${ips}" = 0.0.0.0 ]; then
-                	bad_ipset_list="$(printf "%s\n%s%s" "${bad_ipset_list}" "$(ready "${BLUE}${line}${NOCL}")" "$(when_alert "АДРЕСА НЕТ")")"
+                bad_ipset_list="$(printf "%s\n%s%s" "${bad_ipset_list}" "$(ready "${YELLOW}${line}${NOCL}")" "$(when_alert "АДРЕСА НЕТ")")"
 					HAS_NO_ADDRESS=true
 	            else
 					line_ips="${hided_line} ${ips}"
@@ -705,7 +704,7 @@ kvas_list_ipset_check(){
 				printf '%s' "$bad_ipset_list"
 			else 
 				print_line
-				echo -e "${GREEN}Все записи в таблице ${BLUE}${IPSET_TABLE_NAME}${NOCL} ${GREEN}прошли проверку.${NOCL}"
+				echo -e "${GREEN}Все записи в таблице ${YELLOW}${IPSET_TABLE_NAME}${NOCL} ${GREEN}прошли проверку.${NOCL}"
 			fi 
 
 		else
@@ -719,17 +718,17 @@ kvas_list_ipset_check(){
 
 	[ "${HAS_NO_ADDRESS}" = true ] && {
 		echo; print_line
-		echo -e "Значение ${BLUE}АДРЕСА НЕТ${NOCL} - это может говорить о том, что адрес этого"
-		echo -e "домена не определяется утилитами ${BLUE}kdig${NOCL} или ${BLUE}dig${NOCL}."
+		echo -e "Значение ${YELLOW}АДРЕСА НЕТ${NOCL} - это может говорить о том, что адрес этого"
+		echo -e "домена не определяется утилитами ${YELLOW}kdig${NOCL} или ${YELLOW}dig${NOCL}."
 		echo ''
 		echo -e "    | Как правило, все крупные домены, которые вмещают в себя"
 		echo -e "    | множество поддоменнов и которые часто динамически обновляют"
-		echo -e "    | свои ${BLUE}диапазоны IP${NOCL} - не дают определять свой корневой ${BLUE}IP${NOCL} и "
+		echo -e "    | свои ${YELLOW}диапазоны IP${NOCL} - не дают определять свой корневой ${YELLOW}IP${NOCL} и "
 		echo -e "    | пишут обратный (реверсивный) адрес в виде строки."
 		echo -e "    |"
 		echo -e "    | В этом случае, необходимо подходить творчески и добавлять в"
-		echo -e "    | список не корневое доменное имя, как например с ${BLUE}google.com${NOCL},"
-		echo -e "    | а конкретный интересующий Вас субдомен, вроде ${BLUE}bard.google.com.${NOCL}"
+		echo -e "    | список не корневое доменное имя, как например с ${YELLOW}google.com${NOCL},"
+		echo -e "    | а конкретный интересующий Вас субдомен, вроде ${YELLOW}bard.google.com.${NOCL}"
 		echo -e ""
 		echo -e "${GREEN}Потому, в данном случае, рекомендуется удалить текущий домен с ошибкой${NOCL}"
 		echo -e "${GREEN}и добавить конкретный субдомен.${NOCL}"
@@ -739,8 +738,8 @@ kvas_list_ipset_check(){
 	[ "${NOT_IN_TABLE}" = true ] && {
 		print_line
 		echo -e "Значение ${RED}ОТСУТСТВУЕТ${NOCL} - это может говорить о том, что адрес доменного имени "
-		echo -e "был корректно определен при помощи утилит ${BLUE}kdig${NOCL} или ${BLUE}dig${NOCL}, но по какой-то "
-		echo -e "причине, пока не был добавлен в текущую {BLUE}ipset{NOCL} таблицу."
+		echo -e "был корректно определен при помощи утилит ${YELLOW}kdig${NOCL} или ${YELLOW}dig${NOCL}, но по какой-то "
+		echo -e "причине, пока не был добавлен в текущую ${YELLOW}ipset${NOCL} таблицу."
 		echo ''
 	}
 
@@ -859,6 +858,14 @@ syslog__show() {
 	echo "${title}"
 	print_line
 	eval "${command}"
+	
+	# Если есть лог-файл с полными ошибками — показываем подсказку
+	if [ "${facility}" = "error" ] || [ "${facility}" = "err" ]; then
+		if [ -f /opt/tmp/kvas_errors.log ] && [ -s /opt/tmp/kvas_errors.log ]; then
+			echo ""
+			echo "Для просмотра полных ошибок: kvas log error detail"
+		fi
+	fi
 	echo
 }
 
@@ -940,6 +947,15 @@ show_services_status(){
 		cmd_dns_crypt_status_show
 		cmd_dnsmasq_dns_change
 	fi
+	# Проверяем Hysteria
+	if [ -f "/opt/apps/kvas/hysteria/bin/hysteria" ]; then
+		ready "Hysteria 2"
+		if [ -f "/var/run/hysteria.pid" ] && kill -0 $(cat /var/run/hysteria.pid 2>/dev/null) 2>/dev/null; then
+			when_ok "ЗАПУЩЕНА"
+		else
+			when_bad "ОСТАНОВЛЕНА"
+		fi
+	fi
 	show_guest_nets
 
 }
@@ -976,6 +992,16 @@ print_debug() {
 	kvas__show_install_log
 	syslog__show 'info'  'КВАС' 'Последние информационные сообщения [kvas log info]:' 20
 	syslog__show 'error' 'КВАС' 'Последние ошибки [kvas log error]:'                  20
+
+	print_line
+	echo -e " ${BLUE}Прокси [kvas hysteria status]${NOCL}"
+	print_line
+	cmd_hysteria_status
+
+	print_line
+	echo -e " ${BLUE}Автопереключение [kvas failover status]${NOCL}"
+	print_line
+	show_failover_status 2>/dev/null || echo "Failover не настроен"
 
 	print_line
 	echo -e " ${BLUE}Сетевые правила [kvas debug iptables]${NOCL}"
