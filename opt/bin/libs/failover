@@ -1,0 +1,363 @@
+#!/bin/sh
+# ------------------------------------------------------------------------------------------
+#
+# 	ПРОЕКТ КВАС
+#
+# 	Модуль автопереключения между vless и hysteria
+# ------------------------------------------------------------------------------------------
+#
+#	Разработчик: MiMoCode
+#	Дата: 14.07.2026
+#	Лицензия: Apache License 2.0
+#
+# ------------------------------------------------------------------------------------------
+
+. /opt/apps/kvas/bin/libs/main
+. /opt/apps/kvas/bin/libs/vpn
+
+# Конфигурация failover
+FAILOVER_CONF="/opt/etc/kvas.failover.conf"
+FAILOVER_LOG="/opt/var/log/kvas-failover.log"
+
+# Инициализация конфига failover
+init_failover_conf() {
+    if [ ! -f "$FAILOVER_CONF" ]; then
+        cat > "$FAILOVER_CONF" << 'EOF'
+FAILOVER_MODE=failover
+VLESS_PRIORITY=1
+HYSTERIA_PRIORITY=2
+CHECK_INTERVAL=15
+FAIL_THRESHOLD=2
+AUTO_START=yes
+EOF
+    fi
+}
+
+load_failover_conf() {
+    init_failover_conf
+    . "$FAILOVER_CONF"
+}
+
+save_failover_conf() {
+    init_failover_conf
+    cat > "$FAILOVER_CONF" << EOF
+FAILOVER_MODE=${FAILOVER_MODE:-failover}
+VLESS_PRIORITY=${VLESS_PRIORITY:-1}
+HYSTERIA_PRIORITY=${HYSTERIA_PRIORITY:-2}
+CHECK_INTERVAL=${CHECK_INTERVAL:-15}
+FAIL_THRESHOLD=${FAIL_THRESHOLD:-2}
+AUTO_START=${AUTO_START:-yes}
+EOF
+}
+
+# Проверка работоспособности vless
+check_vless() {
+    local pidfile="/var/run/xray.pid"
+    local was_running=0
+    
+    if [ -f "$pidfile" ] && kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
+        was_running=1
+    fi
+    
+    if [ "$was_running" -eq 0 ]; then
+        /opt/etc/init.d/S97xray start 2>/dev/null
+        sleep 2
+    fi
+    
+    local ip=$(curl -s --connect-timeout 5 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+    local result=1
+    if [ -n "$ip" ] && echo "$ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+        result=0
+    fi
+    
+    if [ "$was_running" -eq 0 ]; then
+        /opt/etc/init.d/S97xray stop 2>/dev/null
+    fi
+    
+    return $result
+}
+
+# Проверка работоспособности hysteria
+check_hysteria() {
+    local pidfile="/var/run/hysteria.pid"
+    local bin_path="/opt/apps/kvas/hysteria/bin/hysteria"
+    
+    if [ ! -f "$pidfile" ] || ! kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
+        return 1
+    fi
+    
+    local ip=$(curl -s --connect-timeout 5 -x "socks5://127.0.0.1:10808" "https://ifconfig.me" 2>/dev/null)
+    if [ -n "$ip" ] && echo "$ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+        return 0
+    fi
+    
+    return 1
+}
+
+get_active_protocol() {
+    if check_vless; then
+        echo "vless"
+    elif check_hysteria; then
+        echo "hysteria"
+    else
+        echo "none"
+    fi
+}
+
+# Переключение на vless - используем switch_vpn_on из vpn библиотеки
+switch_to_vless() {
+    log_failover "Переключение на VLESS..."
+    
+    # Используем switch_vpn_on - ту же функцию что и kvas vpn set
+    # Proxy21 - это entware имя для vless интерфейса
+    switch_vpn_on "Proxy21" "Proxy21" 2>/dev/null
+    
+    log_failover "Переключено на VLESS"
+    return 0
+}
+
+# Переключение на hysteria - используем switch_vpn_on из vpn библиотеки
+switch_to_hysteria() {
+    log_failover "Переключение на Hysteria..."
+    
+    # Используем switch_vpn_on - ту же функцию что и kvas vpn set
+    # Proxy41 - это entware имя для hysteria интерфейса
+    switch_vpn_on "Proxy41" "Proxy41" 2>/dev/null
+    
+    log_failover "Переключено на Hysteria"
+    return 0
+}
+
+log_failover() {
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    mkdir -p /opt/var/log
+    echo "[$timestamp] $msg" >> "$FAILOVER_LOG"
+    if [ -f "$FAILOVER_LOG" ]; then
+        tail -100 "$FAILOVER_LOG" > "${FAILOVER_LOG}.tmp"
+        mv "${FAILOVER_LOG}.tmp" "$FAILOVER_LOG"
+    fi
+}
+
+FAIL_COUNT=0
+
+run_failover_check() {
+    load_failover_conf
+    
+    if [ "$FAILOVER_MODE" != "failover" ]; then
+        return 0
+    fi
+    
+    local active=$(get_active_protocol)
+    local vless_ok=0
+    local hysteria_ok=0
+    
+    check_vless && vless_ok=1
+    check_hysteria && hysteria_ok=1
+    
+    local primary=""
+    local secondary=""
+    
+    if [ "$VLESS_PRIORITY" -lt "$HYSTERIA_PRIORITY" ]; then
+        primary="vless"
+        secondary="hysteria"
+    else
+        primary="hysteria"
+        secondary="vless"
+    fi
+    
+    log_failover "Проверка: vless=$vless_ok hysteria=$hysteria_ok active=$active primary=$primary"
+    
+    if [ "$active" = "$primary" ]; then
+        FAIL_COUNT=0
+        return 0
+    elif [ "$active" = "none" ] || [ "$active" != "$primary" ]; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        
+        if [ "$FAIL_COUNT" -ge "$FAIL_THRESHOLD" ]; then
+            log_failover "Превышен порог ошибок ($FAIL_COUNT). Переключение..."
+            
+            if [ "$primary" = "vless" ] && [ "$vless_ok" -eq 1 ]; then
+                switch_to_vless
+            elif [ "$primary" = "hysteria" ] && [ "$hysteria_ok" -eq 1 ]; then
+                switch_to_hysteria
+            elif [ "$secondary" = "vless" ] && [ "$vless_ok" -eq 1 ]; then
+                switch_to_vless
+            elif [ "$secondary" = "hysteria" ] && [ "$hysteria_ok" -eq 1 ]; then
+                switch_to_hysteria
+            fi
+            
+            FAIL_COUNT=0
+        fi
+    fi
+}
+
+start_failover_daemon() {
+    load_failover_conf
+    sleep 60
+    while true; do
+        run_failover_check >> /dev/null 2>&1
+        sleep "$CHECK_INTERVAL"
+    done
+}
+
+stop_failover_daemon() {
+    local pidfile="/var/run/kvas-failover.pid"
+    if [ -f "$pidfile" ]; then
+        kill $(cat "$pidfile" 2>/dev/null) 2>/dev/null
+        rm -f "$pidfile"
+        echo "Демон failover остановлен"
+    fi
+}
+
+show_failover_status() {
+    load_failover_conf
+    
+    echo "=== Статус автопереключения ==="
+    echo "Режим: $FAILOVER_MODE"
+    echo "Приоритет VLESS: $VLESS_PRIORITY"
+    echo "Приоритет Hysteria: $HYSTERIA_PRIORITY"
+    echo "Интервал проверки: $CHECK_INTERVAL сек"
+    echo "Порог ошибок: $FAIL_THRESHOLD"
+    echo ""
+    
+    echo "Текущий статус:"
+    local active=$(get_active_protocol)
+    
+    if check_vless; then
+        echo -e "  VLESS:    ${GREEN}Работает${NC}"
+    else
+        echo -e "  VLESS:    ${RED}Не работает${NC}"
+    fi
+    
+    if check_hysteria; then
+        echo -e "  Hysteria: ${GREEN}Работает${NC}"
+    else
+        echo -e "  Hysteria: ${RED}Не работает${NC}"
+    fi
+    
+    echo ""
+    echo "Активный протокол: ${BLUE}${active}${NC}"
+    
+    local pidfile="/var/run/kvas-failover.pid"
+    if [ -f "$pidfile" ] && kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
+        echo -e "Демон: ${GREEN}Запущен${NC} (PID: $(cat "$pidfile"))"
+    else
+        echo -e "Демон: ${RED}Остановлен${NC}"
+    fi
+    
+    if [ -f "$FAILOVER_LOG" ]; then
+        echo ""
+        echo "Последние события:"
+        tail -5 "$FAILOVER_LOG" | sed 's/^/  /'
+    fi
+}
+
+cmd_failover() {
+    case "${1}" in
+        on)
+            load_failover_conf
+            FAILOVER_MODE=failover
+            save_failover_conf
+            echo "Автопереключение включено"
+            mkdir -p /opt/var/log
+            local pidfile="/var/run/kvas-failover.pid"
+            if [ -f "$pidfile" ] && kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
+                echo "Демон уже запущен"
+            else
+                start_failover_daemon &
+                echo $! > "$pidfile"
+                echo "Демон запущен (PID: $!)"
+            fi
+            ;;
+        off)
+            load_failover_conf
+            FAILOVER_MODE=manual
+            save_failover_conf
+            stop_failover_daemon
+            echo "Автопереключение отключено"
+            ;;
+        vless-only)
+            load_failover_conf
+            FAILOVER_MODE=vless-only
+            save_failover_conf
+            echo "Режим: только VLESS"
+            ;;
+        hysteria-only)
+            load_failover_conf
+            FAILOVER_MODE=hysteria-only
+            save_failover_conf
+            echo "Режим: только Hysteria"
+            ;;
+        start)
+            local pidfile="/var/run/kvas-failover.pid"
+            if [ -f "$pidfile" ] && kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
+                echo "Демон уже запущен"
+            else
+                start_failover_daemon &
+                echo $! > "$pidfile"
+                echo "Демон запущен"
+            fi
+            ;;
+        stop)
+            stop_failover_daemon
+            ;;
+        status)
+            show_failover_status
+            ;;
+        set)
+            case "${2}" in
+                vless-priority)
+                    load_failover_conf
+                    VLESS_PRIORITY="${3:-1}"
+                    [ "$VLESS_PRIORITY" = "1" ] && HYSTERIA_PRIORITY=2 || HYSTERIA_PRIORITY=1
+                    save_failover_conf
+                    echo "VLESS приоритет: $VLESS_PRIORITY"
+                    ;;
+                hysteria-priority)
+                    load_failover_conf
+                    HYSTERIA_PRIORITY="${3:-1}"
+                    [ "$HYSTERIA_PRIORITY" = "1" ] && VLESS_PRIORITY=2 || VLESS_PRIORITY=1
+                    save_failover_conf
+                    echo "Hysteria приоритет: $HYSTERIA_PRIORITY"
+                    ;;
+                interval)
+                    load_failover_conf
+                    CHECK_INTERVAL="${3:-15}"
+                    save_failover_conf
+                    echo "Интервал проверки: $CHECK_INTERVAL сек"
+                    ;;
+                threshold)
+                    load_failover_conf
+                    FAIL_THRESHOLD="${3:-2}"
+                    save_failover_conf
+                    echo "Порог ошибок: $FAIL_THRESHOLD"
+                    ;;
+                *)
+                    echo "Использование: kvas failover set {vless-priority|hysteria-priority|interval|threshold} [значение]"
+                    ;;
+            esac
+            ;;
+        log)
+            if [ -f "$FAILOVER_LOG" ]; then
+                tail -${2:-20} "$FAILOVER_LOG"
+            else
+                echo "Лог пуст"
+            fi
+            ;;
+        *)
+            echo "Использование: kvas failover {on|off|start|stop|status|set|log}"
+            echo ""
+            echo "Команды:"
+            echo "  on              - включить автопереключение"
+            echo "  off             - отключить автопереключение"
+            echo "  vless-only      - только VLESS"
+            echo "  hysteria-only   - только Hysteria"
+            echo "  start           - запустить демон мониторинга"
+            echo "  stop            - остановить демон"
+            echo "  status          - показать статус"
+            echo "  set <param> [val] - настроить параметры"
+            echo "  log [N]         - показать последние N записей лога"
+            ;;
+    esac
+}
