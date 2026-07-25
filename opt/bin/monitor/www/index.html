@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KVAS — Защита ваших подключений</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 20px; font-size: 13px; }
+h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
+.subtitle { color: #8b949e; font-size: 12px; margin-bottom: 16px; }
+
+/* Tabs */
+.tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 1px solid #30363d; }
+.tab { padding: 8px 20px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; transition: all .2s; user-select: none; }
+.tab:hover { color: #c9d1d9; }
+.tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Auth */
+.auth-box { max-width: 400px; margin: 60px auto; text-align: center; }
+.auth-box h2 { color: #58a6ff; margin-bottom: 20px; }
+.auth-box input[type=password] { width: 100%; padding: 10px; margin-bottom: 12px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-family: monospace; font-size: 14px; }
+.auth-box .btn { padding: 10px 30px; }
+
+/* Cards */
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+.card h3 { color: #c9d1d9; font-size: 14px; margin-bottom: 10px; }
+.card-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.card-row label { color: #8b949e; min-width: 80px; font-size: 12px; }
+.card-row .value { color: #c9d1d9; font-size: 12px; }
+
+/* Buttons */
+.btn { padding: 6px 16px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; cursor: pointer; font-family: monospace; font-size: 12px; transition: all .2s; }
+.btn:hover { background: #30363d; }
+.btn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.btn.primary:hover { background: #388bfd; }
+.btn.success { background: #238636; border-color: #238636; color: #fff; }
+.btn.success:hover { background: #2ea043; }
+.btn.danger { border-color: #f85149; color: #f85149; }
+.btn.danger:hover { background: #f8514922; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-sm { padding: 3px 10px; font-size: 11px; }
+
+/* Messages */
+.msg { padding: 6px 12px; border-radius: 4px; margin: 6px 0; font-size: 12px; display: none; }
+.progress-wrap { display:none; margin:6px 0; }
+.progress-bar { height:4px; background:#30363d; border-radius:2px; overflow:hidden; }
+.progress-fill { height:100%; background:#58a6ff; width:0%; transition:width .3s; }
+.progress-text { font-size:11px; color:#8b949e; margin-top:2px; }
+.spinner { display:inline-block; width:12px; height:12px; border:2px solid #30363d; border-top-color:#58a6ff; border-radius:50%; animation:spin .6s linear infinite; margin-right:6px; vertical-align:middle; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.msg.ok { background: #23863622; color: #3fb950; border: 1px solid #23863644; display: block; }
+.msg.err { background: #f8514922; color: #f85149; border: 1px solid #f8514944; display: block; }
+.msg.info { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; display: block; }
+
+/* Hosts list */
+.host-list { max-height: 200px; overflow-y: auto; background: #0d1117; border-radius: 4px; padding: 6px; margin: 6px 0; font-size: 12px; }
+.host-item { display: flex; justify-content: space-between; align-items: center; padding: 3px 6px; border-bottom: 1px solid #21262d; }
+.host-item:last-child { border-bottom: none; }
+.host-item .del { color: #f85149; cursor: pointer; padding: 0 4px; }
+.host-item .del:hover { background: #f8514922; border-radius: 3px; }
+
+/* Monitor legacy styles */
+.device-list { margin-bottom: 12px; display: grid; grid-template-columns: repeat(2,1fr); gap: 4px; }
+.device-list.col3 { grid-template-columns: repeat(3,1fr); }
+.device-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; cursor: pointer; user-select: none; transition: border-color 0.2s; }
+.device-item:hover { border-color: #58a6ff; }
+.device-item.active { border-color: #58a6ff; background: #1a2332; }
+.device-item .cb { accent-color: #58a6ff; cursor: pointer; }
+.device-item .ip { color: #58a6ff; min-width: 120px; }
+.device-item .name { color: #c9d1d9; flex: 1; }
+.device-item .badge { margin-left: auto; font-size: 11px; padding: 0 6px; border-radius: 3px; }
+.filters { margin: 6px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+.filters label { color: #8b949e; display: inline-flex; align-items: center; gap: 4px; }
+.filters select,.filters input { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 3px 6px; font-family: monospace; }
+#log { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; height: 400px; overflow-y: auto; font-size: 12px; line-height: 1.5; margin-top: 8px; }
+.log-dns { color: #7ee787; }
+.log-tcp { color: #79c0ff; }
+.log-udp { color: #d2a8ff; }
+.log-error { color: #f85149; }
+.log-info { color: #8b949e; }
+.log-ip { color: #58a6ff; }
+.timestamp { color: #484f58; margin-right: 8px; }
+.status-bar { display: flex; gap: 16px; align-items: center; margin-top: 8px; font-size: 12px; }
+.status { color: #8b949e; }
+.status-ok { color: #3fb950; }
+.status-warn { color: #d29922; }
+.status-err { color: #f85149; }
+#pollCount { color: #484f58; }
+.filter-active { color: #d29922; }
+</style>
+</head>
+<body>
+
+<h1>KVAS</h1>
+<div class="subtitle" style="display:flex;justify-content:space-between;align-items:center;">
+  <span>Защита ваших подключений</span>
+  <button class="btn btn-sm danger" onclick="doLogout()" id="logoutBtn" style="display:none;">Выход</button>
+</div>
+
+<!-- Auth screen -->
+<div id="authScreen" class="auth-box" style="display:none;">
+  <h2 id="authTitle">Вход</h2>
+  <input type="password" id="authPass" placeholder="Пароль" onkeydown="if(event.key==='Enter')(currentAuthAction||doAuth)()">
+  <div id="authMsg" class="msg"></div>
+  <button class="btn primary" onclick="doAuth()" id="authBtn">Войти</button>
+  <div id="authReset" style="display:none;margin-top:12px;font-size:11px;color:#8b949e;">
+    Забыли пароль? Подключитесь по SSH и выполните: <code style="background:#21262d;padding:2px 6px;border-radius:3px;">rm /opt/kvas_web_pass</code>
+  </div>
+</div>
+
+<!-- Main UI -->
+<div id="mainUi" style="display:none;">
+
+<div class="tabs">
+  <div class="tab active" data-tab="manage" onclick="switchTab('manage')">Управление</div>
+  <div class="tab" data-tab="route" onclick="switchTab('route')">Маршрутизация</div>
+  <div class="tab" data-tab="monitor" onclick="switchTab('monitor')">Мониторинг трафика</div>
+</div>
+
+<!-- ========== TAB: Управление ========== -->
+<div id="tab-manage" class="tab-content active">
+
+  <!-- System Status -->
+  <div class="card">
+    <h3>Состояние системы</h3>
+    <div class="card-row"><label>Пакет:</label><span class="value" id="sysPkg">-</span></div>
+    <div class="card-row"><label>Версия:</label><span class="value" id="sysVer">-</span></div>
+    <div class="card-row"><label>Резерв VPN:</label><span class="value" id="sysMode">-</span></div>
+    <div class="card-row"><label>Хостов:</label><span class="value" id="sysHosts">-</span></div>
+    <div class="card-row"><label>Служба Xray:</label><span class="value" id="sysXrayService">-</span></div>
+    <div class="card-row"><label>Служба Hysteria:</label><span class="value" id="sysHysteriaService">-</span></div>
+    <div class="card-row"><label>VLESS туннель:</label><span class="value" id="sysVless">-</span></div>
+    <div class="card-row"><label>Hysteria туннель:</label><span class="value" id="sysHysteria">-</span></div>
+    <div class="card-row"><label>Обновления:</label><span class="value" id="sysUpdate">-</span>
+      <button class="btn btn-sm" onclick="doCheckUpdate(this)" style="margin-left:8px;">Проверить</button>
+    </div>
+  </div>
+
+  <!-- Hosts -->
+  <div class="card">
+    <h3>Список доменов</h3>
+    <div id="hostList" class="host-list"><div class="status">Загрузка...</div></div>
+    <div class="card-row" style="flex-wrap:wrap;gap:8px;">
+      <input type="text" id="hostInput" placeholder="domain.ru" style="flex:1;min-width:200px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+      <button class="btn btn-sm primary" onclick="hostAdd()">+ Добавить</button>
+    </div>
+    <div class="card-row" style="margin-top:8px;">
+      <input type="text" id="hostSearch" placeholder="Поиск..." oninput="filterHosts()" style="flex:1;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+      <button class="btn btn-sm" onclick="saveHosts()">Сохранить список</button>
+      <label class="btn btn-sm">Загрузить список <input type="file" id="hostFileInput" accept=".list,.txt" style="display:none;" onchange="uploadHosts(this)"></label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:#8b949e;cursor:pointer;">
+        <input type="checkbox" id="hostReplace" style="accent-color:#58a6ff;"> Заменить список
+      </label>
+    </div>
+    <div id="hostMsg" class="msg"></div>
+    <div class="progress-wrap" id="hostProgress">
+      <div class="progress-bar"><div class="progress-fill" id="hostProgressFill"></div></div>
+      <div class="progress-text" id="hostProgressText"></div>
+    </div>
+  </div>
+
+
+  <!-- Parental Control (hidden until ready) -->
+  <div class="card" style="display:none;">
+    <h3>Родительский контроль</h3>
+    <p style="font-size:12px;color:#8b949e;margin-bottom:12px;">Заблокированные сайты перенаправляются на страницу "Доступ запрещён"</p>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:250px;">
+        <h4 style="font-size:13px;color:#58a6ff;margin-bottom:8px;">Заблокированные сайты</h4>
+        <div id="parentalList" style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-size:12px;"></div>
+      </div>
+      <div style="flex:1;min-width:250px;">
+        <h4 style="font-size:13px;color:#58a6ff;margin-bottom:8px;">Добавить сайт</h4>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="parentalInput" placeholder="example.com" style="flex:1;padding:6px 10px;background:#161b22;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+          <button class="btn btn-sm success" onclick="parentalAdd()">Заблокировать</button>
+        </div>
+        <div id="parentalMsg" class="msg" style="margin-top:8px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VPN -->
+
+  <div class="card">
+    <h3>VPN туннель</h3>
+    <div class="card-row">
+      <button class="btn btn-sm" onclick="vpnSet('vless',this)">VLESS</button>
+      <button class="btn btn-sm" onclick="vpnSet('hysteria',this)">Hysteria 2</button>
+    </div>
+    <div id="vpnMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow-y:auto;"></div>
+  </div>
+
+  <!-- Failover -->
+  <div class="card">
+    <h3>Автопереключение (Failover)</h3>
+    <div class="card-row">
+      <button class="btn btn-sm success" id="foOn" onclick="failover('on',this)">Включить</button>
+      <button class="btn btn-sm danger" id="foOff" onclick="failover('off',this)">Выключить</button>
+      <button class="btn btn-sm" onclick="failover('status',this)">Статус</button>
+      <span class="value" id="foStatus" style="margin-left:8px;">-</span>
+    </div>
+    <div id="foMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow-y:auto;"></div>
+  </div>
+
+  <!-- System Actions -->
+  <div class="card">
+    <h3>Действия</h3>
+    <div class="card-row">
+      <button class="btn btn-sm" onclick="doUpdate(this)">Обновить списки</button>
+      <button class="btn btn-sm" onclick="doBackup(this)">Бэкап</button>
+      <button class="btn btn-sm" onclick="doRestore(this)">Восстановить</button>
+      <button class="btn btn-sm primary" onclick="doKvasInit(this)">Перезагрузка Квас — kvas init</button>
+    </div>
+    <div id="sysMsg" class="msg"></div>
+  </div>
+
+</div><!-- /tab-manage -->
+
+<!-- ========== TAB: Маршрутизация ========== -->
+<div id="tab-route" class="tab-content">
+
+  <!-- Route -->
+  <div class="card">
+    <h3>Текущие списки маршрутизации</h3>
+    <div class="card-row"><label>Всё в тоннель:</label><span class="value" id="routeFull">-</span></div>
+    <div class="card-row"><label>По списку (IP):</label><span class="value" id="routeListIP">-</span></div>
+    <div class="card-row"><label>Исключённые:</label><span class="value" id="routeExclude">-</span></div>
+    <div class="card-row"><label>Гостевые сети:</label><span class="value" id="routeGuestNets">-</span></div>
+    <div class="card-row" style="margin-top:8px;">
+      <button class="btn btn-sm" onclick="routeAction('refresh',this)">Обновить</button>
+      <button class="btn btn-sm" onclick="loadRouteLists()">Перечитать</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Известные устройства</h3>
+    <div id="routeDevices" class="host-list" style="max-height:150px;"><div class="status">Загрузка...</div></div>
+  </div>
+
+  <div class="card">
+    <h3>Добавить IP/подсеть в тоннель</h3>
+    <div class="card-row" style="flex-wrap:wrap;gap:8px;">
+      <input type="text" id="routeIp" placeholder="IP или подсеть (номер или адрес)" style="flex:1;min-width:200px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+      <select id="routeType" style="padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+        <option value="full">Всё в тоннель</option>
+        <option value="list">По списку КВАС</option>
+        <option value="exclude">Исключить из перехвата</option>
+      </select>
+      <button class="btn btn-sm primary" onclick="routeAdd()">Добавить</button>
+      <button class="btn btn-sm danger" onclick="routeDel()">Удалить</button>
+    </div>
+    <div id="routeMsg" class="msg"></div>
+  </div>
+
+  <div class="card">
+    <h3>Гостевые сети</h3>
+    <div id="routeGuestList" class="host-list" style="max-height:120px;"><div class="status">Загрузка...</div></div>
+    <div class="card-row" style="flex-wrap:wrap;gap:8px;">
+      <select id="routeGuestNet" style="padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+        <option value="">Выберите сеть...</option>
+      </select>
+      <button class="btn btn-sm primary" onclick="routeGuestAdd()">Добавить сеть</button>
+      <button class="btn btn-sm danger" onclick="routeGuestDel()">Удалить сеть</button>
+    </div>
+    <div id="routeGuestMsg" class="msg"></div>
+  </div>
+
+</div>
+
+<!-- ========== TAB: Мониторинг трафика ========== -->
+<div id="tab-monitor" class="tab-content">
+
+<div class="device-list" id="deviceList"><div class="status" style="text-align:center;padding:20px;color:#8b949e;">Загрузка устройств...</div></div>
+
+<div class="card-row" style="gap:6px;flex-wrap:wrap;">
+  <input type="text" id="manualIP" placeholder="IP вручную (192.168.1.100)" style="flex:1;min-width:160px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+  <button class="btn btn-sm" onclick="addManualIP()">+ Добавить IP</button>
+  <span id="manualIPMsg" style="font-size:11px;color:#8b949e;"></span>
+</div>
+
+<div class="controls" style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap;">
+  <button class="btn" id="btnStart" onclick="toggleMonitor()">Запустить мониторинг</button>
+  <button class="btn" onclick="clearLog()">Очистить</button>
+  <button class="btn" onclick="downloadLog()">Скачать лог</button>
+  <button class="btn" onclick="refreshDevices()">Обновить устройства</button>
+</div>
+
+<div class="filters">
+  <label>Протокол:
+    <select id="filterProto"><option value="">all</option><option value="tcp">TCP</option><option value="udp">UDP</option></select>
+  </label>
+  <label>Порт:
+    <input type="text" id="filterPort" placeholder="all" style="width:50px;">
+  </label>
+  <label>Устройство:
+    <select id="filterDevice"><option value="">all</option></select>
+  </label>
+  <label>Сорт:
+    <select id="sortBy" onchange="refreshDevices()"><option value="ip">IP</option><option value="name">имя</option></select>
+  </label>
+  <label>Поиск:
+    <input type="text" id="logFilter" placeholder="текст" oninput="applyLogFilter()" style="width:100px;">
+  </label>
+  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" title="Включить conntrack для отслеживания соединений (может нагружать CPU на слабых роутерах)">
+    <input type="checkbox" id="useConntrack" checked style="accent-color:#58a6ff;"> Conntrack
+  </label>
+  <span id="filterIndicator" class="filter-active" style="display:none;">⚙ фильтр</span>
+</div>
+
+<h2 style="color:#8b949e;font-size:13px;margin:8px 0;">Лог</h2>
+<div id="log"><div class="log-info">Выберите устройства и нажмите "Запустить мониторинг"</div></div>
+<div class="status-bar">
+  <span class="status" id="status">Выберите устройства</span>
+  <span id="pollCount"></span>
+</div>
+
+</div><!-- /tab-monitor -->
+</div><!-- /mainUi -->
+
+<script>
+var AUTH_TOKEN = sessionStorage.getItem('kvas_token') || '';
+var monitoring = false;
+var pollTimer = null;
+var selectedIps = new Set();
+var pollErrors = 0;
+var MAX_POLL_ERRORS = 5;
+var deviceList = [];
+var currentAuthAction = doAuth;
+
+/* ========== LOADING ========== */
+function loadingBtn(btn, loading) {
+  if (loading) { btn._text = btn.textContent; btn.disabled = true; btn.textContent = '...'; }
+  else { btn.disabled = false; btn.textContent = btn._text || btn.textContent; }
+}
+
+function showProgress(pct, text) {
+  var el = document.getElementById('hostProgress');
+  var fill = document.getElementById('hostProgressFill');
+  var txt = document.getElementById('hostProgressText');
+  if (pct < 0) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  fill.style.width = pct + '%';
+  txt.innerHTML = (pct > 0 ? pct + '% ' : '') + '<span class="spinner"></span> ' + text;
+}
+
+function hideProgress() { showProgress(-1); }
+
+/* ========== AUTH ========== */
+function api(url, cb) {
+  var u = url.indexOf('?') > -1 ? url + '&token=' + AUTH_TOKEN : url + '?token=' + AUTH_TOKEN;
+  fetch(u).then(function(r){return r.json()}).then(function(d){cb(d)}).catch(function(e){cb({error:e.message})});
+}
+
+function apiBtn(url, btn, cb) {
+  loadingBtn(btn, true);
+  var u = url.indexOf('?') > -1 ? url + '&token=' + AUTH_TOKEN : url + '?token=' + AUTH_TOKEN;
+  fetch(u).then(function(r){return r.json()}).then(function(d){ loadingBtn(btn, false); cb(d); }).catch(function(e){ loadingBtn(btn, false); cb({error:e.message}); });
+}
+
+function doAuth() {
+  var pass = document.getElementById('authPass').value;
+  if (!pass) return;
+  var btn = document.getElementById('authBtn'); btn.disabled = true;
+  fetch('/cgi-bin/manage.sh?action=auth&pass=' + encodeURIComponent(pass)).then(function(r){return r.json()}).then(function(d){
+    btn.disabled = false;
+    if (d.token) {
+      AUTH_TOKEN = d.token;
+      sessionStorage.setItem('kvas_token', AUTH_TOKEN);
+      showMain();
+    } else {
+      showAuthMsg(d.error || 'Ошибка', 'err');
+      if (d.wait) { btn.disabled = true; setTimeout(function(){ btn.disabled = false; }, d.wait * 1000); }
+    }
+  }).catch(function(e){ btn.disabled = false; showAuthMsg(e.message, 'err'); });
+}
+
+function setPass() {
+  var pass = document.getElementById('authPass').value;
+  if (!pass || pass.length < 4) { showAuthMsg('Минимум 4 символа', 'err'); return; }
+  var btn = document.getElementById('authBtn'); btn.disabled = true;
+  fetch('/cgi-bin/manage.sh?action=set_pass&pass=' + encodeURIComponent(pass)).then(function(r){return r.json()}).then(function(d){
+    btn.disabled = false;
+    if (d.ok) { showAuthMsg('Пароль установлен. Войдите.', 'ok'); document.getElementById('authTitle').textContent = 'Вход'; document.getElementById('authBtn').textContent = 'Войти'; initAuth(); }
+    else showAuthMsg(d.error || 'Ошибка', 'err');
+  }).catch(function(e){ btn.disabled = false; showAuthMsg(e.message, 'err'); });
+}
+
+function showAuthMsg(text, cls) {
+  var el = document.getElementById('authMsg'); el.textContent = text; el.className = 'msg ' + cls;
+}
+
+function initAuth() {
+  if (AUTH_TOKEN) { checkToken(); return; }
+  fetch('/cgi-bin/manage.sh?action=auth_status').then(function(r){return r.json()}).then(function(d){
+    if (d.has_password) {
+      document.getElementById('authTitle').textContent = 'Вход';
+      document.getElementById('authBtn').textContent = 'Войти';
+      document.getElementById('authBtn').onclick = doAuth;
+      currentAuthAction = doAuth;
+      document.getElementById('authReset').style.display = 'block';
+    } else {
+      document.getElementById('authTitle').textContent = 'Установка пароля';
+      document.getElementById('authBtn').textContent = 'Установить';
+      document.getElementById('authBtn').onclick = setPass;
+      currentAuthAction = setPass;
+    }
+    document.getElementById('authScreen').style.display = 'block';
+  }).catch(function(e){
+    document.getElementById('authTitle').textContent = 'Ошибка соединения';
+    document.getElementById('authBtn').style.display = 'none';
+    document.getElementById('authPass').style.display = 'none';
+    showAuthMsg('Не удалось подключиться к серверу: ' + e.message, 'err');
+    document.getElementById('authScreen').style.display = 'block';
+  });
+}
+
+function checkToken() {
+  fetch('/cgi-bin/manage.sh?action=system_status&token=' + AUTH_TOKEN).then(function(r){return r.json()}).then(function(d){
+    if (d.ok) showMain();
+    else { sessionStorage.removeItem('kvas_token'); AUTH_TOKEN = ''; initAuth(); }
+  }).catch(function(){ sessionStorage.removeItem('kvas_token'); AUTH_TOKEN = ''; initAuth(); });
+}
+
+function showMain() {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('mainUi').style.display = 'block';
+  document.getElementById('logoutBtn').style.display = '';
+  loadSystemStatus();
+  loadHosts();
+  loadRouteLists();
+  loadFailoverStatus();
+  fetchDevices();
+  logMsg('log-info', 'Мониторинг трафика KVAS');
+}
+
+/* ========== TABS ========== */
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('active', t.dataset.tab === name)});
+  document.querySelectorAll('.tab-content').forEach(function(t){t.classList.toggle('active', t.id === 'tab-' + name)});
+}
+
+/* ========== SYSTEM ========== */
+function loadSystemStatus() {
+  api('/cgi-bin/manage.sh?action=system_status', function(d){
+    if (d.ok) {
+      document.getElementById('sysPkg').textContent = d.pkg || '-';
+      document.getElementById('sysVer').textContent = d.ver || '-';
+      document.getElementById('sysMode').textContent = d.mode || '-';
+      document.getElementById('sysHosts').textContent = d.hosts || '-';
+      var xraySvc = d.xray_service || '-';
+      document.getElementById('sysXrayService').textContent = xraySvc === 'running' ? 'работает' : (xraySvc === 'stopped' ? 'остановлена' : (xraySvc === 'not_installed' ? 'не установлена' : xraySvc));
+      var hysteriaSvc = d.hysteria_service || '-';
+      document.getElementById('sysHysteriaService').textContent = hysteriaSvc === 'running' ? 'работает' : (hysteriaSvc === 'stopped' ? 'остановлена' : (hysteriaSvc === 'not_installed' ? 'не установлена' : hysteriaSvc));
+      document.getElementById('sysVless').textContent = d.vless === true ? 'работает' : (d.vless === false ? 'не работает' : '-');
+      document.getElementById('sysHysteria').textContent = d.hysteria === true ? 'работает' : (d.hysteria === false ? 'не работает' : '-');
+    }
+  });
+}
+
+function doCheckUpdate(btn) {
+  apiBtn('/cgi-bin/manage.sh?action=check_update', btn, function(d){
+    var el = document.getElementById('sysUpdate');
+    if (d.ok) {
+      var upd = d.update || '-';
+      if (upd === 'up_to_date') el.textContent = 'актуальная версия';
+      else if (upd && upd.indexOf('available:') === 0) el.textContent = 'доступно: ' + upd.split(':')[1];
+      else el.textContent = upd;
+    } else {
+      el.textContent = d.error || 'ошибка';
+    }
+  });
+}
+
+/* ========== HOSTS ========== */
+function loadHosts() {
+  if (document.getElementById('kvasListDl'))
+    document.getElementById('kvasListDl').href = '/cgi-bin/manage.sh?action=kvas_list&token=' + AUTH_TOKEN;
+  var el = document.getElementById('hostList');
+  el.innerHTML = '<div style="color:#8b949e;font-size:11px;padding:4px 0;"><span class="spinner"></span> Загрузка списка...</div>';
+  showProgress(0, 'Загрузка списка доменов');
+  api('/cgi-bin/manage.sh?action=hosts', function(d){
+    hideProgress();
+    if (!d.ok) { el.innerHTML = '<div class="status status-err">' + (d.error||'error') + '</div>'; return; }
+    if (!d.hosts || !d.hosts.length) { el.innerHTML = '<div class="status" style="color:#8b949e;">Список пуст</div>'; return; }
+    el.innerHTML = '';
+    allHosts = d.hosts;
+    d.hosts.forEach(function(h){
+      var div = document.createElement('div');
+      div.className = 'host-item';
+      div.innerHTML = '<span>' + h + '</span><span class="del" onclick="hostDel(\'' + h.replace(/'/g,"\\'") + '\')">✕</span>';
+      el.appendChild(div);
+    });
+  });
+}
+
+var allHosts = [];
+
+function filterHosts() {
+  var query = document.getElementById('hostSearch').value.toLowerCase();
+  var items = document.querySelectorAll('#hostList .host-item');
+  items.forEach(function(item) {
+    var text = item.textContent.toLowerCase();
+    item.style.display = text.indexOf(query) > -1 ? '' : 'none';
+  });
+}
+
+function saveHosts() {
+  var hosts = [];
+  document.querySelectorAll('#hostList .host-item span:first-child').forEach(function(el) {
+    hosts.push(el.textContent);
+  });
+  if (hosts.length === 0) { alert('Список пуст'); return; }
+  var blob = new Blob([hosts.join('\n')], {type: 'text/plain'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'kvas.list';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+  consoleLog('hosts list saved (' + hosts.length + ' entries)');
+}
+
+function uploadHosts(input) {
+  var file = input.files[0];
+  if (!file) return;
+  var replace = document.getElementById('hostReplace') && document.getElementById('hostReplace').checked;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var lines = e.target.result.split('\n');
+    var domains = [];
+    lines.forEach(function(line) {
+      line = line.trim();
+      if (line && line[0] !== '#' && line.indexOf('.') > -1) {
+        domains.push(line);
+      }
+    });
+    if (domains.length === 0) { alert('Нет доменов для импорта'); return; }
+    consoleLog('importing ' + domains.length + ' hosts...' + (replace ? ' (replace)' : ''));
+    showProgress(0, 'Импорт ' + domains.length + ' доменов...');
+    if (replace) {
+      api('/cgi-bin/manage.sh?action=host_clear', function(d) {
+        if (!d.ok) { hideProgress(); alert('Ошибка очистки'); return; }
+        doImportBulk(domains);
+      });
+    } else {
+      doImportBulk(domains);
+    }
+  };
+  reader.readAsText(file);
+  input.value = '';
+}
+
+function doImportBulk(domains) {
+  showProgress(0, 'Запуск импорта ' + domains.length + ' доменов...');
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/cgi-bin/manage.sh?action=host_import&token=' + AUTH_TOKEN, true);
+  xhr.setRequestHeader('Content-Type', 'text/plain');
+  xhr.onload = function() {
+    try {
+      var d = JSON.parse(xhr.responseText);
+      if (!d.ok) { showProgress(100, 'Ошибка: ' + (d.error || '?')); setTimeout(hideProgress, 3000); return; }
+      pollImport(domains.length);
+    } catch(e) {
+      showProgress(100, 'Ошибка: ' + e.message);
+      setTimeout(hideProgress, 3000);
+    }
+  };
+  xhr.onerror = function() { showProgress(100, 'Ошибка сети'); setTimeout(hideProgress, 3000); };
+  xhr.send(domains.join('\n'));
+}
+
+function pollImport(total) {
+  var start = Date.now();
+  var poll = function() {
+    api('/cgi-bin/manage.sh?action=host_import_poll', function(d) {
+      if (!d.ok) { showProgress(100, 'Ошибка: ' + (d.error || '?')); setTimeout(hideProgress, 3000); return; }
+      if (d.done) {
+        var sec = Math.round((Date.now() - start) / 1000);
+        showProgress(100, 'Импорт завершён (' + total + ' доменов за ' + sec + 'c)');
+        consoleLog('Импорт: ' + total + ' доменов');
+        if (d.output) consoleLog('kvas import: ' + d.output.replace(/\n/g, ' | '));
+        setTimeout(function(){ hideProgress(); loadHosts(); loadSystemStatus(); }, 800);
+      } else {
+        var sec = Math.round((Date.now() - start) / 1000);
+        showProgress(0, 'Импорт... (' + sec + 'c)');
+        if (d.last) consoleLog('import: ' + d.last);
+        setTimeout(poll, 1500);
+      }
+    });
+  };
+  poll();
+}
+
+function hostAdd() {
+  var input = document.getElementById('hostInput');
+  var domain = input.value.trim();
+  if (!domain) return;
+  var btn = document.querySelector('#hostInput + .btn');
+  showProgress(0, 'Добавление <b>' + domain + '</b>');
+  btn.disabled = true;
+  api('/cgi-bin/manage.sh?action=host_add&domain=' + encodeURIComponent(domain), function(d){
+    btn.disabled = false;
+    var el = document.getElementById('hostMsg');
+    hideProgress();
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; input.value = ''; loadHosts(); loadSystemStatus(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
+  });
+}
+
+function hostDel(domain) {
+  if (!confirm('Удалить ' + domain + '?')) return;
+  showProgress(0, 'Удаление <b>' + domain + '</b>');
+  api('/cgi-bin/manage.sh?action=host_del&domain=' + encodeURIComponent(domain), function(d){
+    var el = document.getElementById('hostMsg');
+    hideProgress();
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; loadHosts(); loadSystemStatus(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
+  });
+}
+
+function vpnSet(proto, btn) {
+  apiBtn('/cgi-bin/manage.sh?action=vpn_set&proto=' + proto, btn, function(d){
+    var el = document.getElementById('vpnMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg;
+      consoleLog('vpn set ' + proto + ': ' + d.msg);
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'error';
+      consoleLog('vpn set ' + proto + ' ERROR: ' + (d.error || 'unknown'));
+    }
+  });
+}
+
+/* ========== FAILOVER ========== */
+function loadFailoverStatus() {
+  api('/cgi-bin/manage.sh?action=failover_status', function(d){
+    if (d.ok) document.getElementById('foStatus').textContent = d.enabled !== 'manual' ? 'вкл (' + d.primary + ')' : 'выкл';
+  });
+}
+
+function failover(cmd, btn) {
+  apiBtn('/cgi-bin/manage.sh?action=failover&cmd=' + cmd, btn, function(d){
+    var el = document.getElementById('foMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      var output = cmd === 'status' ? d.data : (d.data || d.msg);
+      el.textContent = output;
+      consoleLog('failover ' + cmd + ': ' + (output || 'ok'));
+      loadFailoverStatus();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'error';
+      consoleLog('failover ' + cmd + ' ERROR: ' + (d.error || 'unknown'));
+    }
+  });
+}
+
+/* ========== ACTIONS ========== */
+function doUpdate(btn) {
+  apiBtn('/cgi-bin/manage.sh?action=update', btn, function(d){
+    var el = document.getElementById('sysMsg');
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; loadSystemStatus(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
+  });
+}
+
+function doKvasInit(btn) {
+  if (!confirm('Перезагрузить KVAS (kvas init)?')) return;
+  apiBtn('/cgi-bin/manage.sh?action=kvas_init', btn, function(d){
+    var el = document.getElementById('sysMsg');
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; loadSystemStatus(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
+  });
+}
+
+function doBackup(btn) {
+  apiBtn('/cgi-bin/manage.sh?action=backup', btn, function(d){
+    var el = document.getElementById('sysMsg');
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; }
+    else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
+  });
+}
+
+function doRestore(btn) {
+  if (!confirm('Восстановить настройки из последнего бэкапа?')) return;
+  apiBtn('/cgi-bin/manage.sh?action=restore', btn, function(d){
+    var el = document.getElementById('sysMsg');
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; }
+    else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
+  });
+}
+
+/* ========== MONITOR (existing) ========== */
+function logMsg(cls, html) {
+  var logEl = document.getElementById('log');
+  var ts = new Date().toLocaleTimeString();
+  var div = document.createElement('div');
+  div.innerHTML = '<span class="timestamp">' + ts + '</span>' + html;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+  while (logEl.children.length > 500) logEl.removeChild(logEl.firstChild);
+  if (document.getElementById('logFilter').value) applyLogFilter();
+}
+
+function setStatus(text, cls) {
+  var el = document.getElementById('status');
+  el.textContent = text;
+  el.className = 'status' + (cls ? ' ' + cls : '');
+}
+
+function fetchDevices() {
+  fetch('/cgi-bin/data.sh?action=devices&sort=' + document.getElementById('sortBy').value + '&conntrack=' + (document.getElementById('useConntrack').checked ? '1' : '0')).then(function(r){return r.json()}).then(function(devices){
+    deviceList = devices || [];
+    var container = document.getElementById('deviceList');
+    var devSel = document.getElementById('filterDevice');
+    var curVal = devSel.value;
+    devSel.innerHTML = '<option value="">all</option>';
+    container.innerHTML = '';
+    if (!devices || devices.length === 0) {
+      container.innerHTML = '<div class="status" style="text-align:center;padding:20px;color:#8b949e;">Устройства не найдены.<br>Введите IP вручную выше.</div>';
+      return;
+    }
+    devices.forEach(function(d){
+      var checked = selectedIps.has(d.ip) ? ' checked' : '';
+      var activeCls = selectedIps.has(d.ip) ? ' active' : '';
+      var statusBadge = d.status === 'active' ? '<span class="badge" style="color:#3fb950;">активен</span>' : '<span class="badge" style="color:#8b949e;">в сети</span>';
+      var activityBadge = d.active === true ? '<span class="badge" style="color:#3fb950;">✓</span>' : '';
+      var el = document.createElement('div');
+      el.className = 'device-item' + activeCls;
+      el.dataset.ip = d.ip;
+      el.innerHTML = '<input type="checkbox" class="cb"' + checked + '>' +
+        '<span class="ip">' + d.ip + '</span>' +
+        '<span class="name">' + (d.name || '-') + '</span>' +
+        statusBadge + activityBadge;
+      el.onclick = function(e) { if (e.target.tagName === 'INPUT') return; var cb = el.querySelector('.cb'); cb.checked = !cb.checked; cb.dispatchEvent(new Event('change')); };
+      el.querySelector('.cb').onchange = function() {
+        el.className = 'device-item' + (this.checked ? ' active' : '');
+        if (this.checked) selectedIps.add(d.ip); else selectedIps.delete(d.ip);
+        updateStatus();
+      };
+      container.appendChild(el);
+    });
+    updateDeviceFilter();
+    container.className = 'device-list' + (devices.length > 20 ? ' col3' : '');
+    devSel.value = curVal;
+  }).catch(function(err){
+    document.getElementById('deviceList').innerHTML = '<div class="status" style="text-align:center;color:#f85149;">Ошибка: ' + err.message + '</div>';
+  });
+}
+
+function refreshDevices() {
+  document.getElementById('deviceList').innerHTML = '<div class="status" style="text-align:center;padding:20px;color:#8b949e;">Обновление...</div>';
+  fetchDevices();
+}
+
+function addManualIP() {
+  var input = document.getElementById('manualIP');
+  var ip = input.value.trim();
+  if (!ip) return;
+  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+    document.getElementById('manualIPMsg').textContent = 'Неверный IP';
+    return;
+  }
+  if (selectedIps.has(ip)) {
+    document.getElementById('manualIPMsg').textContent = 'Уже добавлен';
+    input.value = '';
+    return;
+  }
+  selectedIps.add(ip);
+  // Add to device list visually
+  var container = document.getElementById('deviceList');
+  var emptyMsg = container.querySelector('.status');
+  if (emptyMsg) container.innerHTML = '';
+  var el = document.createElement('div');
+  el.className = 'device-item active';
+  el.dataset.ip = ip;
+  el.innerHTML = '<input type="checkbox" class="cb" checked>' +
+    '<span class="ip">' + ip + '</span>' +
+    '<span class="name">вручную</span>' +
+    '<span class="badge" style="color:#8b949e;">в сети</span>';
+  el.onclick = function(e) { if (e.target.tagName === 'INPUT') return; };
+  el.querySelector('.cb').onchange = function() {
+    el.className = 'device-item' + (this.checked ? ' active' : '');
+    if (this.checked) selectedIps.add(ip); else selectedIps.delete(ip);
+    updateStatus();
+    document.getElementById('manualIPMsg').textContent = this.checked ? '' : 'IP удалён';
+  };
+  container.appendChild(el);
+  updateStatus();
+  input.value = '';
+  document.getElementById('manualIPMsg').textContent = 'IP ' + ip + ' добавлен';
+  setTimeout(function(){ document.getElementById('manualIPMsg').textContent = ''; }, 2000);
+}
+
+function updateDeviceFilter() {
+  var devSel = document.getElementById('filterDevice');
+  var curVal = devSel.value;
+  devSel.innerHTML = '<option value="">all</option>';
+  deviceList.forEach(function(d){
+    if (!selectedIps.has(d.ip)) return;
+    var opt = document.createElement('option');
+    opt.value = d.ip; opt.textContent = d.ip + (d.name ? ' ' + d.name : '');
+    devSel.appendChild(opt);
+  });
+  var found = false; for (var oi = 0; oi < devSel.options.length; oi++) { if (devSel.options[oi].value === curVal) { found = true; break; } }
+  if (found) devSel.value = curVal;
+}
+
+function updateStatus() {
+  if (selectedIps.size) setStatus('Выбрано: ' + [...selectedIps].join(', '), 'status-ok');
+  else setStatus('Выберите устройства', '');
+  updateDeviceFilter();
+}
+
+function toggleMonitor() {
+  if (!monitoring && selectedIps.size === 0) { alert('Выберите хотя бы одно устройство'); return; }
+  monitoring = !monitoring;
+  document.getElementById('btnStart').textContent = monitoring ? 'Остановить мониторинг' : 'Запустить мониторинг';
+  document.getElementById('btnStart').classList.toggle('active', monitoring);
+  if (monitoring) startPolling(); else stopPolling();
+}
+
+function startPolling() { pollErrors = 0; poll(); pollTimer = setInterval(poll, 2000); setStatus('Мониторинг запущен', 'status-ok'); }
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  setStatus('Мониторинг остановлен', 'status-warn');
+  document.getElementById('pollCount').textContent = '';
+}
+
+function getFilterParams() {
+  var p = '';
+  var proto = document.getElementById('filterProto').value;
+  var port = document.getElementById('filterPort').value.trim();
+  var conntrack = document.getElementById('useConntrack').checked ? '1' : '0';
+  if (proto) p += '&proto=' + encodeURIComponent(proto);
+  if (port) p += '&port=' + encodeURIComponent(port);
+  p += '&conntrack=' + conntrack;
+  document.getElementById('filterIndicator').style.display = (proto || port) ? 'inline' : 'none';
+  return p;
+}
+
+function getDeviceFilter() { return document.getElementById('filterDevice').value; }
+
+function poll() {
+  if (selectedIps.size === 0) {
+    stopPolling(); monitoring = false;
+    document.getElementById('btnStart').textContent = 'Запустить мониторинг';
+    document.getElementById('btnStart').classList.remove('active');
+    setStatus('Мониторинг остановлен: нет устройств', 'status-warn');
+    return;
+  }
+  var ips = [...selectedIps].join(',');
+  var url = '/cgi-bin/data.sh?action=data&ips=' + encodeURIComponent(ips) + getFilterParams();
+  fetch(url).then(function(r){return r.json()}).then(function(data){
+    pollErrors = 0;
+    if (data.error) { logMsg('log-error', '<span class="log-err">' + data.error + '</span>'); return; }
+    var count = 0;
+    if (data.connections) data.connections.forEach(function(c){
+      count++;
+      var cls = c.proto === 'tcp' ? 'log-tcp' : 'log-udp';
+      var dstDisplay = c.dst + ':' + c.dport;
+      if (c.dname && c.dname !== c.dst) dstDisplay = c.dname + ' (' + c.dst + ':' + c.dport + ')';
+      logMsg(cls, '<span class="log-ip">' + c.src + '</span> <span class="' + cls + '">' + c.proto.toUpperCase() + '</span> ' + c.src + ':' + c.sport + ' → ' + dstDisplay);
+    });
+    if (data.dns) data.dns.forEach(function(d){ count++; logMsg('log-dns', '<span class="log-ip">DNS</span> ' + d.domain); });
+    if (count === 0 && pollErrors === 0) { logMsg('log-warn', '<span style="color:#d29922;">Нет данных. Проверьте: 1) Включён Conntrack 2) DNS-лог не пуст (kvas monitor + l) 3) Устройства активны</span>'); }
+    if (count > 0) document.getElementById('pollCount').textContent = '+' + count + ' events';
+  }).catch(function(err){
+    pollErrors++;
+    if (pollErrors <= 3) logMsg('log-error', '<span class="log-err">Ошибка (' + pollErrors + '/' + MAX_POLL_ERRORS + '): ' + err.message + '</span>');
+    if (pollErrors >= MAX_POLL_ERRORS) {
+      stopPolling(); monitoring = false;
+      document.getElementById('btnStart').textContent = 'Запустить мониторинг';
+      document.getElementById('btnStart').classList.remove('active');
+      logMsg('log-error', '<span class="log-err">Мониторинг остановлен</span>');
+      setStatus('Ошибка: web-сервер не отвечает', 'status-err');
+    }
+  });
+}
+
+function applyLogFilter() {
+  var q = document.getElementById('logFilter').value.toLowerCase().trim();
+  var devIp = getDeviceFilter();
+  var logEl = document.getElementById('log');
+  for (var i = 0; i < logEl.children.length; i++) {
+    var text = logEl.children[i].textContent.toLowerCase();
+    var show = true;
+    if (q) show = text.indexOf(q) > -1;
+    if (show && devIp) show = text.indexOf(devIp.toLowerCase()) > -1;
+    logEl.children[i].style.display = show ? '' : 'none';
+  }
+}
+
+document.getElementById('filterDevice').onchange = applyLogFilter;
+document.getElementById('filterProto').onchange = function(){document.getElementById('filterIndicator').style.display=this.value?'inline':(document.getElementById('filterPort').value?'inline':'none');};
+document.getElementById('filterPort').oninput = function(){document.getElementById('filterIndicator').style.display=this.value?'inline':(document.getElementById('filterProto').value?'inline':'none');};
+
+function downloadLog() {
+  var logEl = document.getElementById('log');
+  var lines = [];
+  for (var i = 0; i < logEl.children.length; i++) { var t = logEl.children[i].textContent; if (t) lines.push(t); }
+  if (lines.length === 0) { alert('Лог пуст'); return; }
+  var blob = new Blob([lines.join('\n')], {type:'text/plain'});
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'kvas-monitor-' + new Date().toISOString().slice(0,19).replace(/[T:]/g,'-') + '.log';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href);
+}
+
+function clearLog() { document.getElementById('log').innerHTML = ''; }
+
+
+/* ========== CONSOLE ========== */
+function consoleLog(msg) {
+  var el = document.getElementById('consoleOutput');
+  if (!el) return;
+  var ts = new Date().toLocaleTimeString();
+  el.innerHTML += '<div><span style="color:#484f58;">' + ts + '</span> ' + msg + '</div>';
+  el.scrollTop = el.scrollHeight;
+  while (el.children.length > 100) el.removeChild(el.firstChild);
+}
+
+function consoleClear() {
+  var el = document.getElementById('consoleOutput');
+  if (el) el.innerHTML = '';
+}
+
+/* ========== PARENTAL CONTROL ========== */
+function loadParentalList() {
+  api('/cgi-bin/manage.sh?action=parental_list', function(d){
+    var el = document.getElementById('parentalList');
+    if (!el) return;
+    if (!d.ok || !d.sites || !d.sites.length) {
+      el.innerHTML = '<div style="color:#8b949e;text-align:center;padding:10px;">Нет заблокированных сайтов</div>';
+      return;
+    }
+    el.innerHTML = '';
+    d.sites.forEach(function(s){
+      var item = document.createElement('div');
+      item.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid #30363d;';
+      item.innerHTML = '<span style="color:#ff6b6b;">' + s + '</span><button class="btn btn-sm danger" style="padding:2px 8px;font-size:11px;" onclick="parentalDel(\'' + s + '\')">Удалить</button>';
+      el.appendChild(item);
+    });
+  });
+}
+
+function parentalAdd() {
+  var domain = document.getElementById('parentalInput').value.trim();
+  if (!domain) return;
+  apiBtn('/cgi-bin/manage.sh?action=parental_add&domain=' + encodeURIComponent(domain), null, function(d){
+    var el = document.getElementById('parentalMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg;
+      document.getElementById('parentalInput').value = '';
+      loadParentalList();
+      consoleLog('parental add: ' + domain);
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'error';
+      consoleLog('parental add ERROR: ' + (d.error || 'unknown'));
+    }
+  });
+}
+
+function parentalDel(domain) {
+  apiBtn('/cgi-bin/manage.sh?action=parental_del&domain=' + encodeURIComponent(domain), null, function(d){
+    var el = document.getElementById('parentalMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg;
+      loadParentalList();
+      consoleLog('parental del: ' + domain);
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'error';
+      consoleLog('parental del ERROR: ' + (d.error || 'unknown'));
+    }
+  });
+}
+
+function doLogout() {
+  AUTH_TOKEN = '';
+  sessionStorage.removeItem('kvas_token');
+  document.getElementById('logoutBtn').style.display = 'none';
+  document.getElementById('mainUi').style.display = 'none';
+  document.getElementById('authPass').value = '';
+  document.getElementById('authMsg').className = 'msg';
+  document.getElementById('authMsg').textContent = '';
+  document.getElementById('authTitle').textContent = 'Вход';
+  document.getElementById('authBtn').textContent = 'Войти';
+  document.getElementById('authBtn').onclick = doAuth;
+  currentAuthAction = doAuth;
+  document.getElementById('authReset').style.display = 'none';
+  document.getElementById('authScreen').style.display = 'block';
+}
+
+/* ========== INIT ========== */
+initAuth();
+
+// Route management
+function routeAction(action, btn) {
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=route_' + action + '&token=' + AUTH_TOKEN, function(d) {
+    if (btn) loadingBtn(btn, false);
+    var el = document.getElementById('routeMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || 'OK';
+      loadRouteLists();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  });
+}
+
+function loadRouteLists() {
+  api('/cgi-bin/manage.sh?action=route_status&token=' + AUTH_TOKEN, function(d) {
+    if (!d.ok) return;
+    document.getElementById('routeFull').textContent = d.full || '(пусто)';
+    document.getElementById('routeListIP').textContent = d.list || '(пусто)';
+    document.getElementById('routeExclude').textContent = d.exclude || '(пусто)';
+    document.getElementById('routeGuestNets').textContent = d.guest_nets || '(не заданы)';
+    // Update current guest networks list
+    var gl = document.getElementById('routeGuestList');
+    if (d.guest_nets) {
+      var nets = d.guest_nets.split(',').map(function(s){return s.trim()}).filter(function(s){return s});
+      if (nets.length) {
+        gl.innerHTML = nets.map(function(n){return '<div class="host-item">' + n + '</div>'}).join('');
+      } else {
+        gl.innerHTML = '<div class="status" style="color:#8b949e;">Нет гостевых сетей</div>';
+      }
+    } else {
+      gl.innerHTML = '<div class="status" style="color:#8b949e;">Нет гостевых сетей</div>';
+    }
+  });
+  // Load known devices
+  api('/cgi-bin/manage.sh?action=route_devices&token=' + AUTH_TOKEN, function(d) {
+    var el = document.getElementById('routeDevices');
+    if (!d.ok || !d.devices || !d.devices.length) {
+      el.innerHTML = '<div class="status" style="color:#8b949e;">Нет устройств</div>';
+      return;
+    }
+    el.innerHTML = '';
+    d.devices.forEach(function(dev) {
+      var div = document.createElement('div');
+      div.className = 'host-item';
+      div.innerHTML = '<span style="color:#58a6ff;min-width:120px;">' + dev.ip + '</span> ' + dev.name;
+      div.onclick = function() { document.getElementById('routeIp').value = dev.ip; };
+      div.style.cursor = 'pointer';
+      el.appendChild(div);
+    });
+  });
+  // Load available guest networks
+  api('/cgi-bin/manage.sh?action=route_guest_networks&token=' + AUTH_TOKEN, function(d) {
+    var sel = document.getElementById('routeGuestNet');
+    sel.innerHTML = '<option value="">Выберите сеть...</option>';
+    if (d.ok && d.networks) {
+      d.networks.forEach(function(n) {
+        var opt = document.createElement('option');
+        opt.value = n.id;
+        opt.textContent = n.id + ' - ' + n.name;
+        sel.appendChild(opt);
+      });
+    }
+  });
+}
+
+function routeAdd() {
+  var ip = document.getElementById('routeIp').value.trim();
+  var type = document.getElementById('routeType').value;
+  if (!ip) { alert('Введите IP или подсеть'); return; }
+  api('/cgi-bin/manage.sh?action=route_add&type=' + type + '&ip=' + encodeURIComponent(ip), function(d) {
+    var el = document.getElementById('routeMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || 'Добавлено';
+      document.getElementById('routeIp').value = '';
+      loadRouteLists();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  });
+}
+
+function routeDel() {
+  var ip = document.getElementById('routeIp').value.trim();
+  var type = document.getElementById('routeType').value;
+  if (!ip) { alert('Введите IP или подсеть'); return; }
+  api('/cgi-bin/manage.sh?action=route_del&type=' + type + '&ip=' + encodeURIComponent(ip), function(d) {
+    var el = document.getElementById('routeMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || 'Удалено';
+      document.getElementById('routeIp').value = '';
+      loadRouteLists();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  });
+}
+
+function routeGuestAdd() {
+  var net = document.getElementById('routeGuestNet').value;
+  if (!net) { alert('Выберите гостевую сеть'); return; }
+  api('/cgi-bin/manage.sh?action=route_guest_add&net=' + encodeURIComponent(net), function(d) {
+    var el = document.getElementById('routeGuestMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || 'Сеть добавлена';
+      loadRouteLists();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  });
+}
+
+function routeGuestDel() {
+  var net = document.getElementById('routeGuestNet').value;
+  if (!net) { alert('Выберите гостевую сеть'); return; }
+  api('/cgi-bin/manage.sh?action=route_guest_del&net=' + encodeURIComponent(net), function(d) {
+    var el = document.getElementById('routeGuestMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || 'Сеть удалена';
+      loadRouteLists();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  });
+}
+
+</script>
+</body>
+</html>
