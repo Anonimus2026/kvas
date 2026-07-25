@@ -280,9 +280,16 @@ main() {
 					hysteria_svc="stopped"
 				fi
 			fi
-			printf '{"ok":true,"pkg":%s,"ver":%s,"mode":%s,"failover":%s,"hysteria":%s,"vless":%s,"hosts":%s,"xray_service":%s,"hysteria_service":%s}\n' \
+			# Real connectivity check (like failover daemon)
+			vless_ok="false"
+			hysteria_ok="false"
+			command -v curl >/dev/null 2>&1 && {
+				[ "$vless_running" = "true" ] && vless_ok=$(curl -s --connect-timeout 3 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null | grep -q . && echo "true" || echo "false")
+				[ "$hysteria_running" = "true" ] && hysteria_ok=$(curl -s --connect-timeout 3 -x "socks5://127.0.0.1:10808" "https://ifconfig.me" 2>/dev/null | grep -q . && echo "true" || echo "false")
+			}
+			printf '{"ok":true,"pkg":%s,"ver":%s,"mode":%s,"failover":%s,"vless":%s,"hysteria":%s,"vless_ok":%s,"hysteria_ok":%s,"hosts":%s,"xray_service":%s,"hysteria_service":%s}\n' \
 				"$(json_str "$kvaspkg_name")" "$(json_str "$kvaspkg_ver")" "$(json_str "$vpn_mode")" "$(json_str "$failover")" \
-				"$hysteria_running" "$vless_running" "$host_count" \
+				"$vless_running" "$hysteria_running" "$vless_ok" "$hysteria_ok" "$host_count" \
 				"$(json_str "$xray_svc")" "$(json_str "$hysteria_svc")"
 			;;
 		hosts)

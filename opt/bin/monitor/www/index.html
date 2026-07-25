@@ -455,8 +455,10 @@ function loadSystemStatus() {
       document.getElementById('sysXrayService').textContent = xraySvc === 'running' ? 'работает' : (xraySvc === 'stopped' ? 'остановлена' : (xraySvc === 'not_installed' ? 'не установлена' : xraySvc));
       var hysteriaSvc = d.hysteria_service || '-';
       document.getElementById('sysHysteriaService').textContent = hysteriaSvc === 'running' ? 'работает' : (hysteriaSvc === 'stopped' ? 'остановлена' : (hysteriaSvc === 'not_installed' ? 'не установлена' : hysteriaSvc));
-      document.getElementById('sysVless').textContent = d.vless === true ? 'работает' : (d.vless === false ? 'не работает' : '-');
-      document.getElementById('sysHysteria').textContent = d.hysteria === true ? 'работает' : (d.hysteria === false ? 'не работает' : '-');
+      var check = '<span style="color:#3fb950;">\u2713</span> ';
+      var cross = '<span style="color:#f85149;">\u2717</span> ';
+      document.getElementById('sysVless').innerHTML = d.vless_ok === 'true' ? check + 'работает' : (d.vless_ok === 'false' ? cross + 'не работает' : '-');
+      document.getElementById('sysHysteria').innerHTML = d.hysteria_ok === 'true' ? check + 'работает' : (d.hysteria_ok === 'false' ? cross + 'не работает' : '-');
     }
   });
 }
