@@ -280,16 +280,9 @@ main() {
 					hysteria_svc="stopped"
 				fi
 			fi
-			# Real connectivity check (like failover daemon)
-			vless_ok="false"
-			hysteria_ok="false"
-			command -v curl >/dev/null 2>&1 && {
-				[ "$vless_running" = "true" ] && vless_ok=$(curl -s --connect-timeout 3 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null | grep -q . && echo "true" || echo "false")
-				[ "$hysteria_running" = "true" ] && hysteria_ok=$(curl -s --connect-timeout 3 -x "socks5://127.0.0.1:10808" "https://ifconfig.me" 2>/dev/null | grep -q . && echo "true" || echo "false")
-			}
-			printf '{"ok":true,"pkg":%s,"ver":%s,"mode":%s,"failover":%s,"vless":%s,"hysteria":%s,"vless_ok":%s,"hysteria_ok":%s,"hosts":%s,"xray_service":%s,"hysteria_service":%s}\n' \
+			printf '{"ok":true,"pkg":%s,"ver":%s,"mode":%s,"failover":%s,"vless":%s,"hysteria":%s,"hosts":%s,"xray_service":%s,"hysteria_service":%s}\n' \
 				"$(json_str "$kvaspkg_name")" "$(json_str "$kvaspkg_ver")" "$(json_str "$vpn_mode")" "$(json_str "$failover")" \
-				"$vless_running" "$hysteria_running" "$vless_ok" "$hysteria_ok" "$host_count" \
+				"$vless_running" "$hysteria_running" "$host_count" \
 				"$(json_str "$xray_svc")" "$(json_str "$hysteria_svc")"
 			;;
 		hosts)
@@ -379,6 +372,18 @@ main() {
 			printf '{"ok":true,"mode":%s,"vless":%s,"hysteria":%s}\n' \
 				"$(json_str "$vpn_mode")" "$vless_running" "$hysteria_running"
 			;;
+		tunnel_check)
+			check_token "$token"
+			vless_ok="false"
+			hysteria_ok="false"
+			command -v ss >/dev/null 2>&1 && {
+				ss -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="true"
+				ss -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="true"
+			}
+			[ "$vless_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="true"
+			[ "$hysteria_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="true"
+			printf '{"ok":true,"vless":%s,"hysteria":%s}\n' "$vless_ok" "$hysteria_ok"
+			;;
 		vpn_set)
 			check_token "$token"
 			proto=$(echo "$QUERY_STRING" | sed 's/.*proto=//; s/&.*//' 2>/dev/null)
@@ -424,6 +429,8 @@ main() {
 					;;
 				status)
 					out=$($KVAS_BIN failover status 2>&1)
+					esc=$(printf '\033')
+					out=$(echo "$out" | tr -d "$esc" | sed 's/\[[0-9;]*[a-zA-Z]//g')
 					printf '{"ok":true,"data":%s}\n' "$(json_str "$out")"
 					;;
 				*) json_error "cmd must be on/off/status" ;;

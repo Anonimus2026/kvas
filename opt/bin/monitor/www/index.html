@@ -455,10 +455,16 @@ function loadSystemStatus() {
       document.getElementById('sysXrayService').textContent = xraySvc === 'running' ? 'работает' : (xraySvc === 'stopped' ? 'остановлена' : (xraySvc === 'not_installed' ? 'не установлена' : xraySvc));
       var hysteriaSvc = d.hysteria_service || '-';
       document.getElementById('sysHysteriaService').textContent = hysteriaSvc === 'running' ? 'работает' : (hysteriaSvc === 'stopped' ? 'остановлена' : (hysteriaSvc === 'not_installed' ? 'не установлена' : hysteriaSvc));
-      var check = '<span style="color:#3fb950;">\u2713</span> ';
-      var cross = '<span style="color:#f85149;">\u2717</span> ';
-      document.getElementById('sysVless').innerHTML = d.vless_ok === 'true' ? check + 'работает' : (d.vless_ok === 'false' ? cross + 'не работает' : '-');
-      document.getElementById('sysHysteria').innerHTML = d.hysteria_ok === 'true' ? check + 'работает' : (d.hysteria_ok === 'false' ? cross + 'не работает' : '-');
+      document.getElementById('sysVless').innerHTML = '<span style="color:#8b949e;">проверка...</span>';
+      document.getElementById('sysHysteria').innerHTML = '<span style="color:#8b949e;">проверка...</span>';
+      api('/cgi-bin/manage.sh?action=tunnel_check', function(t) {
+        if (t.ok) {
+          var ok = '<span style="color:#3fb950;">\u2713</span> ';
+          var fail = '<span style="color:#f85149;">\u2717</span> ';
+          document.getElementById('sysVless').innerHTML = t.vless ? ok + 'работает' : fail + 'не работает';
+          document.getElementById('sysHysteria').innerHTML = t.hysteria ? ok + 'работает' : fail + 'не работает';
+        }
+      });
     }
   });
 }
