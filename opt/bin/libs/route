@@ -255,6 +255,14 @@ cmd_route_refresh() {
 	ip4__dns__add_routing_for_home
 	ip4_firewall_set_all_rules
 	echo 'сделано.'
+
+	echo -n 'Сброс устаревших соединений...'
+	for ip in $(get_config_value 'route_full_ip' | tr '+' ' ') \
+	          $(get_config_value 'route_by_list_ip' | tr '+' ' ') \
+	          $(get_config_value 'route_excluded_ip' | tr '+' ' '); do
+		[ -n "$ip" ] && conntrack -D -s "$ip" 2>/dev/null || true
+	done
+	echo 'сделано.'
 }
 
 route__show_block() {
@@ -351,66 +359,346 @@ route__show_block_net() {
 }
 
 cmd_route() {
-	# если вызывается как один из дебагов, то можно передать silent/short
+	if [ -n "${1}" ] ; then
+		cmd_route_silent "$@"
+		return
+	fi
+	nets__set_known_ips
+	nets__set_incoming; nets__set_common
+	local GREEN='\033[1;32m'
+	local YELLOW='\033[1;33m'
+	local NOCL='\033[m'
+	while true; do
+		clear
+		echo -e "${GREEN}=== Управление тоннелем ===${NOCL}"
+		print_line
+		local full=$(get_config_value "route_full_ip")
+		local list=$(get_config_value "route_by_list_ip")
+		local exclude=$(get_config_value "route_excluded_ip")
+		local guest_nets=$(get_config_value "INFACE_GUEST_ENT")
+		full=${full//+/ }; list=${list//+/ }; exclude=${exclude//+/ }
+		echo -e "${YELLOW}Текущие списки:${NOCL}"
+		echo "  Всё в тоннель:     ${full:- (пусто)}"
+		echo "  По списку (IP):    ${list:- (пусто)}"
+		echo "  Исключённые:       ${exclude:- (пусто)}"
+		echo "  Гостевые сети (по списку): ${guest_nets:- (не заданы)}"
+		echo ""
+		echo -e "${YELLOW}Известные устройства:${NOCL}"
+		local num=0
+		local dev_ips=""
+		if [ -n "${IPS_KNOWN}" ]; then
+			while IFS= read -r line; do
+				num=$((num + 1))
+				local lip=$(echo "${line}" | cut -d'|' -f1 | tr -d ' ')
+				local lname=$(echo "${line}" | cut -d'|' -f2 | tr -d '"' | tr -d ' ')
+				printf "  %2d) %-15s %s\n" "${num}" "${lip}" "${lname}"
+				dev_ips="${dev_ips}${dev_ips:+ }${lip}"
+			done << DEVICES
+$(echo "${IPS_KNOWN}" | xargs -n2 printf '%-15s | %s\n' 2>/dev/null)
+DEVICES
+		else
+			echo "  (нет устройств с постоянным IP)"
+		fi
+		echo ""
+		local avail_nets=$(nets__filter_for_incoming "${NETS_INCOMING}${NETS_COMMON}" 2>/dev/null)
+		avail_nets=$(echo "${avail_nets}" | grep -v '^br0' | tr '|' ' ' | xargs -n4 printf '%-10s | %-15s | %-30s | %s\n' 2>/dev/null)
+		echo -e "${YELLOW}Доступные гостевые сети:${NOCL}"
+		echo "${avail_nets:-  (не найдены)}"
+		echo ""
+		echo -e "${YELLOW}Действия:${NOCL}"
+		echo "  a) Добавить IP/подсеть в тоннель (всё)            — весь трафик устройства"
+		echo "  b) Добавить IP/подсеть в тоннель (по списку КВАС)  — только домены из kvas.list"
+		echo "  c) Исключить IP/подсеть из перехвата               — DNS и трафик не проксируются"
+		echo "  d) Убрать IP/подсеть из списков                    — удалить из всех списков"
+		echo "  n) Добавить гостевую сеть (по списку КВАС)         — br1, br2..."
+		echo "  N) Убрать гостевую сеть                            — удалить из route_by_list_net"
+		echo "  r) Применить (route refresh)                       — перечитать конфиг"
+		echo "  q) Выход"
+		echo ""
+		echo -n "Выбор: "
+		read choice
+		case "${choice}" in
+			a|b|c)
+				echo ""
+				if [ "${num}" -eq 0 ]; then
+					echo "Нет устройств. Введите IP или подсеть вручную."
+				fi
+				echo "(можно ввести IP, CIDR-подсеть 192.168.1.0/24 или диапазон 192.168.1.1-192.168.1.10)"
+				echo -n "Номер устройства (1-${num}) или адрес: "
+				read dev_choice
+				local selected_ip=""
+				if echo "${dev_choice}" | grep -qE '^[0-9]+$' && [ "${dev_choice}" -ge 1 ] && [ "${dev_choice}" -le "${num}" ]; then
+					selected_ip=$(echo "${dev_ips}" | cut -d' ' -f"${dev_choice}")
+				else
+					selected_ip="${dev_choice}"
+				fi
+				if [ -z "${selected_ip}" ]; then
+					echo "Адрес не указан."; echo -n "Enter..."; read dummy; continue
+				fi
+				case "${choice}" in
+					a) cmd_route_add "full" "${selected_ip}" ;;
+					b) cmd_route_add "list" "${selected_ip}" ;;
+					c) cmd_route_add "exclude" "${selected_ip}" ;;
+				esac
+				echo -n "Enter..."; read dummy
+				;;
+			d)
+				local all_entries="${full} ${list} ${exclude}"
+				all_entries=$(echo "${all_entries}" | tr ' ' '\n' | grep -v '^$' | sort -u)
+				if [ -z "${all_entries}" ]; then
+					echo "Все списки пусты."; echo -n "Enter..."; read dummy; continue
+				fi
+				echo "Записи для удаления:"
+				echo "${all_entries}" | awk '{print NR, $0}'
+				echo -n "Введите адрес или номер: "
+				read del_ip
+				[ -z "${del_ip}" ] && { echo -n "Enter..."; read dummy; continue; }
+				if [ "${del_ip}" -eq "${del_ip}" ] 2>/dev/null; then
+					del_ip=$(echo "${all_entries}" | awk -v n="${del_ip}" 'NR==n{print $0}')
+					[ -z "${del_ip}" ] && { echo "Неверный номер."; echo -n "Enter..."; read dummy; continue; }
+				fi
+				cmd_route_del "full" "${del_ip}" 2>/dev/null
+				cmd_route_del "list" "${del_ip}" 2>/dev/null
+				cmd_route_del "exclude" "${del_ip}" 2>/dev/null
+				echo -n "Enter..."; read dummy
+				;;
+			n)
+				echo ""
+				nets__set_incoming; nets__set_common
+				local nets_dict="${NETS_INCOMING}${NETS_COMMON}"
+				local available=$(nets__filter_for_incoming "${nets_dict}" | grep -v '^br0$')
+				available=$(echo "${available}" | tr '|' ' ' | xargs -n4 printf '%-10s | %-15s | %-30s | %s\n' 2>/dev/null)
+				if [ -n "${available}" ]; then
+					echo "Доступные сети:"
+					echo "${available}"
+					echo ""
+				fi
+				echo -n "Имя интерфейса (br1, br2...): "
+				read guest_iface
+				if [ -n "${guest_iface}" ]; then
+					local current=$(get_config_value "INFACE_GUEST_ENT")
+					if echo ",${current}," | grep -qi ",${guest_iface},"; then
+						echo "Сеть ${guest_iface} уже в списке."
+					else
+						if [ -z "${current}" ]; then
+							set_config_value "INFACE_GUEST_ENT" "${guest_iface}"
+						else
+							set_config_value "INFACE_GUEST_ENT" "${current},${guest_iface}"
+						fi
+						echo "Гостевая сеть ${guest_iface} добавлена."
+					fi
+				fi
+				echo -n "Enter..."; read dummy
+				;;
+			N)
+				local current=$(get_config_value "INFACE_GUEST_ENT")
+				if [ -z "${current}" ]; then
+					echo "Список гостевых сетей пуст."
+				else
+					echo "Текущие: ${current}"
+					echo -n "Интерфейс для удаления: "
+					read guest_iface
+					if [ -n "${guest_iface}" ]; then
+						local new_list=$(echo "${current}" | tr ',' '\n' | grep -v "^${guest_iface}$" | tr '\n' ',' | sed 's/,$//')
+						if [ "${new_list}" != "${current}" ]; then
+							if [ -z "${new_list}" ]; then
+								sed -i "/^INFACE_GUEST_ENT=/d" "${KVAS_CONF_FILE}"
+								echo "Список пуст — ключ удалён."
+							else
+								set_config_value "INFACE_GUEST_ENT" "${new_list}"
+								echo "Гостевая сеть ${guest_iface} удалена."
+							fi
+						else
+							echo "Сеть ${guest_iface} не найдена."
+						fi
+					fi
+				fi
+				echo -n "Enter..."; read dummy
+				;;
+			r)
+				cmd_route_refresh
+				echo -n "Enter..."; read dummy
+				;;
+			q|Q) break ;;
+			*) echo -n "Enter..."; read dummy ;;
+		esac
+	done
+}
+
+cmd_route_silent() {
 	if [ -z "${1}" ] ; then
 		echo 'Вывод критериев попадания в тоннель:'
 		echo 'какие сети и устройства, есть ли проверка вхождения в списки.'
 		echo
 	fi
-
 	local empty_example=''
-
-	if [ -z "${1}" ] ; then
-		empty_example='route_full_ip=192.168.1.51+192.168.2.51'
-	fi
-	route__show_block_ip 'route_full_ip' \
-	  'IP с отправкой в тоннель всего:' \
-	  "${empty_example}"
-
-	if [ -z "${1}" ] ; then
-		empty_example='route_by_list_ip=192.168.2.52+192.168.2.53'
-	fi
-	route__show_block_ip 'route_by_list_ip' \
-	  'IP с отправкой в тоннель по списку:' \
-	  "${empty_example}"
-
-	if [ -z "${1}" ] ; then
-		empty_example='route_by_list_net=br0'
-	fi
-	route__show_block_net "br0 $(get_guest_inface_list_from_config)" \
-	  'Сети с отправкой в тоннель по списку:' \
-	  "${empty_example}"
-
-	if [ -z "${1}" ] ; then
-		empty_example='route_excluded_ip=192.168.1.52+192.168.1.53'
-	fi
-	route__show_block_ip 'route_excluded_ip' \
-	  'IP, исключённые из перехватов DNS и трафика:' \
-	  "${empty_example}"
-
+	if [ -z "${1}" ] ; then empty_example='route_full_ip=192.168.1.51+192.168.2.51'; fi
+	route__show_block_ip 'route_full_ip' 'IP с отправкой в тоннель всего:' "${empty_example}"
+	if [ -z "${1}" ] ; then empty_example='route_by_list_ip=192.168.2.52+192.168.2.53'; fi
+	route__show_block_ip 'route_by_list_ip' 'IP с отправкой в тоннель по списку:' "${empty_example}"
+	if [ -z "${1}" ] ; then empty_example='route_by_list_net=br0'; fi
+	route__show_block_net "br0 $(get_guest_inface_list_from_config)" 'Сети с отправкой в тоннель по списку:' "${empty_example}"
+	if [ -z "${1}" ] ; then empty_example='route_excluded_ip=192.168.1.52+192.168.1.53'; fi
+	route__show_block_ip 'route_excluded_ip' 'IP, исключённые из перехватов DNS и трафика:' "${empty_example}"
 	local output
-
-	nets__set_incoming
-	nets__set_common
+	nets__set_incoming; nets__set_common
 	output=$(nets__filter_for_incoming "${NETS_INCOMING}${NETS_COMMON}")
-	if [ -z "${output}" ] ; then
-		output='Произошла ошибка сбора списка, сообщите об этом https://t.me/kvas_pro'
-	else
-		output=$(echo "${output}" | tr '|' ' ' | xargs -n4 printf '%-10s | %-15s | %-30s | %s\n')
-	fi
+	if [ -z "${output}" ] ; then output='Ошибка сборки списка'; else output=$(echo "${output}" | tr '|' ' ' | xargs -n4 printf '%-10s | %-15s | %-30s | %s\n'); fi
 	echo_debug 'Доступные для маршрутизации сети:' "${output}"
-
-	# если вызывается как один из дебагов, то можно передать silent/short
 	if [ -z "${1}" ] ; then
 		nets__set_known_ips
-		if [ -z "${IPS_KNOWN}" ] ; then
-			output=$(printf '%s\n' \
-				'Отсутствуют. В админке роутера закрепите постоянный IP-адрес за любым устройством,' \
-				'чтобы использовать его здесь.' \
-			)
-		else
-			output=$(echo "${IPS_KNOWN}" | xargs -n2 printf '%-15s | %s\n')
+		if [ -z "${IPS_KNOWN}" ] ; then output=$(printf '%s\n' 'Отсутствуют.' 'Закрепите постоянный IP в админке роутера.')
+		else output=$(echo "${IPS_KNOWN}" | xargs -n2 printf '%-15s | %s\n'); fi
+		echo_debug 'Зарегистрированные клиенты:' "${output}"
+	fi
+}
+
+# Интерактивное добавление IP в тоннель
+cmd_route_add() {
+	local target="${1}"
+	local ip="${2}"
+
+	if [ -z "${target}" ] || [ -z "${ip}" ]; then
+		echo "Использование: kvas route add <тип> <IP>"
+		echo ""
+		echo "Типы:"
+		echo "  full <IP>      - отправлять ВСЁ от IP в тоннель"
+		echo "  list <IP>      - отправлять в тоннель по списку КВАС"
+		echo "  exclude <IP>   - исключить IP из перехвата"
+		echo ""
+		echo "Пример:"
+		echo "  kvas route add full 192.168.1.51"
+		echo "  kvas route add exclude 192.168.1.52"
+		return 1
+	fi
+
+	local config_key=""
+	case "${target}" in
+		full)    config_key="route_full_ip" ;;
+		list)    config_key="route_by_list_ip" ;;
+		exclude) config_key="route_excluded_ip" ;;
+		*)
+			echo "Неизвестный тип: ${target}. Используйте: full, list, exclude"
+			return 1
+			;;
+	esac
+
+	local current=$(get_config_value "${config_key}")
+
+	if echo "${current}" | tr '+' '\n' | grep -Fxq "${ip}"; then
+		echo "IP ${ip} уже добавлен в ${target}"
+		return 0
+	fi
+
+	if [ -z "${current}" ]; then
+		set_config_value "${config_key}" "${ip}"
+	else
+		set_config_value "${config_key}" "${current}+${ip}"
+	fi
+
+	echo "IP ${ip} добавлен в ${target}"
+	echo "Выполните 'kvas route refresh' для применения изменений."
+}
+
+# Интерактивное удаление IP из тоннеля
+cmd_route_del() {
+	local target="${1}"
+	local ip="${2}"
+
+	if [ -z "${target}" ] || [ -z "${ip}" ]; then
+		echo "Использование: kvas route del <тип> <IP>"
+		echo ""
+		echo "Типы:"
+		echo "  full <IP>      - убрать из 'всё в тоннель'"
+		echo "  list <IP>      - убрать из 'по списку КВАС'"
+		echo "  exclude <IP>   - убрать из 'исключённые'"
+		echo ""
+		echo "Пример:"
+		echo "  kvas route del full 192.168.1.51"
+		return 1
+	fi
+
+	local config_key=""
+	case "${target}" in
+		full)    config_key="route_full_ip" ;;
+		list)    config_key="route_by_list_ip" ;;
+		exclude) config_key="route_excluded_ip" ;;
+		*)
+			echo "Неизвестный тип: ${target}. Используйте: full, list, exclude"
+			return 1
+			;;
+	esac
+
+	local current=$(get_config_value "${config_key}")
+
+	if [ -z "${current}" ]; then
+		echo "Список ${target} пуст"
+		return 1
+	fi
+
+	# Проверяем, есть ли такой IP
+	if ! echo "${current}" | tr '+' '\n' | grep -Fxq "${ip}"; then
+		echo "IP ${ip} не найден в ${target}"
+		return 1
+	fi
+
+	# Удаляем IP (разделитель +)
+	local new_list=""
+	local item
+	for item in $(echo "${current}" | tr '+' ' '); do
+		if [ "${item}" != "${ip}" ]; then
+			if [ -z "${new_list}" ]; then
+				new_list="${item}"
+			else
+				new_list="${new_list}+${item}"
+			fi
 		fi
-		echo_debug 'Зарегистрированные клиенты c постоянным IP-адресом:' "${output}"
+	done
+
+	if [ -z "${new_list}" ]; then
+		# Список стал пустым — удаляем ключ
+		sed -i "/^${config_key}=/d" "${KVAS_CONF_FILE}"
+	else
+		set_config_value "${config_key}" "${new_list}"
+	fi
+
+	echo "IP ${ip} удалён из ${target}"
+	echo "Выполните 'kvas route refresh' для применения изменений."
+}
+
+# Показать текущие списки
+cmd_route_list() {
+	echo "=== Текущие списки маршрутизации ==="
+	echo ""
+
+	local full=$(get_config_value "route_full_ip")
+	local list=$(get_config_value "route_by_list_ip")
+	local exclude=$(get_config_value "route_excluded_ip")
+
+	full=${full//+/ }
+	list=${list//+/ }
+	exclude=${exclude//+/ }
+
+	echo "Всё в тоннель (full):"
+	if [ -n "${full}" ]; then
+		for ip in ${full}; do echo "  - ${ip}"; done
+	else
+		echo "  (пусто)"
+	fi
+	echo ""
+
+	echo "По списку КВАС (list):"
+	if [ -n "${list}" ]; then
+		for ip in ${list}; do echo "  - ${ip}"; done
+	else
+		echo "  (пусто)"
+	fi
+	echo ""
+
+	echo "Исключённые (exclude):"
+	if [ -n "${exclude}" ]; then
+		for ip in ${exclude}; do echo "  - ${ip}"; done
+	else
+		echo "  (пусто)"
 	fi
 }

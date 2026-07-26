@@ -60,8 +60,7 @@ update_ipset(){
 	stage="${1}"
 
 	ready "${prefix}Заполняем ipset таблицу данными из защищенного списка"
-	/opt/apps/kvas/bin/main/ipset &> /dev/null &
-	[ $? = 0 ] && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	/opt/apps/kvas/bin/main/ipset &> /dev/null && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
 
 	if [ -f /opt/etc/init.d/S56dnsmasq ] ; then
 		refresh_dnsmasq_ipset_table
@@ -164,6 +163,14 @@ cmd_kvas_init(){
 	update_ipset "${stage}"
 	update_adblock
 
+	# Keenetic NDM — пересоздание VPN iptables правил (routing table + mangle)
+	# Этот скрипт вызывается Keenetic при старте VPN интерфейса,
+	# но после чистой установки его нужно вызвать вручную
+	# 100-vpn-mark требует env vars type=iptables table=mangle
+	[ -x "/opt/etc/ndm/netfilter.d/100-vpn-mark" ] && {
+		type=iptables table=mangle /opt/etc/ndm/netfilter.d/100-vpn-mark 2>/dev/null
+	}
+
 	[ "${stage}" = initd ] && update_time || all_services_restart
 
 	#log_alert "${prefix}Сброс пакета КВАС в исходное состояние ЗАВЕРШЕН!"
@@ -193,6 +200,14 @@ all_services_restart() {
 
 		service_restart 'DNS сервер DNSMasq'  'S56dnsmasq'
 		service_restart 'DNS сервер DNSCrypt' 'S09dnscrypt-proxy2'
+	fi
+
+	if [ -f /opt/apps/kvas/hysteria/bin/hysteria ]; then
+		[ -f /opt/bin/hysteria ] || ln -sf /opt/apps/kvas/hysteria/bin/hysteria /opt/bin/hysteria
+		[ -f /opt/etc/init.d/S99hysteria ] || ln -sf /opt/apps/kvas/hysteria/etc/init.d/S99hysteria /opt/etc/init.d/S99hysteria
+		log_warning 'Перезапуск Hysteria 2'
+
+		service_restart 'Hysteria 2' 'S99hysteria'
 	fi
 
 	if is_shadowsocks_enabled ; then
@@ -301,18 +316,7 @@ hint__commands_title() {
 }
 
 hint__if_ndnproxy_disabled() {
-	if ! is_dns_override ; then
-		return
-	fi
-
-	local commands_title
-	commands_title="$(hint__commands_title)"
-	printf '%b\n' \
-		"Системный ${YELLOW}DNS отключен${NOCL}." \
-		"${commands_title}" \
-		' no opkg dns-override' \
-		' system configuration save' \
-		' system reboot'
+	:
 }
 
 hint__if_dns_ipv6() {
@@ -378,7 +382,22 @@ ip4() (/opt/sbin/ip -4 "$@")
 #
 # ------------------------------------------------------------------------------------------
 cmd_help() {
-	cat < "/opt/apps/${APP_NAME}/etc/conf/${APP_NAME}.help"
+	local help_file="/opt/apps/${APP_NAME}/etc/conf/${APP_NAME}.help"
+	if [ -f "${help_file}" ]; then
+		local ESC
+		ESC=$(printf '\033')
+		export GREEN="${ESC}[1;32m"
+		export YELLOW="${ESC}[1;33m"
+		export RESET="${ESC}[m"
+		sed -e "s/^== \(.*\) ==\$/${GREEN} == \1 == ${RESET}/" \
+			-e "/^---/s/.*/${YELLOW}&${RESET}/" \
+			-e "/^Утилита КВАС\$/s/.*/${YELLOW}&${RESET}/" \
+			-e "/^Пакет представляет/s/.*/${YELLOW}&${RESET}/" \
+			-e "/^для защиты/s/.*/${YELLOW}&${RESET}/" \
+			-e "/^Поддержка:/s/.*/${YELLOW}&${RESET}/" \
+			-e "/^Автопереключение:/s/.*/${YELLOW}&${RESET}/" \
+			"${help_file}"
+	fi
 }
 
 
@@ -956,7 +975,7 @@ bridge_vpn_access_del() {
 			ip4__delete_routing_by_list_for_net "${guest_bridge_id}"
 
 			#       Слушаем 53 порт гостевого интерфейса
-			guest_net_ip=$(/opt/sbin/ip a | grep global | grep -E ' '"${guest_bridge_id}" | sed 's/inet \(.*\)\/.*/\1/' | tr -d ' ')
+			guest_net_ip=$(/opt/sbin/ip a | grep global | grep -E ' '"${guest_bridge_id}" | sed 's/inet \([0-9.]*\).*/\1/')
 			if cmd_adguardhome_status | grep -q "ВКЛЮЧЕН" ; then
 	#               Если доступен ADGUARDHOME
 					sed -i -e '/bind_hosts/,/port/{ /- '"${guest_net_ip}"'/d }' "${ADGUARDHOME_CONFIG}"
@@ -1177,7 +1196,7 @@ bridge_access_add() {
 		}
 
 #       Слушаем 53 порт гостевого интерфейса
-        guest_net_ip=$(/opt/sbin/ip a | grep global | grep -E ' '"${guest_bridge_id}" | sed 's/inet \(.*\)\/.*/\1/' | tr -d ' ')
+        guest_net_ip=$(/opt/sbin/ip a | grep global | grep -E ' '"${guest_bridge_id}" | sed 's/inet \([0-9.]*\).*/\1/')
         if cmd_adguardhome_status | grep -q "ВКЛЮЧЕН" ; then
 #           Если доступен ADGUARDHOME
 			grep -q "\- ${guest_net_ip}" "${ADGUARDHOME_CONFIG}" || \
@@ -2295,10 +2314,22 @@ cmd_interface_change() {
 
 create_vless_config(){
 	local vless_link=''
-	read_value "Ведите ссылку в формате 'vless://[данные]' :" vless_link
-	[ -f "${VLESS_CONFIG_FILE}" ] || cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}" 
-	# Считываем данные из ссылки в файл proxy vless конфигурации
-	vless_link_parse "${vless_link}" "${VLESS_CONFIG_FILE}"
+	while true; do
+		vless_link=''
+		read_value "Ведите ссылку в формате 'vless://[данные]' (q-пропустить, r-повторить):" vless_link
+		if [ "${vless_link}" = "q" ] || [ -z "${vless_link}" ]; then
+			echo "Настройка VLESS пропущена."
+			echo "Для настройки позже используйте: kvas vless new"
+			print_line
+			return 0
+		fi
+		[ -f "${VLESS_CONFIG_FILE}" ] || cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}"
+		vless_link_parse "${vless_link}" "${VLESS_CONFIG_FILE}"
+		if [ $? -eq 0 ]; then
+			break
+		fi
+		echo -e "${RED}Ошибка в ссылке. Попробуйте снова (r-повторить, q-пропустить)${NOCL}"
+	done
 	print_line
 }
 
@@ -2307,7 +2338,11 @@ start_vless(){
 	# Если нет файла конфигурации proxy vless
 	# то запросим ссылку и создаем его
 	[ -f ${VLESS_CONFIG_FILE} ] || create_vless_config
+	# Если ссылка была пропущена — конфига нет, выходим без ошибки
+	[ -f ${VLESS_CONFIG_FILE} ] || { echo "VLESS не настроен. Выполните: kvas vless new"; return 0; }
 	grep -q @ ${VLESS_CONFIG_FILE} && create_vless_config
+	# Если после повторного запроса конфига всё нет — пропускаем
+	[ -f ${VLESS_CONFIG_FILE} ] || { echo "VLESS не настроен. Выполните: kvas vless new"; return 0; }
 	
 	# Проверка конфигурации xray
 	check_xray_config=$(${XRAY} run -test -c ${VLESS_CONFIG_FILE})
@@ -2318,10 +2353,9 @@ start_vless(){
 		ready "Запускаем xray сервис..."
 		service_action S97xray start && when_ok "УСПЕШНО" 
 		vpn_on "${_inface_entware}" &> /dev/null
-		# Тестируем работу proxy vless
-		test_vless_proxy "${_inface_entware}"
+		# Проверяем работу (без вывода)
+		test_vless_proxy "${_inface_entware}" >/dev/null 2>&1
 		
-
 	else
 		# В случае, если есть ошибки в файле конфигурации, выводим их в консоль
 		echo -e "${BLUE}В файле ${VLESS_CONFIG_FILE} обнаружены следующие ошибки:${NOCL}"
@@ -2397,25 +2431,46 @@ select_vpn_interface() {
 	show_vpn_list
 
 	total=$(cat < "${INFACE_NAMES_FILE}" | wc -l)
+	local hysteria_num=$((total + 1))
+	local skip_num=$((total + 2))
 	while true; do
 		print_line
-		echo -en "${BLUE}Выберите номер варианта VPN соединения 1 - ${total} | S-скан. | Q-выход:${NOCL} "
+		echo -e "  ${GREEN}H${NOCL}) Hysteria 2 — настроить Hysteria (автоматическая установка)"
+		echo -e "  ${GREEN}R${NOCL}) Restore — восстановить настройки из резервной копии"
+		echo -e "  ${GREEN}S${NOCL}) Пропустить выбор — настроить позже"
+		echo ""
+		echo -en "${BLUE}Выберите номер 1-${total}, H, R, S, или Q-выход:${NOCL} "
 		read -r num_vpn_inface
 		if [[ "$num_vpn_inface" =~ ^[\-]?[0-9]+$ ]]; then
 			print_line
 			set_config_value "ADDR_MAN" ""
 			if [[ "$num_vpn_inface" -ge 1 && "$num_vpn_inface" -le "$total" ]]; then
-# set -x
-	#			Если выбрали уже интерфейс
-		#		Меняем интерфейс в файле ndm
 				inface_entware=$(get_vpn_interface_by_num "${num_vpn_inface}")
 				cli_inface=$(grep "${inface_entware}" "${INFACE_NAMES_FILE}" | cut -d"|" -f1)
 				switch_vpn_on "${inface_entware}" "${cli_inface}"
-
 			else
 				error "Число должно быть в пределах от 1 до ${total}"
 				continue
 			fi
+		elif [[ "$num_vpn_inface" =~ ^[Hh]$ ]]; then
+			print_line
+			echo -e "${GREEN}Hysteria 2 будет настроена после завершения setup...${NOCL}"
+			echo -e "${YELLOW}Установка отложена: DNS ещё не настроен, бинарник будет скачан позже.${NOCL}"
+			set_config_value "SETUP_HYSTERIA" "pending"
+			print_line
+			break
+		elif [[ "$num_vpn_inface" =~ ^[Rr]$ ]]; then
+			print_line
+			restore_backups
+			print_line
+			warning "Настройки восстановлены из резервной копии."
+			print_line
+			continue
+		elif [[ "$num_vpn_inface" =~ ^[Ss]$ ]]; then
+			print_line
+			echo -e "${YELLOW}Выбор интерфейса пропущен. Настройка позже: kvas vless new / kvas hysteria new${NOCL}"
+			print_line
+			break
 		elif [[ "$num_vpn_inface" =~ ^[Qq]$ ]]; then
 			print_line
 #			Если нажали на q
@@ -2449,7 +2504,7 @@ select_vpn_interface() {
 			print_line
 			cmd_interface_change "yes" "${is_install_stage}"
 		else
-			error "Введите цифру 1-${total} или S - сканирование, Q - выход."
+			error "Введите цифру 1-${total}, H-Hysteria, S-пропустить, Q-выход."
 			continue
 		fi
 		break
@@ -3231,24 +3286,16 @@ cmd_import_hosts() {
 		local added_count=0
 		local lines_cache=''
 		while read line; do
-			# заменитель шкалы прогресса, каждые 50 записей
 			readed_count=$((readed_count + 1))
 			if [ "$(( ${readed_count} % 50 ))" -eq 0 ]; then
 				echo -n '.'
 			fi
 
-			# уже добавлен, уникализация добавляемого
-			if grep -Fq -- "${line}" "${tmp_file}"; then
-				continue
-			fi
-
-			# IP не умеют самовосстанавливаться, ttl бесконечность
 			/opt/sbin/ipset -exist add "${IPSET_TABLE_NAME}" "${line}" timeout 0
 
 			lines_cache="${lines_cache}${line}"$'\n'
 			added_count=$((added_count + 1))
 			if [ "$(( ${added_count} % 50 ))" -eq 0 ]; then
-				# пишем в файл не построчно, а блоками
 				echo -n "${lines_cache}" >>"${tmp_file}"
 				lines_cache=''
 			fi
@@ -3274,43 +3321,46 @@ cmd_import_hosts() {
 		return
 	fi
 
-	# изначальный код без изменений
 	ready 'Импортируем хосты в список защищаемых доменов...'
 	clear_file_content "${user_list}"
-	#clear_file_content "${KVAS_LIST_FILE}"
+
+	# читаем существующий список один раз в память
+	local existing_hosts
+	existing_hosts=$(cat "${KVAS_LIST_FILE}" 2>/dev/null || true)
 
 	hosts_to_add_ubl=''
 	hosts_repeated_ubl=''
 	hosts_not_added=''
 	hosts_errors=''
 	while read -r line || [ -n "${line}" ]; do
-		# удаляем из строки комментарии - все что встречается после символа # и сам символ
 		host=$(echo "${line}" | sed 's/#.*$//g' | tr -s ' ')
-		#  пропускаем пустые строки и строки с комментариями
 		[ -z "${host}" ] && continue
-		#  пропускаем строки с комментариями
 		[ "${host:0:1}" = "#" ] && continue
 
-		case "$(cmd_add_one_host "${host}" "no" "import")" in
-		0) hosts_not_added="${hosts_not_added}${host}\n" ;;
-		1) hosts_repeated_bl="${hosts_repeated_bl}${host}\n" ;;
-		+) hosts_to_add_ubl="${hosts_to_add_ubl}${host}\n" ;;
-		2) hosts_errors="${hosts_errors}${host}\n";;
-		*) ;;
-		esac
+		if echo "${host}" | grep -qE -- "${regexp_ip}" ; then
+			hosts_to_add_ubl="${hosts_to_add_ubl}${host}\n"
+			continue
+		fi
+
+		clear_host=$(echo "${host}" | sed 's/\*//' | sed -n -E 's|^(https?://)?([^/]+).*|\2|p')
+		[ -z "${clear_host}" ] && { hosts_not_added="${hosts_not_added}${host}\n"; continue; }
+		echo "${clear_host}" | grep -q '\.' || { hosts_not_added="${hosts_not_added}${host}\n"; continue; }
+
+		if echo "${existing_hosts}" | grep -qE "^${clear_host}" ; then
+			hosts_repeated_ubl="${hosts_repeated_ubl}${host}\n"
+			continue
+		fi
+
+		hosts_to_add_ubl="${hosts_to_add_ubl}${host}\n"
 	done < "${user_list}"
 
-	# добавляем хосты в файл списочный
-	_hosts_to_add_ubl=$(echo -e "${hosts_to_add_ubl}" | sed '/^$/d; /^[-+.]/!s/\(.*\)/\1/')
-	echo -e "${_hosts_to_add_ubl}" >> "${KVAS_LIST_FILE}"
+	_hosts_to_add_ubl=$(echo -e "${hosts_to_add_ubl}" | sed '/^$/d')
+	[ -n "${_hosts_to_add_ubl}" ] && echo -e "${_hosts_to_add_ubl}" >> "${KVAS_LIST_FILE}"
 	clear_file_content "${KVAS_LIST_FILE}"
 
-	# если включен блокировщик рекламы
-	if cmd_ads_status | grep -q ВКЛЮЧЕН ; then
-		ads_list_hosts_update &> /dev/null
-	fi
+	cmd_ads_status | grep -q ВКЛЮЧЕН && ads_list_hosts_update &> /dev/null
 
-	cmd_kvas_init  "update" &> /dev/null
+	cmd_kvas_init "update" &> /dev/null
 	[ $? = 0 ] && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
 
 	num_not_added=$(rec_in_var "${hosts_not_added}")

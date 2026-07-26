@@ -525,6 +525,16 @@ NETS_TUNNEL='ezcfg0|78.47.125.180|shadowsocks|"ShadowSocks"'$'\n'
 
 # замена Singleton, чтобы скан был лишь при первом вызове
 NETS_INCOMING=''
+
+get_iface_prefix_by_pool() {
+	local pool_ip="${1}"
+	[ -z "${pool_ip}" ] && return
+	local iface
+	iface=$(/opt/sbin/ip -o addr show to "${pool_ip}" 2>/dev/null | awk '{print $2}' | sed 's/@.*//' | head -1)
+	[ -z "${iface}" ] && return
+	echo "${iface}" | sed 's/[0-9]*$//'
+}
+
 nets__set_incoming() {
 	if [ -n "${NETS_INCOMING}" ]; then
 		return
@@ -538,15 +548,17 @@ nets__set_incoming() {
 	if echo "${api_tags}" | grep -qF 'ipsec-xauth' ; then
 		api_info=$(curl -s '127.0.0.1:79/rci/crypto/virtual-ip-server-ikev2')
 		if [ -n "${api_info}" ] ; then
-			NETS_INCOMING="${NETS_INCOMING}"'xfrms+|'$(echo "${api_info}" \
-			  | jq -r '."pool-start" // empty')'|crypto/virtual-ip-server-ikev2|"VPN-сервер IKEv2/IPsec"'$'\n'
+			local pool_ip=$(echo "${api_info}" | jq -r '."pool-start" // empty')
+			[ -n "${pool_ip}" ] && NETS_INCOMING="${NETS_INCOMING}"'xfrms+|'"${pool_ip}"'|crypto/virtual-ip-server-ikev2|"VPN-сервер IKEv2/IPsec"'$'\n'
 		fi
 	fi
 	if echo "${api_tags}" | grep -qF 'ipsec-l2tp' ; then
 		api_info=$(curl -s '127.0.0.1:79/rci/crypto/l2tp-server')
 		if [ -n "${api_info}" ] ; then
-			NETS_INCOMING="${NETS_INCOMING}"'l2tp+|'$(echo "${api_info}" \
-			  | jq -r '."pool-start" // empty')'|crypto/l2tp-server|"VPN-сервер L2TP/IPsec"'$'\n'
+			local pool_ip=$(echo "${api_info}" | jq -r '."pool-start" // empty')
+			local prefix=$(get_iface_prefix_by_pool "${pool_ip}")
+			[ -z "${prefix}" ] && prefix='l2tp'
+			[ -n "${pool_ip}" ] && NETS_INCOMING="${NETS_INCOMING}"''"${prefix}"'+|'"${pool_ip}"'|crypto/l2tp-server|"VPN-сервер L2TP/IPsec"'$'\n'
 		fi
 	fi
 
@@ -554,15 +566,19 @@ nets__set_incoming() {
 	if echo "${api_tags}" | grep -qF 'vpn-oc' ; then
 		api_info=$(curl -s '127.0.0.1:79/rci/oc-server')
 		if [ -n "${api_info}" ] ; then
-			NETS_INCOMING="${NETS_INCOMING}"'oc+|'$(echo "${api_info}" \
-			  | jq -r '.config."pool-start" // empty')'|oc-server|"VPN-сервер OpenConnect"'$'\n'
+			local pool_ip=$(echo "${api_info}" | jq -r '.config."pool-start" // empty')
+			local prefix=$(get_iface_prefix_by_pool "${pool_ip}")
+			[ -z "${prefix}" ] && prefix='oc'
+			[ -n "${pool_ip}" ] && NETS_INCOMING="${NETS_INCOMING}"''"${prefix}"'+|'"${pool_ip}"'|oc-server|"VPN-сервер OpenConnect"'$'\n'
 		fi
 	fi
 	if echo "${api_tags}" | grep -qF 'sstp' ; then
 		api_info=$(curl -s '127.0.0.1:79/rci/sstp-server')
 		if [ -n "${api_info}" ] ; then
-			NETS_INCOMING="${NETS_INCOMING}"'sstp+|'$(echo "${api_info}" \
-			  | jq -r '.config."pool-start" // empty')'|sstp-server|"VPN-сервер SSTP"'$'\n'
+			local pool_ip=$(echo "${api_info}" | jq -r '.config."pool-start" // empty')
+			local prefix=$(get_iface_prefix_by_pool "${pool_ip}")
+			[ -z "${prefix}" ] && prefix='sstp'
+			[ -n "${pool_ip}" ] && NETS_INCOMING="${NETS_INCOMING}"''"${prefix}"'+|'"${pool_ip}"'|sstp-server|"VPN-сервер SSTP"'$'\n'
 		fi
 	fi
 

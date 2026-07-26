@@ -45,6 +45,7 @@ define Package/kvas/install
 
 	$(INSTALL_BIN) opt/etc/init.d/S96kvas $(1)/opt/etc/init.d
 	$(CP) ./opt/. $(1)/opt/apps/kvas
+	$(INSTALL_BIN) install_hysteria.sh $(1)/opt/apps/kvas/bin
 endef
 
 #---------------------------------------------------------------------
@@ -78,6 +79,7 @@ sed -i "s/\(APP_RELEASE=\).*/\1$(PKG_RELEASE)/; s/^,//; s/\,/ /g;" "/opt/etc/kva
 
 print_line
 echo -e "Для настройки пакета КВАС наберите \033[36mkvas setup\033[m"
+echo -e "Для поддержки Hysteria 2 наберите \033[36mkvas hysteria help\033[m"
 print_line
 
 endef

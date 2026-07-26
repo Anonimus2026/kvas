@@ -662,17 +662,37 @@ main() {
 			}' | sort -u > "$_tmp"
 			# Query Keenetic API for VPN server pools
 			api_tags=$(curl -s "127.0.0.1:79/rci/show/tags/" 2>/dev/null)
+			_iface_prefix_by_pool() {
+				local pool_ip="$1"
+				[ -z "$pool_ip" ] && return
+				local iface
+				iface=$(/opt/sbin/ip -o addr show to "$pool_ip" 2>/dev/null | awk '{print $2}' | sed 's/@.*//' | head -1)
+				[ -z "$iface" ] && return
+				echo "$iface" | sed 's/[0-9]*$//'
+			}
 			if echo "$api_tags" | grep -qF 'vpn-oc' 2>/dev/null; then
 				oc_ip=$(curl -s "127.0.0.1:79/rci/oc-server" 2>/dev/null | jq -r '.config."pool-start"' 2>/dev/null)
-				[ -n "$oc_ip" ] && echo "oc+|$oc_ip" >> "$_tmp"
+				if [ -n "$oc_ip" ]; then
+					prefix=$(_iface_prefix_by_pool "$oc_ip")
+					[ -z "$prefix" ] && prefix="oc"
+					echo "${prefix}+|$oc_ip" >> "$_tmp"
+				fi
 			fi
 			if echo "$api_tags" | grep -qF 'sstp' 2>/dev/null; then
 				sstp_ip=$(curl -s "127.0.0.1:79/rci/sstp-server" 2>/dev/null | jq -r '.config."pool-start"' 2>/dev/null)
-				[ -n "$sstp_ip" ] && echo "sstp+|$sstp_ip" >> "$_tmp"
+				if [ -n "$sstp_ip" ]; then
+					prefix=$(_iface_prefix_by_pool "$sstp_ip")
+					[ -z "$prefix" ] && prefix="sstp"
+					echo "${prefix}+|$sstp_ip" >> "$_tmp"
+				fi
 			fi
 			if echo "$api_tags" | grep -qF 'ipsec-l2tp' 2>/dev/null; then
 				l2tp_ip=$(curl -s "127.0.0.1:79/rci/crypto/l2tp-server" 2>/dev/null | jq -r '."pool-start"' 2>/dev/null)
-				[ -n "$l2tp_ip" ] && echo "l2tp+|$l2tp_ip" >> "$_tmp"
+				if [ -n "$l2tp_ip" ]; then
+					prefix=$(_iface_prefix_by_pool "$l2tp_ip")
+					[ -z "$prefix" ] && prefix="l2tp"
+					echo "${prefix}+|$l2tp_ip" >> "$_tmp"
+				fi
 			fi
 			if echo "$api_tags" | grep -qF 'ipsec-xauth' 2>/dev/null; then
 				ikev2_ip=$(curl -s "127.0.0.1:79/rci/crypto/virtual-ip-server-ikev2" 2>/dev/null | jq -r '."pool-start"' 2>/dev/null)
