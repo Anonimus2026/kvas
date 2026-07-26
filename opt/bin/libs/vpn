@@ -2916,7 +2916,7 @@ cmd_add_one_host() {
 	}
 
 	# Проверяем есть ли в введенной строке имя метки -tag или нет
-	has_tag=$([ -n "$(echo "${*}" | grep -oP '(?<=-tag )\S+')" ])
+	has_tag=$([ -n "$(echo "${*}" | sed -n 's/.*-tag \([^ ]*\).*/\1/p')" ])
 
 	if [ "${has_tag}" ] ; then
 		tag_name=$(echo "${*}" | sed 's/.*\-tag \(.*\)/\1/')
