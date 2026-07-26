@@ -116,6 +116,10 @@ case "${1}" in
 			[ -n "$_skip_first" ] && { _skip_first=; continue; }
 			_domains="$_domains${_domains:+ }$_arg"
 		done
+		if [ "$_domains" = "tags" ]; then
+			del_tag_section_to_protect_list
+			exit 0
+		fi
 		for _dom in $_domains; do
 			[ -z "$_dom" ] && continue
 			ready "Удаляем $_dom из списка защищенных..."
