@@ -1,11 +1,29 @@
 # PRD: KVAS + Hysteria 2 + Failover
 
-**Версия:** 1.1.9_beta-10-253 (последняя)
-**Дата:** 24.07.2026
+**Версия:** 1.1.9_beta-10-255 (последняя)
+**Дата:** 25.07.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
 **PR:** https://github.com/qzeleza/kvas/pull/318
 **Оригинал:** https://github.com/qzeleza/kvas
+
+---
+
+## 0. Структура проекта (АКТУАЛЬНО)
+
+### Исходники для редактирования
+```
+C:\Users\Pavel\kvas\lastest\                    ← РАБОЧАЯ ПАПКА (вместо v138_extract)
+C:\Users\Pavel\kvas\lastest\apps\kvas\          ← файлы пакета
+C:\Users\Pavel\kvas\backup_v255.tar.gz          ← бэкап v255 (использовать как основу)
+```
+
+### Сборка
+```
+Docker контейнер: builder
+Внутри контейнера: /home/me/lastest/opt/        ← исходники для сборки
+Скрипт сборки: /home/me/Entware/.../build.sh
+```
 
 ---
 
@@ -377,8 +395,10 @@ git push fork main
 
 **Шаг 5: Загрузка ipk на GitHub**
 ```powershell
-gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-164_all.ipk" --repo Anonimus2026/kvas --clobber
+gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_all.ipk" --repo Anonimus2026/kvas --clobber
 ```
+
+**ВАЖНО:** Всегда делать это после каждой сборки. Github Release `v1.1.9` — единственное место откуда `kvas upgrade` качает обновления. Если не загрузить ipk, `kvas upgrade` на роутерах не найдет новую версию.
 
 **Шаг 6: Обновление описания релиза**
 ```powershell
@@ -439,7 +459,3 @@ gh release edit v1.1.9 --repo Anonimus2026/kvas --title "Kvas v164" --body "..."
 - **NEW:** kvas add/del множественное удаление
 - **NEW:** kvas backup/restore
 - **NEW:** Monitor web UI
-
-### v253 (24.07.2026)
-- **FIX:** S96kvas ���������� ����� ������������ � ��������� build.sh (���� ����������� S96kvas)
-- **FIX:** �������� monitor � ������ ���������� SETUP_FINISHED � kvas
