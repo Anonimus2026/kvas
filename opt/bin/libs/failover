@@ -61,10 +61,19 @@ check_vless() {
     
     if [ "$was_running" -eq 0 ]; then
         /opt/etc/init.d/S97xray start 2>/dev/null
-        sleep 2
     fi
     
-    local ip=$(curl -s --connect-timeout 5 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+    local ip=""
+    local attempt=0
+    while [ $attempt -lt 3 ]; do
+        ip=$(curl -s --connect-timeout 3 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+        if [ -n "$ip" ] && echo "$ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+            break
+        fi
+        attempt=$((attempt + 1))
+        [ $attempt -lt 3 ] && sleep 2
+    done
+    
     local result=1
     if [ -n "$ip" ] && echo "$ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
         result=0

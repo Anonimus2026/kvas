@@ -114,26 +114,28 @@ vless_link_parse() {
 #-------------------------------------------------------------------------------
 
     local link="$1"
-    local tag="${link/vless://}"
+    local tag=$(echo "$link" | sed 's|^vless://||')
     local _vless_file=${2:-$VLESS_CONFIG_FILE}
 
     # парсим параметры из ссылки vless://
+    # Сначала убираем фрагмент #name
+    tag=$(echo "${tag}" | sed 's/#.*//')
 
-    local vless_id=$(echo "${tag}" | sed 's/.*\/\/\(.*\)@.*/\1/' )
+    local vless_id=$(echo "${tag}" | sed 's/@.*//' )
     local vless_address=$(echo "${tag}" | sed 's/.*@\(.*\):.*/\1/')
     local vless_port=$(echo "${tag}" | sed 's/.*@.*:\(.*\)?.*/\1/')
-    local vless_network=$(echo "${tag}" | sed 's/.*type=\(.*\)&.*/\1/' | cut -d'&' -f1)
-    local vless_sni=$(echo "${tag}" | sed 's/.*\?.*sni=\(.*\)/\1/' | cut -d'&' -f1)
-    local vless_short_id=$(echo "${tag}" | sed 's/.*\?.*sid=\(.*\)/\1/' | cut -d'&' -f1)
-    local vless_browser_fp=$(echo "${tag}" | sed 's/.*\?.*fp=\(.*\)/\1/' | cut -d'&' -f1)
-    local vless_pub_key=$(echo "${tag}" | sed 's/.*\?.*pbk=\(.*\)/\1/' | cut -d'&' -f1)
-    local vless_security=$(echo "${tag}" | sed 's/.*\?.*security=\(.*\)/\1/' | cut -d'&' -f1)
+    # Используем [?&] для корректного поиска параметров в query string
+    # BusyBox sed не поддерживает \? как GNU sed, поэтому [?&] надёжнее
+    local vless_network=$(echo "${tag}" | sed 's/.*[?&]type=\([^&]*\).*/\1/')
+    local vless_sni=$(echo "${tag}" | sed 's/.*[?&]sni=\([^&]*\).*/\1/')
+    local vless_short_id=$(echo "${tag}" | sed 's/.*[?&]sid=\([^&]*\).*/\1/')
+    local vless_browser_fp=$(echo "${tag}" | sed 's/.*[?&]fp=\([^&]*\).*/\1/')
+    local vless_pub_key=$(echo "${tag}" | sed 's/.*[?&]pbk=\([^&]*\).*/\1/')
+    local vless_security=$(echo "${tag}" | sed 's/.*[?&]security=\([^&]*\).*/\1/')
+    local vless_flow=$(echo "${tag}" | sed 's/.*[?&]flow=\([^&]*\).*/\1/')
 
     # Проверка наличия обязательных параметров
 
-    [ "${vless_security}" = "reality" ] || {
-        error "Тип протокола ${vless_security} не поддерживается"; exit 1
-    }
     [ -z "${vless_id}" ] && {
         vless_id=$(echo "${tag}" | sed 's/\(.*\)@.*:.*/\1/')
         [ -z "${vless_id}" ] && {
@@ -152,35 +154,190 @@ vless_link_parse() {
     [ -z "${vless_sni}" ] && {
         error "Не задано имя сервера"; exit 1
     }
-    [ -z "${vless_short_id}" ] && {
-        error "Не задан сокращенный id "; exit 1
-    }
-    [ -z "${vless_browser_fp}" ] && {
-        error "Не задан тип браузера"; exit 1
-    }
-    [ -z "${vless_pub_key}" ] && {
-        error "Не задан публичный ключ сервера"; exit 1
-    }
+    # Устанавливаем security по умолчанию если не задан
+    [ -z "${vless_security}" ] && vless_security="reality"
 
-    # Меняем значения в конфигурационном файле
-    sed -i "\
-        /inbounds/,/outbounds/ {\
-            s/\(.*listen\": \).*\(\,\)/\1\"${PROXY_LOCAL_IP}\"\2/; \
-            s/\(.*port\": \).*\(\,\)/\1\"${PROXY_VLESS_PORT}\"\2/; \
-	    }; \
-        /outbounds/,/realitySettings/ {\
-            s/\(.*address\": \).*\(\,\)/\1\"${vless_address}\"\2/; \
-	        s/\(.*port\": \).*\(\,\)/\1${vless_port}\2/; \
-	        s/\(.*id\": \).*\(\,\)/\1\"${vless_id}\"\2/; \
-	    };  \
-        /streamSettings/,/tag/ {\
-            s/\(.*network\": \).*\(\,\)/\1\"${vless_network}\"\2/;  \
-            s/\(.*publicKey\": \).*\(\,\)/\1\"${vless_pub_key}\"\2/; \
-            s/\(.*fingerprint\": \).*\(\,\)/\1\"${vless_browser_fp}\"\2/; \
-            s/\(.*serverName\": \).*\(\,\)/\1\"${vless_sni}\"\2/;
-            s/\(.*shortId\": \).*\(\,\)/\1\"${vless_short_id}\"\2/;
-	    };"  \
-   "${_vless_file}"
+    # Определяем flow и streamSettings в зависимости от типа подключения
+    local flow_line=""
+    local stream_settings=""
+
+    if [ "${vless_security}" = "reality" ]; then
+        # Для Reality: flow обязателен
+        [ -z "${vless_flow}" ] && vless_flow="xtls-rprx-vision"
+        flow_line="\"flow\": \"${vless_flow}\","
+
+        [ -z "${vless_short_id}" ] && {
+            error "Не задан сокращенный id"; exit 1
+        }
+        [ -z "${vless_browser_fp}" ] && {
+            error "Не задан тип браузера"; exit 1
+        }
+        [ -z "${vless_pub_key}" ] && {
+            error "Не задан публичный ключ сервера"; exit 1
+        }
+
+        stream_settings="\"security\": \"reality\",
+                \"realitySettings\": {
+                    \"publicKey\": \"${vless_pub_key}\",
+                    \"fingerprint\": \"${vless_browser_fp}\",
+                    \"serverName\": \"${vless_sni}\",
+                    \"shortId\": \"${vless_short_id}\",
+                    \"spiderX\": \"/\"
+                },"
+    elif [ "${vless_network}" = "xhttp" ]; then
+        # Для xhttp: flow НЕ нужен
+        flow_line=""
+        stream_settings="\"security\": \"tls\",
+                \"tlsSettings\": {
+                    \"serverName\": \"${vless_sni}\",
+                    \"fingerprint\": \"${vless_browser_fp:-chrome}\"
+                },"
+    else
+        # Для других типов (tcp, grpc, ws)
+        flow_line=""
+        stream_settings="\"security\": \"tls\",
+                \"tlsSettings\": {
+                    \"serverName\": \"${vless_sni}\"
+                },"
+    fi
+
+    # Генерируем конфиг в зависимости от типа подключения
+    # flow нужен ТОЛЬКО для reality + НЕ xhttp
+    local need_flow="no"
+    if [ "${vless_security}" = "reality" ] && [ "${vless_network}" != "xhttp" ]; then
+        need_flow="yes"
+    fi
+
+    mkdir -p "$(dirname "${_vless_file}")"
+
+    if [ "${vless_security}" = "reality" ]; then
+        # Определяем строку flow
+        local flow_line=""
+        if [ "${need_flow}" = "yes" ]; then
+            flow_line='
+                                "flow": "xtls-rprx-vision",'
+        fi
+
+        cat > "${_vless_file}" << EOF
+
+{
+    "log": {
+        "access": "/tmp/log/xray-access.log",
+        "error": "/tmp/log/xray-errors.log",
+        "loglevel": "error"
+    },
+    "routing": {
+        "rules": [],
+        "domainStrategy": "AsIs"
+    },
+    "inbounds": [
+        {
+            "listen": "${PROXY_LOCAL_IP}",
+            "port": "${PROXY_VLESS_PORT}",
+            "protocol": "socks",
+            "settings": {
+                "udp": true
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "tag": "vless",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "${vless_address}",
+                        "port": ${vless_port},
+                        "users": [
+                            {
+                                "id": "${vless_id}",${flow_line}
+                                "encryption": "none"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "${vless_network}",
+                "security": "reality",
+                "realitySettings": {
+                    "publicKey": "${vless_pub_key}",
+                    "fingerprint": "${vless_browser_fp}",
+                    "serverName": "${vless_sni}",
+                    "shortId": "${vless_short_id}",
+                    "spiderX": "/"
+                },
+                "tcpSettings": {
+                    "header": {
+                        "type": "none"
+                    }
+                }
+            }
+        }
+    ]
+}
+EOF
+    else
+        # Для xhttp/tcp/grpc/ws — без flow и realitySettings
+        cat > "${_vless_file}" << EOF
+
+{
+    "log": {
+        "access": "/tmp/log/xray-access.log",
+        "error": "/tmp/log/xray-errors.log",
+        "loglevel": "error"
+    },
+    "routing": {
+        "rules": [],
+        "domainStrategy": "AsIs"
+    },
+    "inbounds": [
+        {
+            "listen": "${PROXY_LOCAL_IP}",
+            "port": "${PROXY_VLESS_PORT}",
+            "protocol": "socks",
+            "settings": {
+                "udp": true
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "tag": "vless",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "${vless_address}",
+                        "port": ${vless_port},
+                        "users": [
+                            {
+                                "id": "${vless_id}",
+                                "encryption": "none"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "${vless_network}",
+                "security": "${vless_security}",
+                "tlsSettings": {
+                    "serverName": "${vless_sni}",
+                    "fingerprint": "${vless_browser_fp:-chrome}"
+                },
+                "tcpSettings": {
+                    "header": {
+                        "type": "none"
+                    }
+                }
+            }
+        }
+    ]
+}
+EOF
+    fi
 
     return 0
 }

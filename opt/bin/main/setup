@@ -303,6 +303,9 @@ save_backups(){
 	backup_copy "${KVAS_CONF_FILE}" "${KVAS_CONFIG_BACKUP}"
 	backup_copy "${KVAS_LIST_FILE}" "${KVAS_LIST_FILE_BACKUP}"
 
+	# Бэкап vless/xray конфига
+	backup_copy "${VLESS_CONFIG_FILE}" "${VLESS_CONFIG_FILE_BACKUP}"
+
 	# Бэкап hysteria конфига (если есть)
 	backup_copy "${HYSTERIA_CONFIG}" "${HYSTERIA_CONFIG_BACKUP}"
 	backup_copy "${HYSTERIA_ENV_FILE}" "${HYSTERIA_ENV_BACKUP}"

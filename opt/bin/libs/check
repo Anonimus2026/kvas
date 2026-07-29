@@ -139,33 +139,36 @@ vpn_check(){
 		if [ "${connected}" = 'on' ]; then
 			when_ok "ПОДКЮЧЕНО"
 
+			# Проверяем реальную работу через прокси
+			ready "Проверка работоспособности прокси"
+			local test_ip=$(curl -s --connect-timeout 5 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+			if [ -n "$test_ip" ] && echo "$test_ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+				when_ok "РАБОТАЕТ (IP: $test_ip)"
+			else
+				when_bad "НЕ РАБОТАЕТ"
+			fi
+
 			ready "Таблица VPN маршрутов id=1001"
-			/opt/etc/ndm/fs.d/100-vpn start
-			if /opt/sbin/ip route show table 1001 | grep -qv 'default'; then
+			[ -x "/opt/etc/ndm/fs.d/100-vpn" ] && /opt/etc/ndm/fs.d/100-vpn start 2>/dev/null
+			if /opt/sbin/ip route show table 1001 2>/dev/null | grep -qv 'default'; then
 				when_ok "ЗАПОЛНЕНА"
 
 				ready "Таблица VPN маршрутов id=1001 в правилах маркировки "
-				if [ -n "$(/opt/sbin/ip rule show | grep 1001)" ]; then
+				if [ -n "$(/opt/sbin/ip rule show 2>/dev/null | grep 1001)" ]; then
 					when_ok "ПРИСУТСТВУЕТ"
 
 					ready "Правила маркировки трафика в iptable"
-					/opt/etc/ndm/netfilter.d/100-vpn-mark
-					if [ "$(save_iptables | grep -c "${VPN_IPTABLES_CHAIN}")" -ge 2 ]; then
+					[ -x "/opt/etc/ndm/netfilter.d/100-vpn-mark" ] && /opt/etc/ndm/netfilter.d/100-vpn-mark 2>/dev/null
+					if [ -n "${VPN_IPTABLES_CHAIN}" ] && [ "$(save_iptables | grep -c "${VPN_IPTABLES_CHAIN}")" -ge 2 ]; then
 						when_ok "ДОБАВЛЕНЫ"
 					else
 						when_bad "ОТСУТСТВУЮТ"
-						error "Запустите диагностику командой kvas debug"
-						exit 1
 					fi
 				else
 					when_bad "ОТСУТСТВУЕТ"
-					error "Запустите диагностику командой kvas debug"
-					exit 1
 				fi
 			else
 				when_bad "ПУСТА"
-				error "Запустите диагностику командой kvas debug"
-				exit 1
 			fi
 		else
 			when_bad "ОСТАНОВЛЕНО"
@@ -264,7 +267,11 @@ dnscrypt_proxy_check() {
 # ------------------------------------------------------------------------------------------
 iptable_check() {
 	ready "Наличие правил защиты в iptable"
-	count_local_nets=$(cat < "${EXCLUDED_NET_FILE}" | wc -l)
+	if [ -n "${EXCLUDED_NET_FILE}" ] && [ -f "${EXCLUDED_NET_FILE}" ]; then
+		count_local_nets=$(cat < "${EXCLUDED_NET_FILE}" | wc -l)
+	else
+		count_local_nets=0
+	fi
 	count_ip4tables_rules=$(save_iptables \
 		| grep -E "${IPSET_TABLE_NAME}|${VPN_IPTABLES_CHAIN}|${SSR_IPTABLES_CHAIN}" \
 		| grep -c '\-A')
@@ -290,8 +297,7 @@ iptable_check() {
 			else
 				script=/opt/etc/ndm/netfilter.d/100-vpn-mark
 			fi
-			error "Проверьте работу скрипта ${script}"
-			exit 1
+			[ -x "${script}" ] && error "Проверьте работу скрипта ${script}"
 		fi
 	fi
 }
@@ -506,9 +512,14 @@ ipset_site_visit_check() {
 }
 
 cmd_test_warning() {
-	echo 'Данная команда ещё не обновлена под новую версию Кваса.'
-	echo 'Предыдущая может сообщать не верную информацию или даже что-нибудь не верно обновить.'
-	echo 'Если всё равно хотите ей воспользоваться, вызовите kvas test_old'
+	echo "=== Проверка состояния KVAS ==="
+	print_line
+	cmd_state_checker "${1}"
+	print_line
+	echo "Проверка завершена."
+	echo "Для подробной отладки: kvas debug"
+	echo "Для проверки Hysteria: kvas hysteria test"
+	echo "Для проверки failover: kvas failover status"
 }
 
 # ------------------------------------------------------------------------------------------
@@ -537,6 +548,35 @@ cmd_state_checker() {
 		dnscrypt_proxy_check
 # 		Проверяем работу блокировки рекламы
 		adblock_dnsmasq_check
+	fi
+	print_line
+#	Проверяем работу Hysteria 2
+	if [ -f "/opt/apps/kvas/hysteria/bin/hysteria" ]; then
+		ready "Проверка Hysteria 2"
+		if [ -f "/var/run/hysteria.pid" ] && kill -0 $(cat /var/run/hysteria.pid 2>/dev/null) 2>/dev/null; then
+			# Реальная проверка через прокси
+			local env_conf="/opt/apps/kvas/hysteria/etc/conf/env.sh"
+			if [ -f "$env_conf" ]; then
+				. "$env_conf"
+				if [ -n "$PROXY_LOCAL_IP" ] && [ -n "$PROXY_LOCAL_PORT_SOCKS" ]; then
+					local hysteria_ip=$(curl -s --connect-timeout 8 --max-time 12 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
+					if [ -z "$hysteria_ip" ] || echo "$hysteria_ip" | grep -q -E "(Failed|Error|404|html)"; then
+						hysteria_ip=$(curl -s --connect-timeout 8 --max-time 12 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ipinfo.io/ip" 2>/dev/null)
+					fi
+					if [ -n "$hysteria_ip" ] && echo "$hysteria_ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+						when_ok "РАБОТАЕТ (IP: $hysteria_ip)"
+					else
+						when_bad "РАБОТАЕТ (туннель не отвечает)"
+					fi
+				else
+					when_bad "КОНФИГ НЕ НАСТРОЕН"
+				fi
+			else
+				when_bad "КОНФИГ ОТСУТСТВУЕТ"
+			fi
+		else
+			when_bad "ОСТАНОВЛЕНА"
+		fi
 	fi
 	print_line
 #	По наличию файла ниже определяем наличие использования shadowsocks

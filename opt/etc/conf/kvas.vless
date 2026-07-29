@@ -12,7 +12,7 @@
     "inbounds": [
         {
             "listen": "127.0.0.1",
-            "port":  @VLESS_SSR_PORT,
+            "port":  "@VLESS_SSR_PORT",
             "protocol": "socks",
             "settings": {
                 "udp": true
@@ -27,7 +27,7 @@
                 "vnext": [
                     {
                         "address": "@VLESS_ADDRESS",
-                        "port": @VLESS_PORT,
+                        "port": "@VLESS_PORT",
                         "users": [
                             {
                                 "id": "@VLESS_ID",
