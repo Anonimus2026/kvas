@@ -165,8 +165,12 @@ get_separated_host_list() {
 restart_dns_service(){
 
 	ready "${prefix}Перезапускаем сервис dnsmasq"
-	/opt/etc/init.d/S56dnsmasq restart &>/dev/null
-	[ $? = 0 ] && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	if kill -HUP "$(pidof dnsmasq)" 2>/dev/null; then
+		when_ok "УСПЕШНО"
+	else
+		/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+		[ $? = 0 ] && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	fi
 }
 
 #--------------------------------------------------------------
@@ -178,42 +182,48 @@ cmd_ads_add_host(){
 
 	exit_when_adguard_on status; [ "${status}" = 0 ] && {
 		host=${1//\*/}
-	#	Проверяем есть ли сам файл для исключений и есть ли в нем записи.
-		[ -f "${ADBLOCK_LIST_EXCEPTION}" ] || touch "${ADBLOCK_LIST_EXCEPTION}"
-	#	Проверяем есть ли уже в списке переданный домен
-		if cat < "${ADBLOCK_LIST_EXCEPTION}" | grep -q "${host}" ; then
-			warning "Данный домен уже был ранее удален из списка блокировки рекламы."
+		[ -z "${host}" ] && {
+			warning "Не задан домен. Использование: kvas adblock add <host>"
+			return
+		}
+	#	Проверяем есть ли сам файл для блокировки и есть ли в нем записи.
+		[ -f "${ADBLOCK_BLOCK_FILE}" ] || touch "${ADBLOCK_BLOCK_FILE}"
+	#	Проверяем есть ли уже в списке переданный домен (точное совпадение)
+		if grep -qxF "${host}" "${ADBLOCK_BLOCK_FILE}"; then
+			warning "Данный домен уже добавлен в список блокировки рекламы."
 		else
-			echo "${host}" >> "${ADBLOCK_LIST_EXCEPTION}"
-			nlines_amount=$(cat < "${ADBLOCK_HOSTS_FILE}" | wc -l)
-			ready "Доменное имя ${host} удалено из списка блокировки рекламы"
-			exclude_all="$(get_separated_host_list "${ADBLOCK_LIST_EXCEPTION}")"
-			sed -i "/.*.${host}$/d" "${ADBLOCK_HOSTS_FILE}" && \
-			when_ok "УСПЕШНО" || when_bad "С ОШИБКОЙ"
-			nlines_excluded=$(cat < "${ADBLOCK_HOSTS_FILE}" | wc -l)
-			diff_count=$((nlines_amount-nlines_excluded))
-			ready "Всего из списка блокировки рекламы удалено хостов"
-			when_ok "${diff_count}"
-			restart_dns_service
+			echo "${host}" >> "${ADBLOCK_BLOCK_FILE}"
+		#	если домен был в списке исключений — убираем его оттуда
+			[ -f "${ADBLOCK_LIST_EXCEPTION}" ] && sed -i "/.*${host}$/d" "${ADBLOCK_LIST_EXCEPTION}"
+			ready "Доменное имя ${host} добавлено в список блокировки рекламы"
 		fi
+	#	Гарантируем, что домен реально в hosts-файле блокировки (даже если уже был в списке)
+		if ! grep -qF "0.0.0.0 ${host}" "${ADBLOCK_HOSTS_FILE}"; then
+			echo "0.0.0.0 ${host}" >> "${ADBLOCK_HOSTS_FILE}" && \
+			when_ok "УСПЕШНО" || when_bad "С ОШИБКОЙ"
+		fi
+		restart_dns_service
 	}
 }
 
 #--------------------------------------------------------------
 #
-# 	Удаляем доменное имя из списка исключений.
+# 	Удаляем доменное имя из списка блокировки.
 #
 #--------------------------------------------------------------
 cmd_ads_del_from_skip_list(){
 	exit_when_adguard_on status; [ "${status}" = 0 ] && {
 		host=${1//\*/}
 
-		if [ -f "${ADBLOCK_LIST_EXCEPTION}" ] ; then
-			ready "Доменное имя ${host} удалено из списка исключений"
-			sed -i "/.*${host}$/d" "${ADBLOCK_HOSTS_FILE}" && when_ok "УСПЕШНО" || when_bad "С ОШИБКОЙ"
+		if [ -f "${ADBLOCK_BLOCK_FILE}" ]; then
+			ready "Доменное имя ${host} удалено из списка блокировки рекламы"
+			sed -i "/.*${host}$/d" "${ADBLOCK_BLOCK_FILE}" && \
+			sed -i "/.*${host}$/d" "${ADBLOCK_HOSTS_FILE}" && \
+			[ -f "${ADBLOCK_LIST_EXCEPTION}" ] && sed -i "/.*${host}$/d" "${ADBLOCK_LIST_EXCEPTION}" && \
+			when_ok "УСПЕШНО" || when_bad "С ОШИБКОЙ"
 			restart_dns_service
 		else
-			warning "Списка исключений еще не существует. "
+			warning "Список блокировки еще не существует. "
 			warning "Добавьте в него домен командой 'kvas adblock add <host>'"
 		fi
 	}
@@ -229,10 +239,19 @@ cmd_ads_del_from_skip_list(){
 ads_remove_white_hosts(){
 
 	if [ -f "${KVAS_LIST_FILE}" ] && [ "$(cat < "${KVAS_LIST_FILE}" | wc -l )" -ge 1 ]; then
-		exclude_com=".*.$(cat < "${KVAS_LIST_FILE}" | tr -d '*' | sed ':a;N;$!ba;s/\n/$|.*./g')$"
 		ready "Удаляем хосты, находящиеся в защищенном списке"
 		TMP_FILE="/opt/tmp/hosts.tmp"
-		cat < "${ADBLOCK_HOSTS_FILE}" | grep -vE "${exclude_com}" > "${TMP_FILE}"
+		awk '
+			NR==FNR { gsub(/\*/, "", $0); if ($0 !~ /^#/ && $0 != "") wl[$0]=1; next }
+			{
+				host=$2; keep=1; h=host
+				while (h != "") {
+					if (h in wl) { keep=0; break }
+					h=substr(h,2)
+				}
+				if (keep) print
+			}
+		' "${KVAS_LIST_FILE}" "${ADBLOCK_HOSTS_FILE}" > "${TMP_FILE}"
 		mv -f "${TMP_FILE}" "${ADBLOCK_HOSTS_FILE}"
 		when_ok "УСПЕШНО"
 	fi

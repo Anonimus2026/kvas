@@ -116,7 +116,9 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 
 <div class="tabs">
   <div class="tab active" data-tab="manage" onclick="switchTab('manage')">Управление</div>
+  <div class="tab" data-tab="tags" onclick="switchTab('tags')">Закваски</div>
   <div class="tab" data-tab="route" onclick="switchTab('route')">Маршрутизация</div>
+  <div class="tab" data-tab="parental" onclick="switchTab('parental')">Родительский контроль</div>
   <div class="tab" data-tab="monitor" onclick="switchTab('monitor')">Мониторинг трафика</div>
 </div>
 
@@ -149,8 +151,8 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
     </div>
     <div class="card-row" style="margin-top:8px;">
       <input type="text" id="hostSearch" placeholder="Поиск..." oninput="filterHosts()" style="flex:1;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
-      <button class="btn btn-sm" onclick="saveHosts()">Сохранить список</button>
-      <label class="btn btn-sm">Загрузить список <input type="file" id="hostFileInput" accept=".list,.txt" style="display:none;" onchange="uploadHosts(this)"></label>
+      <button class="btn btn-sm success" onclick="saveHosts()">Сохранить список</button>
+      <label class="btn btn-sm primary" style="cursor:pointer;">Загрузить список <input type="file" id="hostFileInput" accept=".list,.txt" style="display:none;" onchange="uploadHosts(this)"></label>
       <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:#8b949e;cursor:pointer;">
         <input type="checkbox" id="hostReplace" style="accent-color:#58a6ff;"> Заменить список
       </label>
@@ -162,26 +164,6 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
     </div>
   </div>
 
-
-  <!-- Parental Control (hidden until ready) -->
-  <div class="card" style="display:none;">
-    <h3>Родительский контроль</h3>
-    <p style="font-size:12px;color:#8b949e;margin-bottom:12px;">Заблокированные сайты перенаправляются на страницу "Доступ запрещён"</p>
-    <div style="display:flex;gap:16px;flex-wrap:wrap;">
-      <div style="flex:1;min-width:250px;">
-        <h4 style="font-size:13px;color:#58a6ff;margin-bottom:8px;">Заблокированные сайты</h4>
-        <div id="parentalList" style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px;max-height:200px;overflow-y:auto;font-size:12px;"></div>
-      </div>
-      <div style="flex:1;min-width:250px;">
-        <h4 style="font-size:13px;color:#58a6ff;margin-bottom:8px;">Добавить сайт</h4>
-        <div style="display:flex;gap:8px;">
-          <input type="text" id="parentalInput" placeholder="example.com" style="flex:1;padding:6px 10px;background:#161b22;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-family:monospace;font-size:12px;">
-          <button class="btn btn-sm success" onclick="parentalAdd()">Заблокировать</button>
-        </div>
-        <div id="parentalMsg" class="msg" style="margin-top:8px;"></div>
-      </div>
-    </div>
-  </div>
 
   <!-- VPN -->
 
@@ -219,6 +201,37 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
   </div>
 
 </div><!-- /tab-manage -->
+
+<!-- ========== TAB: Закваски ========== -->
+<div id="tab-tags" class="tab-content">
+
+  <div class="card">
+    <h3>Создать закваску</h3>
+    <div class="card-row" style="flex-wrap:wrap;gap:8px;">
+      <input type="text" id="tagName" placeholder="Имя закваски (например, social)" style="flex:1;min-width:180px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+      <button class="btn btn-sm success" onclick="tagCreate(this)">Создать</button>
+    </div>
+    <div class="card-row" style="margin-top:8px;">
+      <textarea id="tagDomains" placeholder="Список доменов (каждый с новой строки)&#10;example.com&#10;www.example.com" style="width:100%;min-height:120px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;"></textarea>
+    </div>
+    <div id="tagsCreateMsg" class="msg" style="margin-top:8px;"></div>
+  </div>
+
+  <div class="card">
+    <h3>Закваски</h3>
+    <p style="font-size:12px;color:#8b949e;margin-bottom:12px;">Группы доменов для добавления в защищённый список. Отмеченные домены уже добавлены.</p>
+    <div id="tagsList" class="host-list" style="max-height:500px;"><div class="status">Загрузка...</div></div>
+    <div class="card-row" style="flex-wrap:wrap;gap:8px;margin-top:8px;">
+      <button class="btn btn-sm success" onclick="downloadTags()">Скачать список заквасок</button>
+      <label class="btn btn-sm primary" style="cursor:pointer;">Загрузить список <input type="file" id="tagFileInput" accept=".list,.txt" style="display:none;" onchange="uploadTags(this)"></label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:#8b949e;cursor:pointer;">
+        <input type="checkbox" id="tagReplace" style="accent-color:#58a6ff;"> Заменить закваски
+      </label>
+    </div>
+    <div id="tagsMsg" class="msg" style="margin-top:8px;"></div>
+  </div>
+
+</div>
 
 <!-- ========== TAB: Маршрутизация ========== -->
 <div id="tab-route" class="tab-content">
@@ -267,6 +280,36 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
       <button class="btn btn-sm danger" onclick="routeGuestDel()">Удалить сеть</button>
     </div>
     <div id="routeGuestMsg" class="msg"></div>
+  </div>
+
+</div>
+
+<!-- ========== TAB: Родительский контроль ========== -->
+<div id="tab-parental" class="tab-content">
+
+  <div class="card">
+    <h3>Родительский контроль</h3>
+    <p style="font-size:12px;color:#8b949e;margin-bottom:12px;">Заблокированные сайты добавляются в список блокировки рекламы (kvas adblock). Домены резолвятся в 0.0.0.0 и не открываются.</p>
+    <div class="card-row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+      <label>Блокировка рекламы (adblock):</label>
+      <span class="value" id="adblockStatus" style="color:#8b949e;">-</span>
+      <button class="btn btn-sm success" onclick="adblockOn(this)">Adblock on</button>
+      <button class="btn btn-sm danger" onclick="adblockOff(this)">Adblock off</button>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:250px;">
+        <h4 style="font-size:13px;color:#58a6ff;margin-bottom:8px;">Заблокированные сайты</h4>
+        <div id="parentalList" class="host-list" style="max-height:300px;"><div class="status">Загрузка...</div></div>
+      </div>
+      <div style="flex:1;min-width:250px;">
+        <h4 style="font-size:13px;color:#58a6ff;margin-bottom:8px;">Добавить сайт</h4>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="parentalInput" placeholder="example.com" style="flex:1;padding:6px 10px;background:#161b22;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+          <button class="btn btn-sm success" onclick="parentalAdd()">Заблокировать</button>
+        </div>
+        <div id="parentalMsg" class="msg" style="margin-top:8px;"></div>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -333,6 +376,7 @@ var currentAuthAction = doAuth;
 
 /* ========== LOADING ========== */
 function loadingBtn(btn, loading) {
+  if (!btn) return;
   if (loading) { btn._text = btn.textContent; btn.disabled = true; btn.textContent = '...'; }
   else { btn.disabled = false; btn.textContent = btn._text || btn.textContent; }
 }
@@ -432,7 +476,10 @@ function showMain() {
   loadSystemStatus();
   loadHosts();
   loadRouteLists();
+  loadParentalList();
+  loadAdblockStatus();
   loadFailoverStatus();
+  loadTags();
   fetchDevices();
   logMsg('log-info', 'Мониторинг трафика KVAS');
 }
@@ -441,6 +488,224 @@ function showMain() {
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('active', t.dataset.tab === name)});
   document.querySelectorAll('.tab-content').forEach(function(t){t.classList.toggle('active', t.id === 'tab-' + name)});
+}
+
+/* ========== TAGS ========== */
+function loadTags() {
+  var el = document.getElementById('tagsList');
+  if (!el) return;
+  el.innerHTML = '<div style="color:#8b949e;font-size:11px;padding:4px 0;"><span class="spinner"></span> Загрузка заквасок...</div>';
+  api('/cgi-bin/manage.sh?action=tags_list', function(d){
+    if (!d.ok) { el.innerHTML = '<div class="status status-err">' + (d.error||'error') + '</div>'; return; }
+    if (!d.tags || !d.tags.length) { el.innerHTML = '<div class="status" style="color:#8b949e;">Заквасок нет</div>'; return; }
+    renderTags(d.tags);
+  });
+}
+
+function renderTags(tags) {
+  var el = document.getElementById('tagsList');
+  el.innerHTML = '';
+  tags = tags.slice().sort(function(a, b) {
+    var aIn = (a.domains || []).every(function(d){ return d.in_list === true || d.in_list === 'true'; });
+    var bIn = (b.domains || []).every(function(d){ return d.in_list === true || d.in_list === 'true'; });
+    if (aIn && !bIn) return -1;
+    if (!aIn && bIn) return 1;
+    return 0;
+  });
+  tags.forEach(function(tag){
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'border-bottom:1px solid #21262d;padding:8px 0;';
+    var header = document.createElement('div');
+    header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;cursor:pointer;';
+    var inListCount = 0;
+    (tag.domains || []).forEach(function(dom){ if (dom.in_list === true || dom.in_list === 'true') inListCount++; });
+    var allInList = tag.domains && tag.domains.length > 0 && inListCount === tag.domains.length;
+    var badge = allInList ? '<span style="background:#1f6feb;color:#fff;font-size:10px;padding:1px 6px;border-radius:3px;margin-left:6px;">В ТОННЕЛЕ</span>' : '';
+    header.innerHTML = '<span style="color:#58a6ff;font-size:13px;">[' + (tag.name||'') + ']</span>' +
+      '<span style="color:#8b949e;font-size:11px;">' + (tag.domains||[]).length + ' доменов, ' + inListCount + ' в списке</span>' + badge;
+    var actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:6px;margin-top:6px;';
+    if (!allInList) {
+      var btnAdd = document.createElement('button');
+      btnAdd.className = 'btn btn-sm success';
+      btnAdd.textContent = 'Добавить в тоннель';
+      btnAdd.onclick = function(e){ e.stopPropagation(); tagsAdd(tag.name, this); };
+      actions.appendChild(btnAdd);
+    }
+    if (allInList || inListCount > 0) {
+      var btnDel = document.createElement('button');
+      btnDel.className = 'btn btn-sm primary';
+      btnDel.textContent = 'Удалить из тоннеля';
+      btnDel.onclick = function(e){ e.stopPropagation(); tagsDel(tag.name, this); };
+      actions.appendChild(btnDel);
+    }
+    var btnEdit = document.createElement('button');
+    btnEdit.className = 'btn btn-sm';
+    btnEdit.textContent = 'Редактировать';
+    btnEdit.style.cssText = 'background:#fff;color:#000;border-color:#ccc;';
+    btnEdit.onclick = function(e){ e.stopPropagation(); tagsEdit(tag.name, this); };
+    var btnDelTag = document.createElement('button');
+    btnDelTag.className = 'btn btn-sm';
+    btnDelTag.textContent = 'Удалить закваску';
+    btnDelTag.style.cssText = 'background:#da3633;color:#fff;border-color:#da3633;';
+    btnDelTag.onclick = function(e){ e.stopPropagation(); tagDelete(tag.name, this); };
+    actions.appendChild(btnEdit);
+    actions.appendChild(btnDelTag);
+    var details = document.createElement('div');
+    details.style.cssText = 'display:none;margin-top:6px;padding-left:12px;';
+    (tag.domains || []).forEach(function(dom){
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:2px 0;font-size:12px;';
+      var checked = dom.in_list === true || dom.in_list === 'true';
+      row.innerHTML = '<span style="color:' + (checked ? '#3fb950' : '#c9d1d9') + ';">' + dom.name + '</span>' +
+        '<span style="color:#8b949e;font-size:11px;">' + (checked ? '✓ в списке' : '—') + '</span>';
+      details.appendChild(row);
+    });
+    header.onclick = function(){
+      var hidden = details.style.display === 'none';
+      details.style.display = hidden ? 'block' : 'none';
+    };
+    wrap.appendChild(header);
+    wrap.appendChild(actions);
+    wrap.appendChild(details);
+    el.appendChild(wrap);
+  });
+}
+
+function tagsAdd(tag, btn) {
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=tags_add&tag=' + encodeURIComponent(tag), function(d){
+    if (btn) loadingBtn(btn, false);
+    var el = document.getElementById('tagsMsg');
+    if (!el) return;
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Добавлено'; loadTags(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+  });
+}
+
+function tagsDel(tag, btn) {
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=tags_del&tag=' + encodeURIComponent(tag), function(d){
+    if (btn) loadingBtn(btn, false);
+    var el = document.getElementById('tagsMsg');
+    if (!el) return;
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Удалено'; loadTags(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+  });
+}
+
+function normalizeDomain(d) {
+  return d.replace(/^(https?:\/\/)?(www\.)?/, '').replace(/\/+$/, '').trim();
+}
+
+function tagCreate(btn) {
+  var name = (document.getElementById('tagName') || {}).value || '';
+  var raw = (document.getElementById('tagDomains') || {}).value || '';
+  name = name.trim();
+  var domains = raw.split('\n').map(normalizeDomain).filter(function(d){ return d; }).join(' ');
+  if (!name) { var el = document.getElementById('tagsCreateMsg'); if (el) { el.className = 'msg err'; el.textContent = 'Введите имя закваски'; } return; }
+  if (!domains) { var el = document.getElementById('tagsCreateMsg'); if (el) { el.className = 'msg err'; el.textContent = 'Введите домены'; } return; }
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=tags_create&name=' + encodeURIComponent(name) + '&domains=' + encodeURIComponent(domains), function(d){
+    if (btn) loadingBtn(btn, false);
+    var el = document.getElementById('tagsCreateMsg');
+    if (!el) return;
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Создано'; if (document.getElementById('tagName')) document.getElementById('tagName').value = ''; if (document.getElementById('tagDomains')) document.getElementById('tagDomains').value = ''; loadTags(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+  });
+}
+
+function tagDelete(tag, btn) {
+  if (!confirm('Удалить закваску "' + tag + '"?')) return;
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=tags_delete&tag=' + encodeURIComponent(tag), function(d){
+    if (btn) loadingBtn(btn, false);
+    var el = document.getElementById('tagsMsg');
+    if (!el) return;
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Удалено'; loadTags(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+  });
+}
+
+function tagsEdit(tag, btn) {
+  document.getElementById('editTagName').value = tag;
+  document.getElementById('editTagDomains').value = '';
+  var overlay = document.getElementById('editTagOverlay');
+  overlay.style.display = 'flex';
+  loadTagDomainsForEdit(tag);
+}
+
+function tagsEditClose() {
+  document.getElementById('editTagOverlay').style.display = 'none';
+}
+
+function tagsEditSave(btn) {
+  var tag = document.getElementById('editTagName').value;
+  var raw = document.getElementById('editTagDomains').value || '';
+  var domains = raw.split('\n').map(normalizeDomain).filter(function(d){ return d; }).join(' ');
+  if (!tag) return;
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=tags_edit_save&tag=' + encodeURIComponent(tag) + '&domains=' + encodeURIComponent(domains), function(d){
+    if (btn) loadingBtn(btn, false);
+    var el = document.getElementById('tagsMsg');
+    if (!el) return;
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Сохранено'; tagsEditClose(); loadTags(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+  });
+}
+
+function loadTagDomainsForEdit(tag) {
+  api('/cgi-bin/manage.sh?action=tags_status&tag=' + encodeURIComponent(tag), function(d){
+    if (d.ok && d.domains) {
+      var text = d.domains.map(function(x){ return x.name; }).join('\n');
+      document.getElementById('editTagDomains').value = text;
+    }
+  });
+}
+
+function downloadTags() {
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', '/cgi-bin/manage.sh?action=tags_download&token=' + AUTH_TOKEN, true);
+  xhr.responseType = 'text';
+  xhr.onload = function() {
+    var blob = new Blob([xhr.responseText], {type: 'text/plain'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'tags.list';
+    document.body.appendChild(a);
+    a.click();
+    URL.revokeObjectURL(a.href);
+    document.body.removeChild(a);
+  };
+  xhr.send();
+}
+
+function uploadTags(input) {
+  var file = input.files[0];
+  if (!file) return;
+  var replace = document.getElementById('tagReplace') && document.getElementById('tagReplace').checked;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var content = e.target.result;
+    var el = document.getElementById('tagsMsg');
+    if (!el) return;
+    showProgress(0, replace ? 'Замена заквасок...' : 'Добавление заквасок...');
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/cgi-bin/manage.sh?action=tags_upload&token=' + AUTH_TOKEN + '&replace=' + (replace ? '1' : '0'), true);
+    xhr.setRequestHeader('Content-Type', 'text/plain');
+    xhr.onload = function() {
+      try {
+        var d = JSON.parse(xhr.responseText);
+        hideProgress();
+        if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Готово'; loadTags(); }
+        else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+      } catch(e) { hideProgress(); if (el) { el.className = 'msg err'; el.textContent = 'Ошибка: ' + e.message; } }
+    };
+    xhr.onerror = function() { hideProgress(); if (el) { el.className = 'msg err'; el.textContent = 'Ошибка сети'; } };
+    xhr.send(content);
+  };
+  reader.readAsText(file);
+  input.value = '';
 }
 
 /* ========== SYSTEM ========== */
@@ -941,6 +1206,30 @@ function consoleClear() {
 }
 
 /* ========== PARENTAL CONTROL ========== */
+function loadAdblockStatus() {
+  api('/cgi-bin/manage.sh?action=adblock_status', function(d){
+    var el = document.getElementById('adblockStatus');
+    if (!el) return;
+    var on = d.adblock === 'on';
+    el.textContent = on ? 'включен' : 'выключен';
+    el.style.color = on ? '#3fb950' : '#ff6b6b';
+  });
+}
+
+function adblockOn(btn) {
+  apiBtn('/cgi-bin/manage.sh?action=adblock_on', btn, function(d){
+    loadAdblockStatus();
+    loadParentalList();
+  });
+}
+
+function adblockOff(btn) {
+  apiBtn('/cgi-bin/manage.sh?action=adblock_off', btn, function(d){
+    loadAdblockStatus();
+    loadParentalList();
+  });
+}
+
 function loadParentalList() {
   api('/cgi-bin/manage.sh?action=parental_list', function(d){
     var el = document.getElementById('parentalList');
@@ -1151,5 +1440,19 @@ function routeGuestDel() {
 }
 
 </script>
+
+<!-- Modal: Edit Tag -->
+<div id="editTagOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:999;justify-content:center;align-items:center;">
+  <div style="background:#0d1117;color:#c9d1d9;border-radius:8px;padding:20px;width:90%;max-width:500px;max-height:80vh;display:flex;flex-direction:column;border:1px solid #30363d;">
+    <h3 style="margin:0 0 12px 0;font-size:16px;color:#e6edf3;">Редактировать закваску</h3>
+    <input type="text" id="editTagName" readonly style="width:100%;padding:6px;margin-bottom:8px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#c9d1d9;font-family:monospace;font-size:13px;">
+    <textarea id="editTagDomains" placeholder="Домены (каждый с новой строки)" style="flex:1;min-height:200px;padding:6px;border:1px solid #30363d;border-radius:4px;background:#0d1117;color:#c9d1d9;font-family:monospace;font-size:13px;resize:vertical;"></textarea>
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="tagsEditClose()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;">Отмена</button>
+      <button class="btn btn-sm success" onclick="tagsEditSave(this)" style="background:#1f6feb;color:#fff;border:none;">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

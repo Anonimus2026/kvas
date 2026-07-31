@@ -56,7 +56,11 @@ cat <<EOF > "${TMP_ADS_FILE}"
 0.0.0.0 ipgraber.ru
 0.0.0.0 iplis.ru
 0.0.0.0 myip2.ru
+0.0.0.0 rs.mail.ru
+0.0.0.0 ads.vk.com
 EOF
+# Добавляем домены из пользовательского списка блокировки
+[ -f /opt/etc/adblock/block.list ] && sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list >> "${TMP_ADS_FILE}"
 }
 
 
@@ -94,6 +98,13 @@ load_adblock_hosts(){
 
 		score=$((score+1))
 		curl "${source}" -o "${TMP_FILE}" &>/dev/null
+
+	#	пропускаем источники, которые не удалось скачать
+		if [ ! -s "${TMP_FILE}" ]; then
+			echo "${source}" >> ${ERROR_SOURCE}
+			rm -f "${TMP_FILE}";
+			continue
+		fi
 
 	#	пропускаем все файлы с html кодом
 		if [ -n "$(grep -E '<html>|<head>|<body>' "${TMP_FILE}")" ]; then
@@ -146,9 +157,18 @@ remove_white_hosts(){
 
 	nlines_amount=$(cat < "${ADBLOCK_HOSTS_FILE}" | wc -l)
 	if [ -f "${KVAS_LIST_FILE}" ] && [ "$(cat < "${KVAS_LIST_FILE}" | wc -l )" -ge 1 ]; then
-		exclude_com=".*.$(cat < "${KVAS_LIST_FILE}" | tr -d '*' | sed ':a;N;$!ba;s/\n/$|.*./g')$"
 		ready "Удаляем хосты, находящиеся в защищенном списке"
-		cat < "${TMP_FILE}" | grep -vE "${exclude_com}" > "${ADBLOCK_HOSTS_FILE}"
+		awk '
+			NR==FNR { gsub(/\*/, "", $0); if ($0 !~ /^#/ && $0 != "") wl[$0]=1; next }
+			{
+				host=$2; keep=1; h=host
+				while (h != "") {
+					if (h in wl) { keep=0; break }
+					h=substr(h,2)
+				}
+				if (keep) print
+			}
+		' "${KVAS_LIST_FILE}" "${TMP_FILE}" > "${ADBLOCK_HOSTS_FILE}"
 		when_ok "ГОТОВО"
 		nlines_excluded_wl=$(cat < "${ADBLOCK_HOSTS_FILE}" | wc -l)
 		rm "${TMP_FILE}"

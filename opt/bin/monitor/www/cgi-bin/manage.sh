@@ -7,8 +7,9 @@ TOKEN_DIR=/tmp/kvas_web_tokens
 KVAS_BIN=/opt/apps/kvas/bin/kvas
 FAILOVER_CONF=/opt/etc/kvas.failover.conf
 KVAS_LIST=/opt/etc/kvas.list
+TAGS_FILE=/opt/etc/tags.list
 KVAS_CONF_FILE=/opt/etc/kvas.conf
-PARENTAL_LIST=/opt/etc/kvas.blocked.list
+PARENTAL_LIST=/opt/etc/adblock/block.list
 PARENTAL_PAGE=/opt/apps/kvas/bin/monitor/www/blocked.html
 
 json_str() { printf '%s' "$1" | jq -Rs '.' 2>/dev/null || printf '"%s"' "$1" | sed 's/"/\\"/g'; }
@@ -130,57 +131,6 @@ check_failover_daemon() {
 }
 
 # --- Main ---
-# Update hosts file for parental control
-# Uses /opt/etc/hosts which is already configured in dnsmasq.conf (addn-hosts)
-# Also adds iptables redirect so blocked domains show our blocked page
-update_parental_hosts() {
-	local hosts_file="/opt/etc/hosts"
-	local router_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-	[ -z "$router_ip" ] && router_ip="192.168.1.1"
-
-	# Remove ALL old KVAS parental entries from hosts
-	# Remove everything between "# KVAS Parental Control" markers
-	sed -i '/# KVAS Parental Control/,/^#/ { /^# KVAS Parental Control/!/^#/!d; /^# KVAS Parental Control/d; }' "$hosts_file" 2>/dev/null
-	# Also remove any orphaned entries (lines with router_ip that aren't in other sections)
-	local _tmp=$(mktemp)
-	awk -v rip="$router_ip" '
-		/^# KVAS Parental Control/ { skip=1; next }
-		/^#/ { skip=0 }
-		!skip { print }
-	' "$hosts_file" > "$_tmp" 2>/dev/null
-	mv "$_tmp" "$hosts_file" 2>/dev/null
-
-	# Clean up any old iptables rules (legacy)
-	/opt/sbin/iptables -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8085 2>/dev/null
-
-
-	if [ ! -f "$PARENTAL_LIST" ] || [ ! -s "$PARENTAL_LIST" ]; then
-		# No blocked sites — just clean up
-		if [ -f /opt/etc/init.d/S56dnsmasq ]; then
-			/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
-		fi
-		return
-	fi
-
-	# Add blocked domains to hosts file
-	echo "# KVAS Parental Control" >> "$hosts_file"
-	while IFS= read -r line; do
-		[ -z "$line" ] && continue
-		[ "${line:0:1}" = "#" ] && continue
-		echo "${router_ip} ${line}" >> "$hosts_file"
-		echo "${router_ip} www.${line}" >> "$hosts_file"
-	done < "$PARENTAL_LIST"
-
-	# No iptables redirect needed - DNS blocking via /opt/etc/hosts is sufficient
-	# Blocked domains resolve to router IP, browser shows connection refused or Keenetic page
-
-
-	# Restart dnsmasq to pick up new hosts entries
-	if [ -f /opt/etc/init.d/S56dnsmasq ]; then
-		/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
-	fi
-}
-
 
 
 check_service() {
@@ -211,6 +161,10 @@ check_updates() {
 	else
 		echo "up_to_date"
 	fi
+}
+
+get_tag_domain_list_from_file() {
+	awk -v section="$2" '/\['"$2"'\]/{flag=1; next} /\[.*\]/{flag=0} flag' "$1"
 }
 
 
@@ -519,14 +473,15 @@ main() {
 			domain=$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
-			touch "$PARENTAL_LIST"
-			# Check if already exists
-			if grep -qF "$domain" "$PARENTAL_LIST" 2>/dev/null; then
-				json_error "domain already blocked"
+			# Автоматически включаем adblock, если выключен
+			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
+				echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
+				[ -f /opt/etc/adblock/ads.kvas.list ] || sh /opt/apps/kvas/bin/main/adblock >/dev/null 2>&1
+				/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
 			fi
-			echo "$domain" >> "$PARENTAL_LIST"
-			# Update dnsmasq to redirect blocked domains
-			update_parental_hosts
+			out=$($KVAS_BIN adblock add "$domain" 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "block failed: $out"
 			json_ok "blocked $domain"
 			;;
 		parental_del)
@@ -534,12 +489,33 @@ main() {
 			domain=$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
-			if [ ! -f "$PARENTAL_LIST" ]; then
-				json_error "domain not found"
-			fi
-			sed -i "/^${domain}$/d" "$PARENTAL_LIST" 2>/dev/null
-			update_parental_hosts
+			out=$($KVAS_BIN adblock del "$domain" 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "unblock failed: $out"
 			json_ok "unblocked $domain"
+			;;
+		adblock_status)
+			check_token "$token"
+			if grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
+				echo '{"ok":true,"adblock":"on"}'
+			else
+				echo '{"ok":true,"adblock":"off"}'
+			fi
+			;;
+		adblock_on)
+			check_token "$token"
+			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
+				echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
+			fi
+			[ -f /opt/etc/adblock/ads.kvas.list ] || sh /opt/apps/kvas/bin/main/adblock >/dev/null 2>&1
+			/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
+			echo '{"ok":true,"msg":"Adblock включен"}'
+			;;
+		adblock_off)
+			check_token "$token"
+			sed -i '/addn-hosts=\/opt\/etc\/adblock\/ads.kvas.list/d' /opt/etc/dnsmasq.conf 2>/dev/null
+			/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
+			echo '{"ok":true,"msg":"Adblock выключен"}'
 			;;
 		route_status)
 			check_token "$token"
@@ -608,8 +584,11 @@ main() {
 				[ -n "$current" ] && current="${current}+${ip}" || current="$ip"
 				sed -i "/^${key}=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				echo "${key}=${current}" >> "$KVAS_CONF_FILE"
-				$KVAS_BIN route refresh >/dev/null 2>&1
-				json_ok "added $ip to $type"
+				if $KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1; then
+					json_ok "added $ip to $type"
+				else
+					json_error "route refresh failed, see /tmp/kvas-route-refresh.log"
+				fi
 			fi
 			;;
 		route_del)
@@ -630,8 +609,11 @@ main() {
 				new_list=$(echo "$current" | tr '+' '\n' | grep -v "^${ip}$" | tr '\n' '+' | sed 's/+$//')
 				sed -i "/^${key}=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				[ -n "$new_list" ] && echo "${key}=${new_list}" >> "$KVAS_CONF_FILE"
-				$KVAS_BIN route refresh >/dev/null 2>&1
-				json_ok "removed $ip from $type"
+				if $KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1; then
+					json_ok "removed $ip from $type"
+				else
+					json_error "route refresh failed, see /tmp/kvas-route-refresh.log"
+				fi
 			fi
 			;;
 		route_refresh)
@@ -641,12 +623,32 @@ main() {
 			;;
 		route_devices)
 			check_token "$token"
-			printf '{"ok":true,"devices":['
-			first=1
-			devices=$(curl -s "127.0.0.1:79/rci/show/ip/dhcp/bindings" 2>/dev/null | jq -r '.lease[] | "\(.ip)|\(.name)"' 2>/dev/null)
-			if [ -n "$devices" ]; then
-				echo "$devices" | awk -F'|' '{if(first++) printf ","; printf "{\"ip\":\"%s\",\"name\":\"%s\"}", $1, $2}'
+			_tmpdev="/tmp/kvas_route_devices.$$"
+			: > "$_tmpdev"
+			# DHCP bindings (приоритет — реальные имена)
+			curl -s "127.0.0.1:79/rci/show/ip/dhcp/bindings" 2>/dev/null | \
+				jq -r '.lease[] | "\(.ip)|\(.name)"' 2>/dev/null >> "$_tmpdev"
+			# ARP-соседи (только IPv4)
+			if command -v ip >/dev/null 2>&1; then
+				ip neigh show 2>/dev/null | grep -E 'REACHABLE|STALE|DELAY' | \
+					awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $1 "|" ($5 ? $5 : "arp")}' >> "$_tmpdev"
+			elif [ -f /proc/net/arp ]; then
+				tail -n +2 /proc/net/arp 2>/dev/null | awk '$2 != "0x0" {print $1 "|arp"}' >> "$_tmpdev"
 			fi
+			# Активные IP из conntrack — только частные диапазоны (RFC 1918)
+			_priv_re='src=(10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+|192\.168\.[0-9]+\.[0-9]+)'
+			if command -v conntrack >/dev/null 2>&1; then
+				conntrack -L 2>/dev/null | grep -oE "$_priv_re" | cut -d= -f2 | sort -u | \
+					awk '{print $1 "|conntrack"}' >> "$_tmpdev"
+			elif [ -f /proc/net/nf_conntrack ]; then
+				grep -oE "$_priv_re" /proc/net/nf_conntrack 2>/dev/null | cut -d= -f2 | sort -u | \
+					awk '{print $1 "|conntrack"}' >> "$_tmpdev"
+			fi
+			unset _priv_re
+			# Вывод с дедупликацией (оставляем первую запись — у DHCP приоритет)
+			printf '{"ok":true,"devices":['
+			awk -F'|' '!seen[$1]++{if(f++) printf ","; printf "{\"ip\":\"%s\",\"name\":\"%s\"}", $1, $2}' "$_tmpdev" 2>/dev/null
+			rm -f "$_tmpdev"
 			echo ']}'
 			;;
 		route_guest_networks)
@@ -734,8 +736,11 @@ main() {
 				[ -n "$current" ] && current="${current},${net}" || current="$net"
 				sed -i "/^INFACE_GUEST_ENT=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				echo "INFACE_GUEST_ENT=${current}" >> "$KVAS_CONF_FILE"
-				$KVAS_BIN route refresh >/dev/null 2>&1
-				json_ok "added $net"
+				if $KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1; then
+					json_ok "added $net"
+				else
+					json_error "route refresh failed, see /tmp/kvas-route-refresh.log"
+				fi
 			fi
 			;;
 		route_guest_del)
@@ -749,8 +754,158 @@ main() {
 				new_list=$(echo "$current" | tr ',' '\n' | grep -v "^${net}$" | tr '\n' ',' | sed 's/,$//')
 				sed -i "/^INFACE_GUEST_ENT=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				[ -n "$new_list" ] && echo "INFACE_GUEST_ENT=${new_list}" >> "$KVAS_CONF_FILE"
-				$KVAS_BIN route refresh >/dev/null 2>&1
-				json_ok "removed $net"
+				if $KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1; then
+					json_ok "removed $net"
+				else
+					json_error "route refresh failed, see /tmp/kvas-route-refresh.log"
+				fi
+			fi
+			;;
+		tags_list)
+			check_token "$token"
+			[ ! -f "$TAGS_FILE" ] && echo '{"ok":true,"tags":[]}' && return
+			printf '{"ok":true,"tags":['
+			tag=""
+			while IFS= read -r line; do
+				line_trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+				if [ -z "$line_trimmed" ] || echo "$line_trimmed" | grep -qE '^[[:space:]]*#'; then continue; fi
+			if echo "$line_trimmed" | grep -qE '^\['; then
+					if [ -n "$tag" ]; then
+						printf ']},'
+					fi
+					tag=$(echo "$line_trimmed" | tr -d '[]')
+					printf '{"name":%s,"domains":[' "$(json_str "$tag")"
+					dfirst=1
+				else
+					in_list="false"
+					[ -f "$KVAS_LIST" ] && grep -qxF "$line_trimmed" "$KVAS_LIST" 2>/dev/null && in_list="true"
+					[ "$dfirst" -eq 0 ] && printf ','
+					dfirst=0
+					printf '{"name":%s,"in_list":%s}' "$(json_str "$line_trimmed")" "$in_list"
+				fi
+			done < "$TAGS_FILE"
+		if [ -n "$tag" ]; then
+			printf ']}'
+		fi
+		printf ']}'
+			;;
+		tags_status)
+			check_token "$token"
+			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
+			[ "$tag" = "$QUERY_STRING" ] && tag=""
+			[ -z "$tag" ] && json_error "tag required"
+			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
+			domains=$(get_tag_domain_list_from_file "$TAGS_FILE" "$tag")
+			printf '{"ok":true,"tag":%s,"domains":[' "$(json_str "$tag")"
+			first=1
+			for d in $domains; do
+				[ "$first" -eq 0 ] && printf ','
+				first=0
+				in_list="false"
+				[ -f "$KVAS_LIST" ] && grep -qxF "$d" "$KVAS_LIST" 2>/dev/null && in_list="true"
+				printf '{"name":%s,"in_list":%s}' "$(json_str "$d")" "$in_list"
+			done
+			echo ']}'
+			;;
+		tags_add)
+			check_token "$token"
+			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
+			[ "$tag" = "$QUERY_STRING" ] && tag=""
+			[ -z "$tag" ] && json_error "tag required"
+			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
+			out=$($KVAS_BIN tags add-protect "$tag" 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "add failed: $out"
+			init_out=$($KVAS_BIN init 2>&1)
+			json_ok "added $tag"
+			;;
+		tags_create)
+			check_token "$token"
+			name=$(echo "$QUERY_STRING" | sed 's/.*name=//; s/&.*//' 2>/dev/null)
+			raw_domains=$(echo "$QUERY_STRING" | sed 's/.*domains=//; s/&.*//' 2>/dev/null)
+			raw_domains=$(printf '%s' "$raw_domains" | sed 's/%0D%0A/ /g; s/%0A/ /g; s/%0D/ /g; s/%20/ /g; s/+/ /g')
+			domains=$(echo "$raw_domains" | sed 's/  */ /g; s/^ //; s/ $//')
+			[ "$name" = "$QUERY_STRING" ] && name=""
+			[ -z "$name" ] && json_error "name required"
+			[ -z "$domains" ] && json_error "domains required"
+			out=$($KVAS_BIN tags create "$name" $domains 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "create failed: $out"
+			json_ok "created $name"
+			;;
+		tags_del)
+			check_token "$token"
+			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
+			[ "$tag" = "$QUERY_STRING" ] && tag=""
+			[ -z "$tag" ] && json_error "tag required"
+			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
+			out=$($KVAS_BIN tags del-protect "$tag" 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "del failed: $out"
+			init_out=$($KVAS_BIN init 2>&1)
+			json_ok "removed $tag"
+			;;
+		tags_delete)
+			check_token "$token"
+			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
+			[ "$tag" = "$QUERY_STRING" ] && tag=""
+			[ -z "$tag" ] && json_error "tag required"
+			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
+			out=$($KVAS_BIN tags delete "$tag" 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "delete failed: $out"
+			init_out=$($KVAS_BIN init 2>&1)
+			json_ok "удалена закваска $tag"
+			;;
+		tags_edit_save)
+			check_token "$token"
+			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
+			[ "$tag" = "$QUERY_STRING" ] && tag=""
+			[ -z "$tag" ] && json_error "tag required"
+			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
+			raw_domains=$(echo "$QUERY_STRING" | sed 's/.*domains=//; s/&.*//' 2>/dev/null)
+			raw_domains=$(printf '%s' "$raw_domains" | sed 's/%0D%0A/ /g; s/%0A/ /g; s/%0D/ /g; s/%20/ /g; s/+/ /g')
+			domains=$(echo "$raw_domains" | sed 's/  */ /g; s/^ //; s/ $//')
+			out=$($KVAS_BIN tags edit-save "$tag" $domains 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "edit failed: $out"
+			init_out=$($KVAS_BIN init 2>&1)
+			json_ok "закваска $tag обновлена"
+			;;
+		tags_download)
+			check_token "$token"
+			[ ! -f "$TAGS_FILE" ] && json_error "no tags"
+			printf 'Content-Type: text/plain; charset=utf-8\n'
+			printf 'Content-Disposition: attachment; filename="tags.list"\n\n'
+			cat "$TAGS_FILE"
+			exit 0
+			;;
+		tags_upload)
+			check_token "$token"
+			replace=$(echo "$QUERY_STRING" | sed 's/.*replace=//; s/&.*//' 2>/dev/null)
+			[ "$replace" = "$QUERY_STRING" ] && replace="0"
+			[ "$replace" != "1" ] && replace="0"
+			[ ! -f "$TAGS_FILE" ] && touch "$TAGS_FILE"
+			upload_tmp=$(mktemp)
+			cat > "$upload_tmp"
+			if [ "$replace" = "1" ]; then
+				mv -f "$upload_tmp" "$TAGS_FILE"
+				json_ok "tags replaced"
+			else
+				# merge: append uploaded tags to existing, skip first line if it's a section header
+				merged_tmp=$(mktemp)
+				cat "$TAGS_FILE" > "$merged_tmp"
+				first=1
+				while IFS= read -r line; do
+					if [ $first -eq 1 ] && echo "$line" | grep -qE '^\['; then
+						continue
+					fi
+					first=0
+					echo "$line"
+				done < "$upload_tmp" >> "$merged_tmp"
+				mv -f "$merged_tmp" "$TAGS_FILE"
+				rm -f "$upload_tmp"
+				json_ok "tags merged"
 			fi
 			;;
 		*)

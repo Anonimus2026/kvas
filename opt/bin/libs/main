@@ -39,6 +39,7 @@ save_iptables(){ /opt/sbin/iptables-save ${@}; }
 
 KVAS_CONF_FILE=/opt/etc/kvas.conf
 KVAS_LIST_FILE=/opt/etc/kvas.list
+TAGS_LIST_FILE=/opt/etc/tags.list
 ADGUARDHOME_CONFIG=/opt/etc/AdGuardHome/AdGuardHome.yaml
 ADGUARD_IPSET_FILE=/opt/etc/AdGuardHome/kvas.ipset
 SHADOWSOCKS_CONF=/opt/etc/shadowsocks.json
@@ -48,9 +49,12 @@ DNSCRYPT_CONFIG=/opt/etc/dnscrypt-proxy.toml
 ADBLOCK_LIST_EXCEPTION=/opt/etc/adblock/exception.list
 ADBLOCK_HOSTS_FILE=/opt/etc/adblock/ads.kvas.list
 ADBLOCK_SOURCES_LIST=/opt/etc/adblock/sources.list
+ADBLOCK_BLOCK_FILE=/opt/etc/adblock/block.list
 
 KVAS_CONFIG_BACKUP=${KVAS_BACKUP_PATH}/kvas.conf
 KVAS_LIST_FILE_BACKUP=${KVAS_BACKUP_PATH}/kvas.list
+TAGS_LIST_FILE=/opt/etc/tags.list
+TAGS_LIST_BACKUP=${KVAS_BACKUP_PATH}/tags.list
 ADGUARDHOME_CONFIG_BACKUP=${KVAS_BACKUP_PATH}/AdGuardHome.yaml
 ADGUARD_IPSET_FILE_BACKUP=${KVAS_BACKUP_PATH}/kvas.ipset
 SHADOWSOCKS_CONF_BACKUP=${KVAS_BACKUP_PATH}/shadowsocks.json
@@ -160,14 +164,13 @@ service_action(){
 post_api_query(){
 	local _query=${1}
 	local _data=${2:-}
-	local _result
+	local _timeout=${3:-10}
 
 	if [ -z "${_data}" ]; then 
-		curl -s "localhost:79/rci/${_query}" && _result=true || _result=false
+		curl --connect-timeout 3 --max-time "${_timeout}" -s "localhost:79/rci/${_query}" && return 0 || return 1
 	else
-		curl -s -d "${_data}" "localhost:79/rci/${_query}" && _result=true || _result=false
+		curl --connect-timeout 3 --max-time "${_timeout}" -s -d "${_data}" "localhost:79/rci/${_query}" && return 0 || return 1
 	fi
-	return ${_result}
 }
 #-------------------------------------------------------------------------------
 # 
