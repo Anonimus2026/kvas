@@ -189,5 +189,18 @@ xray-вариант (v346) не зашёл: внешние клиенты с SOC
 
 **Версия**: `kvas_1.1.9_beta-10-351_all.ipk`.
 
+### 15. v352: upgrade падал на «Файл списка хостов-исключений ... не восстановлен»
+
+**Симптом**: при `kvas upgrade` (после установки нового ipk) на шаге восстановления конфигов из бэкапа:
+```
+cp: can't create '/opt/etc/adblock/exception.list': No such file or directory
+ОШИБКА
+```
+**Причина**: `restore_backup()` (`main/setup`, строки ~96-135) делал `cp -f backup dest` без создания родительской директории. `/opt/etc/adblock/` появляется только при `kvas adblock on`, поэтому при чистой установке/апгрейде cp для `exception.list` (и `ads.kvas.list`, `sources.list`) падал.
+**Фикс (v352)**: в `restore_backup()` перед обоими `cp` добавить `mkdir -p "$(dirname "${dest_file}")"`.
+**Примечание**: `/opt/etc/adblock/` не удаляется при upgrade (только при uninstall), `block.list` сохраняется.
+
+**Версия**: `kvas_1.1.9_beta-10-352_all.ipk`.
+
 ## Формат ipk
 gzip(tar( debian-binary + control.tar.gz + data.tar.gz )), строки с LF.
