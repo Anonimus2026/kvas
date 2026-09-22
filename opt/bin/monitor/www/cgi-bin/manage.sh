@@ -624,12 +624,11 @@ main() {
 			_ag_yaml=/opt/etc/AdGuardHome/AdGuardHome.yaml
 			_ag_port=""
 			if [ -f "$_ag_yaml" ]; then
-				_ag_port=$(awk '/^http:/{h=1} h && $1=="port:"{print $2; exit}' "$_ag_yaml" 2>/dev/null)
+				_ag_port=$(awk '/^http:/{h=1} /^dns:|^[a-z]/{if(!/^http:/)h=0} h && $1=="address:"{n=split($2,a,":"); print a[n]; exit}' "$_ag_yaml" 2>/dev/null)
+				[ -z "$_ag_port" ] && _ag_port=$(awk '/^http:/{h=1;next} /^dns:/{h=0} h && /^  port:/{print $2; exit}' "$_ag_yaml" 2>/dev/null)
 				[ -z "$_ag_port" ] && _ag_port=$(grep '^bind_port:' "$_ag_yaml" 2>/dev/null | head -1 | awk '{print $2}')
-				[ -z "$_ag_port" ] && _ag_port=$(grep -E '^\s+port:' "$_ag_yaml" 2>/dev/null | head -1 | awk '{print $2}')
 			fi
-			[ -z "$_ag_port" ] && _ag_port=8086
-			case "$_ag_port" in ''|*[!0-9]*) _ag_port=8086 ;; esac
+			case "$_ag_port" in ''|*[!0-9]*|9753|6060|53) _ag_port=8086 ;; esac
 			_http="false"
 			if command -v wget >/dev/null 2>&1; then
 				wget -q -O /dev/null -T 2 "http://127.0.0.1:${_ag_port}" 2>/dev/null && _http="true"
@@ -702,8 +701,7 @@ AGEOF
 					cp /opt/apps/kvas/etc/init.d/S99adguard /opt/etc/init.d/S99adguardhome
 					chmod 755 /opt/etc/init.d/S99adguardhome
 				fi
-				sed -i "s/\(  port:\) .*/\1 ${_ag_web_port}/" /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null || true
-				sed -i "0,/\(address:.*:\).*/s//\1${_ag_web_port}/" /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null || true
+				sed -i '/^http:/,/^dns:/{s/^\(  port:\) .*/\1 '"${_ag_web_port}"'/; s/^\(  address:.*:\).*/\1'"${_ag_web_port}"'/}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null || true
 			fi
 			if [ -n "$_busy" ]; then
 				printf '{"ok":false,"error":"%s"}\n' "$_busy"
@@ -720,12 +718,7 @@ AGEOF
 		adguard_on)
 			check_token "$token"
 			_ag_yaml=/opt/etc/AdGuardHome/AdGuardHome.yaml
-			_ag_port=""
-			if [ -f "$_ag_yaml" ]; then
-				_ag_port=$(awk '/^http:/{h=1} h && $1=="port:"{print $2; exit}' "$_ag_yaml" 2>/dev/null)
-				[ -z "$_ag_port" ] && _ag_port=$(grep '^bind_port:' "$_ag_yaml" 2>/dev/null | head -1 | awk '{print $2}')
-			fi
-			[ -z "$_ag_port" ] && _ag_port=8086
+			_ag_web_port=8086
 			. /opt/apps/kvas/bin/libs/main 2>/dev/null || true
 			. /opt/apps/kvas/bin/libs/vpn 2>/dev/null || true
 			if type adguardhome_setup >/dev/null 2>&1; then
@@ -733,28 +726,66 @@ AGEOF
 			else
 				out=$(echo "n" | $KVAS_BIN adguard on 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g')
 			fi
-			[ -z "$out" ] && out="AdGuard включен, доступен по порту ${_ag_port}"
-			printf '{"ok":true,"msg":"%s","port":"%s"}\n' "$out" "$_ag_port"
+			if [ -f "$_ag_yaml" ]; then
+				sed -i '/^http:/,/^dns:/{s/^\(  port:\) .*/\1 '"${_ag_web_port}"'/; s/^\(  address:.*:\).*/\1'"${_ag_web_port}"'/}' "$_ag_yaml" 2>/dev/null || true
+				if pidof AdGuardHome >/dev/null 2>&1 && ! wget -q -T 2 -O /dev/null "http://127.0.0.1:${_ag_web_port}" 2>/dev/null; then
+					[ -f /opt/etc/init.d/S99adguardhome ] && timeout 15 /opt/etc/init.d/S99adguardhome restart >/dev/null 2>&1 || true
+				fi
+			fi
+			[ -z "$out" ] && out="AdGuard включен, доступен по порту ${_ag_web_port}"
+			printf '{"ok":true,"msg":"%s","port":"%s"}\n' "$out" "$_ag_web_port"
 			;;
 		adguard_off)
 			check_token "$token"
 			. /opt/apps/kvas/bin/libs/main 2>/dev/null || true
+			. /opt/apps/kvas/bin/libs/vpn 2>/dev/null || true
 			if type set_config_value >/dev/null 2>&1; then
 				set_config_value "ADGUARD_ENABLE" "false"
 			else
 				sed -i 's/^ADGUARD_ENABLE=.*/ADGUARD_ENABLE=false/' /opt/etc/kvas.conf 2>/dev/null
 			fi
-			[ -f /opt/etc/init.d/S99adguardhome ] && /opt/etc/init.d/S99adguardhome stop >/dev/null 2>&1
 			killall AdGuardHome >/dev/null 2>&1
-			if [ ! -f /opt/etc/init.d/S56dnsmasq ] && [ -f /opt/var/backups/kvas/S56dnsmasq ]; then
-				cp /opt/var/backups/kvas/S56dnsmasq /opt/etc/init.d/S56dnsmasq
+			sleep 1
+			killall -9 AdGuardHome >/dev/null 2>&1
+			_w=0
+			while pidof AdGuardHome >/dev/null 2>&1 && [ "$_w" -lt 5 ]; do sleep 1; _w=$((_w + 1)); done
+			pidof AdGuardHome >/dev/null 2>&1 && killall -9 AdGuardHome >/dev/null 2>&1
+			_bk="${KVAS_BACKUP_PATH:-/opt/etc/.kvas/backup}"
+			[ ! -f /opt/etc/init.d/S56dnsmasq ] && [ -f "$_bk/S56dnsmasq" ] && {
+				cp "$_bk/S56dnsmasq" /opt/etc/init.d/S56dnsmasq && chmod 755 /opt/etc/init.d/S56dnsmasq
+			}
+			[ ! -f /opt/etc/init.d/S56dnsmasq ] && [ -f /opt/var/backups/kvas/S56dnsmasq ] && {
+				cp /opt/var/backups/kvas/S56dnsmasq /opt/etc/init.d/S56dnsmasq && chmod 755 /opt/etc/init.d/S56dnsmasq
+			}
+			[ ! -f /opt/etc/init.d/S09dnscrypt-proxy2 ] && [ -f "$_bk/S09dnscrypt-proxy2" ] && {
+				cp "$_bk/S09dnscrypt-proxy2" /opt/etc/init.d/S09dnscrypt-proxy2 && chmod 755 /opt/etc/init.d/S09dnscrypt-proxy2
+			}
+			[ -f /opt/apps/kvas/etc/init.d/S96kvas ] && {
+				cp /opt/apps/kvas/etc/init.d/S96kvas /opt/etc/init.d/S96kvas && chmod 755 /opt/etc/init.d/S96kvas
+			}
+			_ext=""
+			[ -n "$(type -t get_config_value)" ] && _ext=$(get_config_value DNS_STATIC_1 2>/dev/null)
+			[ -z "$_ext" ] && _ext=$(grep '^DNS_STATIC_1=' /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
+			[ -z "$_ext" ] && _ext="9.9.9.9"
+			case "$_ext" in *'#'*|*':'*) ;; *) _ext="${_ext}#53" ;; esac
+			if type set_config_value >/dev/null 2>&1; then
+				set_config_value DNS_DEFAULT "$_ext"
+			else
+				sed -i "s/^DNS_DEFAULT=.*/DNS_DEFAULT=${_ext}/" /opt/etc/kvas.conf 2>/dev/null
 			fi
-			if [ ! -f /opt/etc/init.d/S56dnsmasq ] && [ -f /opt/apps/kvas/bin/main/dnsmasq ]; then
-				[ -f /opt/etc/init.d/S96kvas ] || cp /opt/apps/kvas/etc/init.d/S96kvas /opt/etc/init.d/S96kvas 2>/dev/null
-				/opt/apps/kvas/bin/main/dnsmasq >/dev/null 2>&1 || true
+			[ -f /opt/etc/dnsmasq.conf ] && sed -i "s/^server=.*/server=${_ext}/" /opt/etc/dnsmasq.conf 2>/dev/null
+			if type ipset_dns_change >/dev/null 2>&1; then
+				ipset_dns_change "$_ext" 2>/dev/null || true
 			fi
-			[ -f /opt/etc/init.d/S56dnsmasq ] && /opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
-			printf '{"ok":true,"msg":"AdGuard остановлен, DNS переключён на dnsmasq"}\n'
+			if [ -f /opt/etc/init.d/S56dnsmasq ]; then
+				timeout 15 /opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1 || timeout 15 /opt/etc/init.d/S56dnsmasq start >/dev/null 2>&1 || true
+			fi
+			[ -f /opt/etc/init.d/S09dnscrypt-proxy2 ] && grep -q dnscrypt /opt/etc/dnsmasq.conf 2>/dev/null && {
+				timeout 10 /opt/etc/init.d/S09dnscrypt-proxy2 start >/dev/null 2>&1 || true
+			}
+			_dns_ok="false"
+			pidof dnsmasq >/dev/null 2>&1 && _dns_ok="true"
+			printf '{"ok":true,"msg":"AdGuard остановлен, DNS переключён на dnsmasq","dnsmasq":"%s"}\n' "$_dns_ok"
 			;;
 		vless_new)
 			check_token "$token"

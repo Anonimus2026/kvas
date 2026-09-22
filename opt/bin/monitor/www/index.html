@@ -1752,18 +1752,19 @@ function adguardOn(btn) {
 
 function adguardOff(btn) {
   var el = document.getElementById('agMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Остановка...</span>';
+  el.innerHTML = '<span style="color:#8b949e;">Остановка... до 30с</span>';
   apiBtn('/cgi-bin/manage.sh?action=adguard_off', btn, function(d){
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.msg || 'AdGuard выключен';
       loadAdguardStatus();
       loadSystemStatus();
+      loadHealth();
     } else {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка';
     }
-  }, 60000);
+  }, 120000);
 }
 
 /* ========== VPN SETUP ========== */
