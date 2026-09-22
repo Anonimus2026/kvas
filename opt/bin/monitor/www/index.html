@@ -666,8 +666,9 @@ function renderHealthDetail(which) {
     el.innerHTML = '<b style="color:#f85149">VPN: не запущен</b><br>Ни один VPN-процесс не работает.<br>Попробуйте: <code>kvas vless on</code> / <code>kvas hysteria on</code>';
   } else if (which === 'adg') {
     var conf = s.ag_conf === 'true', http = s.ag_http === 'true';
-    if (conf && http) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Конфиг включён, HTTP :3000 отвечает.'; return; }
-    if (conf && !http) { el.innerHTML = '<b style="color:#d29922">AdGuard: конфиг есть, HTTP не отвечает</b><br>Сервис не поднялся или порт :3000 заблокирован.<br>Попробуйте: <code>/opt/etc/init.d/S99adguardhome restart</code>'; return; }
+    var aport = s.ag_port || '3000';
+    if (conf && http) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Конфиг включён, HTTP :' + aport + ' отвечает.'; return; }
+    if (conf && !http) { el.innerHTML = '<b style="color:#d29922">AdGuard: конфиг есть, HTTP не отвечает</b><br>Сервис не поднялся или порт :' + aport + ' недоступен.<br>Попробуйте: <code>/opt/etc/init.d/S99adguardhome restart</code>'; return; }
     el.innerHTML = '<b style="color:#f85149">AdGuard: выключен</b><br>ADGUARD_ENABLE=false или init-скрипт отсутствует.<br>Попробуйте: <code>kvas adguard on</code>';
   } else if (which === 'dns') {
     var alive = s.dns_alive === 'running', res = s.dns_resolve === 'true', blk = s.adblock === 'true';

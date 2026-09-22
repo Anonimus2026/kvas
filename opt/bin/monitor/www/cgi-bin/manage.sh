@@ -269,14 +269,16 @@ main() {
 			vpn_port="false"
 			command -v ss >/dev/null 2>&1 && { ss -tlnp 2>/dev/null | grep -qE ':(1097|10808) ' && vpn_port="true"; }
 			[ "$vpn_port" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -qE ':(1097|10808) ' && vpn_port="true"
-			# AdGuard: conf enabled + init exists + HTTP 3000 responds (real)
+			# AdGuard: conf enabled + init exists + HTTP on actual bind_port (real)
 			ag_conf="false"
 			[ "$(grep '^ADGUARD_ENABLE=' /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)" = "true" ] && [ -f /opt/etc/init.d/S99adguardhome ] && ag_conf="true"
+			ag_port=$(grep '^bind_port:' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | head -1 | awk '{print $2}' | tr -d '\r')
+			[ -z "$ag_port" ] && ag_port=3000
 			ag_http="false"
 			if command -v wget >/dev/null 2>&1; then
-				wget -q -O /dev/null -T 2 "http://127.0.0.1:3000" 2>/dev/null && ag_http="true"
+				wget -q -O /dev/null -T 2 "http://127.0.0.1:${ag_port}" 2>/dev/null && ag_http="true"
 			elif command -v curl >/dev/null 2>&1; then
-				curl -s -o /dev/null -m 2 "http://127.0.0.1:3000" 2>/dev/null && ag_http="true"
+				curl -s -o /dev/null -m 2 "http://127.0.0.1:${ag_port}" 2>/dev/null && ag_http="true"
 			fi
 			# dnsmasq: init.d alive + dig resolves (real)
 			dns_alive=$(check_service S56dnsmasq)
@@ -292,8 +294,8 @@ main() {
 			# Failover: mode + daemon PID + last check (kill -0 is real liveness)
 			fo_mode=$(get_failover_mode); [ -z "$fo_mode" ] && fo_mode="manual"
 			fo_daemon=$(check_failover_daemon)
-			printf '{"ok":true,"vpn_proc":"%s","vpn_port":"%s","ag_conf":"%s","ag_http":"%s","dns_alive":"%s","dns_resolve":"%s","adblock":"%s","fo_mode":"%s","fo_daemon":"%s"}\n' \
-				"$vpn_proc" "$vpn_port" "$ag_conf" "$ag_http" "$dns_alive" "$dns_resolve" "$adblock_conf" "$fo_mode" "$fo_daemon"
+			printf '{"ok":true,"vpn_proc":"%s","vpn_port":"%s","ag_conf":"%s","ag_http":"%s","ag_port":"%s","dns_alive":"%s","dns_resolve":"%s","adblock":"%s","fo_mode":"%s","fo_daemon":"%s"}\n' \
+				"$vpn_proc" "$vpn_port" "$ag_conf" "$ag_http" "$ag_port" "$dns_alive" "$dns_resolve" "$adblock_conf" "$fo_mode" "$fo_daemon"
 			;;
 		hosts)
 			check_token "$token"
@@ -605,18 +607,20 @@ main() {
 		adguard_status)
 			check_token "$token"
 			_enabled=$(grep "^ADGUARD_ENABLE=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
+			_ag_port=$(grep '^bind_port:' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | head -1 | awk '{print $2}' | tr -d '\r')
+			[ -z "$_ag_port" ] && _ag_port=3000
 			_http="false"
 			if command -v wget >/dev/null 2>&1; then
-				wget -q -O /dev/null -T 2 "http://127.0.0.1:3000" 2>/dev/null && _http="true"
+				wget -q -O /dev/null -T 2 "http://127.0.0.1:${_ag_port}" 2>/dev/null && _http="true"
 			elif command -v curl >/dev/null 2>&1; then
-				curl -s -o /dev/null -m 2 "http://127.0.0.1:3000" 2>/dev/null && _http="true"
+				curl -s -o /dev/null -m 2 "http://127.0.0.1:${_ag_port}" 2>/dev/null && _http="true"
 			fi
 			if [ "$_enabled" = "true" ] && [ -f /opt/etc/init.d/S99adguardhome ] && [ "$_http" = "true" ]; then
-				printf '{"ok":true,"adguard":"on"}\n'
+				printf '{"ok":true,"adguard":"on","port":"%s"}\n' "$_ag_port"
 			elif [ "$_enabled" = "true" ] && [ -f /opt/etc/init.d/S99adguardhome ]; then
-				printf '{"ok":true,"adguard":"degraded"}\n'
+				printf '{"ok":true,"adguard":"degraded","port":"%s"}\n' "$_ag_port"
 			else
-				printf '{"ok":true,"adguard":"off"}\n'
+				printf '{"ok":true,"adguard":"off","port":"%s"}\n' "$_ag_port"
 			fi
 			;;
 		adguard_on)
@@ -852,19 +856,8 @@ main() {
 		;;
 		adblock_status)
 			check_token "$token"
-			_dns=$(check_service S56dnsmasq)
-			_resolve="false"
-			if command -v nslookup >/dev/null 2>&1; then
-				nslookup google.com 127.0.0.1 >/dev/null 2>&1 && _resolve="true"
-			elif command -v dig >/dev/null 2>&1; then
-				dig +time=1 +tries=1 @127.0.0.1 google.com >/dev/null 2>&1 && _resolve="true"
-			fi
-			_block="false"
-			grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null && _block="true"
-			if [ "$_dns" = "running" ] && [ "$_resolve" = "true" ]; then
+			if grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
 				echo '{"ok":true,"adblock":"on"}'
-			elif [ "$_dns" = "running" ]; then
-				echo '{"ok":true,"adblock":"degraded"}'
 			else
 				echo '{"ok":true,"adblock":"off"}'
 			fi
