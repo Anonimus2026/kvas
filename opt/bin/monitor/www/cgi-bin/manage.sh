@@ -780,6 +780,16 @@ main() {
 				_dp=$(pidof dnsmasq 2>/dev/null)
 				[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
 			fi
+			# 5. Единый путь: если AdGuard ON — добавляем и в него
+			if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
+				if /opt/etc/init.d/S99adguardhome status 2>/dev/null | grep -qi alive; then
+					if [ -f /opt/apps/kvas/bin/libs/vpn ]; then
+						( . /opt/apps/kvas/bin/libs/main 2>/dev/null; . /opt/apps/kvas/bin/libs/vpn 2>/dev/null
+						  type add_host_to_adguard >/dev/null 2>&1 && add_host_to_adguard "$domain" >/dev/null 2>&1
+						) || true
+					fi
+				fi
+			fi
 			json_ok "добавлен $domain"
 		;;
 		parental_del)

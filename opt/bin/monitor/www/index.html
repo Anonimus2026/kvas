@@ -43,6 +43,17 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 .btn.danger:hover { background: #f8514922; }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn-sm { padding: 3px 10px; font-size: 11px; }
+.hchip { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:6px; background:#0d1117; border:1px solid #30363d; font-size:12px; }
+.hdot { width:8px; height:8px; border-radius:50%; background:#8b949e; flex:none; }
+.hdot.ok { background:#3fb950; }
+.hdot.warn { background:#d29922; }
+.hdot.bad { background:#f85149; }
+@media (max-width:600px){
+  body { padding:10px; }
+  .btn { min-height:44px; padding:10px 14px; }
+  .btn-sm { min-height:40px; padding:8px 12px; }
+  .tab { padding:12px 14px; min-height:44px; }
+}
 
 /* Messages */
 .msg { padding: 6px 12px; border-radius: 4px; margin: 6px 0; font-size: 12px; display: none; }
@@ -149,6 +160,19 @@ window.addEventListener('error', function(e){
       <button class="btn btn-sm" id="kvasUpgradeBtn" onclick="doKvasUpgrade(this)" style="margin-left:4px;display:none;">Обновить KVAS</button>
       <button class="btn btn-sm" id="kvasRollbackBtn" onclick="doKvasRollback(this)" style="margin-left:4px;display:none;">Откатить</button>
     </div>
+  </div>
+
+  <!-- Health -->
+  <div class="card">
+    <h3>Состояние сервисов</h3>
+    <div class="card-row" style="gap:8px;">
+      <span class="hchip"><span class="hdot" id="hdVpn"></span>VPN</span>
+      <span class="hchip"><span class="hdot" id="hdAdg"></span>AdGuard</span>
+      <span class="hchip"><span class="hdot" id="hdDns"></span>DNS/Adblock</span>
+      <span class="hchip"><span class="hdot" id="hdFo"></span>Failover</span>
+      <button class="btn btn-sm" onclick="loadHealth()" style="margin-left:4px;">Обновить</button>
+    </div>
+    <div id="healthHint" style="font-size:11px;color:#8b949e;margin-top:6px;"></div>
   </div>
 
   <!-- Hosts -->
@@ -595,6 +619,7 @@ function showMain() {
   document.getElementById('mainUi').style.display = 'block';
   document.getElementById('logoutBtn').style.display = '';
   loadSystemStatus();
+  loadHealth();
   loadVpnInterfaces();
   loadHosts();
   loadRouteLists();
@@ -608,6 +633,56 @@ function showMain() {
   loadTags();
   fetchDevices();
   logMsg('log-info', 'Мониторинг трафика KVAS');
+}
+
+function setDot(id, cls) {
+  var el = document.getElementById(id);
+  if (el) { el.className = 'hdot ' + (cls || ''); }
+}
+
+function loadHealth() {
+  setDot('hdVpn',''); setDot('hdAdg',''); setDot('hdDns',''); setDot('hdFo','');
+  var hint = document.getElementById('healthHint');
+  if (hint) hint.textContent = 'Проверка…';
+  var left = 4, bad = 0, warn = 0;
+  function step() {
+    left--;
+    if (left > 0) return;
+    if (hint) {
+      hint.textContent = bad ? ('Проблемы: ' + bad) : (warn ? 'Частично OK' : 'Все сервисы OK');
+    }
+  }
+  api('/cgi-bin/manage.sh?action=system_status', function(d){
+    if (d.ok) {
+      var up = (d.vless === 'running' || d.hysteria === 'running');
+      setDot('hdVpn', up ? 'ok' : 'bad');
+      if (!up) bad++;
+    } else { setDot('hdVpn','bad'); bad++; }
+    step();
+  });
+  api('/cgi-bin/manage.sh?action=adguard_status', function(d){
+    if (d.ok) {
+      setDot('hdAdg', d.adguard === 'on' ? 'ok' : 'warn');
+      if (d.adguard !== 'on') warn++;
+    } else { setDot('hdAdg','bad'); bad++; }
+    step();
+  });
+  api('/cgi-bin/manage.sh?action=adblock_status', function(d){
+    if (d.ok) {
+      setDot('hdDns', d.adblock === 'on' ? 'ok' : 'warn');
+      if (d.adblock !== 'on') warn++;
+    } else { setDot('hdDns','bad'); bad++; }
+    step();
+  });
+  api('/cgi-bin/manage.sh?action=failover_status', function(d){
+    if (d.ok) {
+      var foOn = d.enabled === 'failover';
+      var run = d.daemon === 'true';
+      setDot('hdFo', foOn ? (run ? 'ok' : 'warn') : 'warn');
+      if (foOn && !run) warn++;
+    } else { setDot('hdFo','bad'); bad++; }
+    step();
+  });
 }
 
 /* ========== TABS ========== */
