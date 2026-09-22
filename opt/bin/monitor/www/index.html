@@ -177,18 +177,6 @@ window.addEventListener('error', function(e){
     </div>
     <div id="healthHint" style="font-size:11px;color:#8b949e;margin-top:6px;"></div>
     <div id="healthDetails" style="display:none;margin-top:8px;padding:8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;font-size:12px;"></div>
-    <div id="trafficBox" style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d;">
-      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#8b949e;margin-bottom:4px;">
-        <span>Активный: <b id="trIface" style="color:#c9d1d9;">—</b></span>
-        <span>
-          <span style="color:#3fb950;">↓ <b id="trRx">—</b></span>
-          &nbsp;
-          <span style="color:#a371f7;">↑ <b id="trTx">—</b></span>
-        </span>
-      </div>
-      <div id="trTunnels" style="font-size:11px;margin-bottom:4px;"></div>
-      <canvas id="trCanvas" width="640" height="56" style="width:100%;height:56px;display:block;background:#0d1117;border:1px solid #30363d;border-radius:4px;"></canvas>
-    </div>
   </div>
 
   <!-- Hosts -->
@@ -654,7 +642,6 @@ function showMain() {
   document.getElementById('logoutBtn').style.display = '';
   loadSystemStatus();
   loadHealth();
-  trStart();
   loadFailoverHistory();
   loadVpnInterfaces();
   loadHosts();
@@ -768,140 +755,6 @@ function loadHealth() {
     }
     if (_healthOpen) renderHealthDetail(_healthOpen);
   }, 30000);
-}
-
-/* ===== Traffic graph (low-CPU: /proc/net/dev counters + canvas) ===== */
-var _trHist = []; /* [{rx,tx,rxBps,txBps}] rolling window */
-var _trPrev = null;
-var _trTimer = null;
-var _trMax = 60; /* ~2min @ 2s */
-
-function fmtRate(bps) {
-  if (!isFinite(bps) || bps < 0) bps = 0;
-  if (bps < 1024) return Math.round(bps) + ' Б/с';
-  if (bps < 1048576) return (bps / 1024).toFixed(1) + ' КБ/с';
-  if (bps < 1073741824) return (bps / 1048576).toFixed(2) + ' МБ/с';
-  return (bps / 1073741824).toFixed(2) + ' ГБ/с';
-}
-
-function trDraw() {
-  var cv = document.getElementById('trCanvas');
-  if (!cv || !cv.getContext) return;
-  var ctx = cv.getContext('2d');
-  var W = cv.width, H = cv.height;
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#0d1117';
-  ctx.fillRect(0, 0, W, H);
-  /* grid */
-  ctx.strokeStyle = '#21262d';
-  ctx.lineWidth = 1;
-  for (var g = 1; g < 4; g++) {
-    var gy = Math.round(H * g / 4) + 0.5;
-    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
-  }
-  var n = _trHist.length;
-  if (n < 2) {
-    ctx.fillStyle = '#484f58';
-    ctx.font = '11px sans-serif';
-    ctx.fillText('Собираем данные…', 10, H / 2 + 4);
-    return;
-  }
-  var maxV = 1;
-  for (var i = 0; i < n; i++) {
-    if (_trHist[i].rxBps > maxV) maxV = _trHist[i].rxBps;
-    if (_trHist[i].txBps > maxV) maxV = _trHist[i].txBps;
-  }
-  /* smooth max a bit so line isn't always at ceiling */
-  maxV = maxV * 1.15;
-  var pad = 3;
-  function xy(i, v) {
-    var x = (i / (_trMax - 1)) * (W - 2) + 1;
-    var y = H - pad - (v / maxV) * (H - 2 * pad);
-    if (y < pad) y = pad;
-    if (y > H - pad) y = H - pad;
-    return [x, y];
-  }
-  function stroke(key, color) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    for (var i = 0; i < n; i++) {
-      var p = xy(i, _trHist[i][key]);
-      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
-    }
-    ctx.stroke();
-  }
-  /* fill under rx lightly */
-  if (n > 1) {
-    ctx.beginPath();
-    for (var j = 0; j < n; j++) {
-      var pj = xy(j, _trHist[j].rxBps);
-      if (j === 0) ctx.moveTo(pj[0], pj[1]); else ctx.lineTo(pj[0], pj[1]);
-    }
-    ctx.lineTo(xy(n - 1, 0)[0], H);
-    ctx.lineTo(xy(0, 0)[0], H);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(63,185,80,0.12)';
-    ctx.fill();
-  }
-  stroke('rxBps', '#3fb950');
-  stroke('txBps', '#a371f7');
-  /* scale label */
-  ctx.fillStyle = '#484f58';
-  ctx.font = '9px sans-serif';
-  ctx.fillText(fmtRate(maxV), 4, 10);
-}
-
-function fmtBytes(n) {
-  n = parseInt(n, 10) || 0;
-  if (n < 1024) return n + ' Б';
-  if (n < 1048576) return (n / 1024).toFixed(1) + ' КБ';
-  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' МБ';
-  return (n / 1073741824).toFixed(2) + ' ГБ';
-}
-
-function trTick() {
-  if (document.hidden) return;
-  api('/cgi-bin/manage.sh?action=traffic', function(d){
-    if (!d.ok) return;
-    var ifaceEl = document.getElementById('trIface');
-    if (ifaceEl) ifaceEl.textContent = d.active || '—';
-    /* per-tunnel list from failover conf */
-    var box = document.getElementById('trTunnels');
-    if (box && d.tunnels && d.tunnels.length) {
-      var html = '';
-      for (var i = 0; i < d.tunnels.length; i++) {
-        var t = d.tunnels[i];
-        var run = t.running === 'true';
-        var act = t.active === 'true';
-        var dot = run ? (act ? '#3fb950' : '#d29922') : '#484f58';
-        html += '<div style="display:flex;gap:8px;flex-wrap:wrap;padding:1px 0;color:' + (run ? '#c9d1d9' : '#6e7681') + ';">' +
-          '<span style="min-width:70px;"><span style="color:' + dot + ';">●</span> ' + t.name +
-          (act ? ' <b style="color:#3fb950;">*</b>' : '') + '</span>' +
-          '<span style="color:#8b949e;">принято:</span> <b>' + fmtBytes(t.rx) + '</b>' +
-          '<span style="color:#8b949e;">отправлено:</span> <b>' + fmtBytes(t.tx) + '</b>' +
-          (run ? '<span style="color:#3fb950;">↓' + fmtRate(parseFloat(t.rx_bps) || 0) + '</span>' +
-                 '<span style="color:#a371f7;">↑' + fmtRate(parseFloat(t.tx_bps) || 0) + '</span>' : '<span style="color:#484f58;">остановлен</span>') +
-          '</div>';
-      }
-      box.innerHTML = html;
-    }
-    var rxBps = parseFloat(d.rx_bps) || 0;
-    var txBps = parseFloat(d.tx_bps) || 0;
-    _trHist.push({ rx: 0, tx: 0, rxBps: rxBps, txBps: txBps });
-    if (_trHist.length > _trMax) _trHist.shift();
-    var elR = document.getElementById('trRx');
-    var elT = document.getElementById('trTx');
-    if (elR) elR.textContent = fmtRate(rxBps);
-    if (elT) elT.textContent = fmtRate(txBps);
-    trDraw();
-  }, 8000);
-}
-
-function trStart() {
-  if (_trTimer) return;
-  trTick();
-  _trTimer = setInterval(trTick, 2000);
 }
 
 function loadFailoverHistory() {
