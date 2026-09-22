@@ -1677,13 +1677,14 @@ function agIsLocalHost(h) {
 
 function agWebLinkHtml(port) {
   var h = location.hostname;
-  var url = 'http://' + h + ':' + port;
   if (agIsLocalHost(h)) {
+    var url = 'http://' + h + ':' + port;
     return 'Web: <a href="' + url + '" target="_blank" rel="noopener" style="color:#58a6ff;">' + url + '</a>';
   }
-  return 'Web: <a href="' + url + '" target="_blank" rel="noopener" style="color:#58a6ff;">' + url + '</a>' +
-    '<br><span style="color:#d29922;font-size:12px;">Домен keenDNS — добавьте проброс порта ' + port +
-    ' → роутер:' + port + ' в Настройки → Доменное имя, иначе ссылка не откроется.</span>';
+  var durl = 'http://' + h;
+  return 'Web: <a href="' + durl + '" target="_blank" rel="noopener" style="color:#58a6ff;">' + durl + '</a>' +
+    '<br><span style="color:#d29922;font-size:12px;">Домен keenDNS — проброс порта ' + port +
+    ' → роутер:' + port + ' (Настройки → Доменное имя). Порт в ссылке не нужен.</span>';
 }
 
 function adguardPoll(expect, n, btn) {
