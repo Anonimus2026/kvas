@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-546
+**Версия:** 1.1.9_beta-10-547
 **Дата:** 22.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,9 +18,10 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок v546 (bin, etc, awg, hysteria + ipk)
-Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (= extracted ipk v546, байт-в-байт)
+C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-547_all.ipk  ← текущий релиз
+Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
-C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-546_all.ipk  ← текущий релиз
+C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-547_all.ipk  ← текущий релиз
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
 C:\Users\Pavel\kvas\kvas-original\          ← git clone форка (для пуша, ~90 коммитов)
 ```
@@ -134,7 +135,7 @@ kvas xray [core [версия]]
 | `set_pass` без токена | SKIP by design (LAN) |
 | `rm_tmp_cache` (upgrade:119) | `find / \| grep '/tmp' \| grep kvas \| xargs rm -rf` — грубо, но фильтруется по kvas; чистит tmp перед установкой |
 | `/tmp/build.sh` | устарел, не использовать (§3) |
-| tags.list в опубликованном ipk v546 | мог содержать тестовые записи; в SOT (`backup_v546/etc/conf/tags.list`) вычищен — для чистоты нужен следующий билд |
+| tags.list в опубликованном ipk v546 | тестовые записи; **v547 собран чистым** (CLEAN) — больше не актуально |
 | `kvas-original` vs upstream | diverged; git push — только через kvas-original |
 
 ## 12. Идея (не реализовано): Per-domain routing
