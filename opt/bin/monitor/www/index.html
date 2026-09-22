@@ -855,11 +855,27 @@ function trTick() {
   if (document.hidden) return;
   api('/cgi-bin/manage.sh?action=traffic', function(d){
     if (!d.ok) return;
+    var ifaceEl = document.getElementById('trIface');
+    if (ifaceEl && d.iface) ifaceEl.textContent = d.iface;
+    var rxBps, txBps;
+    if (d.rx_bps !== undefined && d.rx_bps !== '') {
+      /* server-side rate from /proc/net/dev delta */
+      rxBps = parseFloat(d.rx_bps) || 0;
+      txBps = parseFloat(d.tx_bps) || 0;
+      _trHist.push({ rx: parseInt(d.rx, 10) || 0, tx: parseInt(d.tx, 10) || 0, rxBps: rxBps, txBps: txBps });
+      if (_trHist.length > _trMax) _trHist.shift();
+      var elR = document.getElementById('trRx');
+      var elT = document.getElementById('trTx');
+      if (elR) elR.textContent = fmtRate(rxBps);
+      if (elT) elT.textContent = fmtRate(txBps);
+      trDraw();
+      _trPrev = { rx: parseInt(d.rx, 10) || 0, tx: parseInt(d.tx, 10) || 0, t: Date.now(), iface: d.iface || '' };
+      return;
+    }
+    /* fallback: client-side delta from raw counters */
     var rx = parseInt(d.rx, 10) || 0;
     var tx = parseInt(d.tx, 10) || 0;
-    var ifaceEl = document.getElementById('trIface');
     var changed = _trPrev && _trPrev.iface && d.iface && _trPrev.iface !== d.iface;
-    if (ifaceEl && d.iface) ifaceEl.textContent = d.iface;
     if (changed) { _trPrev = null; _trHist = []; }
     if (_trPrev) {
       var now = Date.now();
@@ -869,14 +885,14 @@ function trTick() {
         var txD = tx - _trPrev.tx;
         if (rxD < 0) rxD = 0;
         if (txD < 0) txD = 0;
-        var rxBps = rxD / dt;
-        var txBps = txD / dt;
+        rxBps = rxD / dt;
+        txBps = txD / dt;
         _trHist.push({ rx: rx, tx: tx, rxBps: rxBps, txBps: txBps });
         if (_trHist.length > _trMax) _trHist.shift();
-        var elR = document.getElementById('trRx');
-        var elT = document.getElementById('trTx');
-        if (elR) elR.textContent = fmtRate(rxBps);
-        if (elT) elT.textContent = fmtRate(txBps);
+        var elR2 = document.getElementById('trRx');
+        var elT2 = document.getElementById('trTx');
+        if (elR2) elR2.textContent = fmtRate(rxBps);
+        if (elT2) elT2.textContent = fmtRate(txBps);
         trDraw();
       }
     } else {

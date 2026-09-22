@@ -315,38 +315,94 @@ main() {
 			;;
 		traffic)
 			check_token "$token"
-			_tr_iface=""
-			# 1) Real VPN kernel ifaces only (not tunl0/sit/gre/teql/dummy)
-			for _n in $(awk -F: 'NR>2{gsub(/ /,"",$1); print $1}' /proc/net/dev 2>/dev/null); do
-				case "$_n" in
-					lo|tunl0|sit0|ip6tnl0|teql0|gre0|gretap0|erspan0|ip_vti0|ip6_vti0|ip6gre0) continue ;;
-					dummy*|ifb*|veth*|br-*|docker*|tailscale*|bond*|vlan*|@*) continue ;;
-					wg[0-9]*|awg[0-9]*|utun[0-9]*|tun[0-9]*|hy[0-9]*|xray[0-9]*|ppp[0-9]*)
-						# must have non-zero counters (actively used)
-						_tr_line=$(awk -v ifc="${_n}:" '$1==ifc{print $2+$10; exit}' /proc/net/dev 2>/dev/null)
-						case "$_tr_line" in ''|0|*[!0-9]*) continue ;; esac
-						_tr_iface="$_n"; break ;;
-				esac
-			done
-			# 2) WAN (default route) — userspace VPN (xray/hy/wireproxy) goes here
-			if [ -z "$_tr_iface" ]; then
-				_tr_iface=$(awk '$2=="00000000" && $3=="00000000"{print $1; exit}' /proc/net/route 2>/dev/null)
+			_tr_state=/tmp/kvas_tr_state
+			_tr_now=$(date +%s 2>/dev/null || echo 0)
+			_tr_wan=$(awk '$2=="00000000" && $3=="00000000"{print $1; exit}' /proc/net/route 2>/dev/null)
+			# Snapshot candidates: real tunnels (activity-capable) + WAN
+			_tr_snap=""
+			while IFS= read -r _n; do
+				[ -z "$_n" ] && continue
+				_tr_line=$(awk -v ifc="${_n}:" '$1==ifc{print $2, $10; exit}' /proc/net/dev 2>/dev/null)
+				[ -z "$_tr_line" ] && continue
+				_tr_r=$(echo "$_tr_line" | awk '{print $1}')
+				_tr_t=$(echo "$_tr_line" | awk '{print $2}')
+				case "$_tr_r" in ''|*[!0-9]*) _tr_r=0 ;; esac
+				case "$_tr_t" in ''|*[!0-9]*) _tr_t=0 ;; esac
+				_tr_snap="${_tr_snap}${_n} ${_tr_r} ${_tr_t}\n"
+			done <<EOF
+$(awk -F: 'NR>2{n=$1; gsub(/ /,"",n); if(n=="lo"||n=="tunl0"||n=="sit0"||n=="ip6tnl0"||n=="teql0"||n=="gre0"||n=="gretap0"||n=="erspan0"||n=="ip_vti0"||n=="ip6_vti0"||n=="ip6gre0") next; if(n ~ /^(dummy|ifb|veth|br-|docker|tailscale|bond)/) next; if(n ~ /^(wg[0-9]|awg[0-9]|utun[0-9]|tun[0-9]|hy[0-9]|xray[0-9]|ppp[0-9])/) print n}' /proc/net/dev 2>/dev/null)
+${_tr_wan}
+EOF
+			# Previous snapshot: "iface rx tx" lines after timestamp
+			_tr_best_iface=""
+			_tr_best_delta=-1
+			_tr_bps_rx=0
+			_tr_bps_tx=0
+			_tr_out_rx=0
+			_tr_out_tx=0
+			if [ -s "$_tr_state" ]; then
+				_tr_old_t=$(head -1 "$_tr_state" 2>/dev/null)
+				_tr_dt=$(( _tr_now - _tr_old_t ))
+				[ "$_tr_dt" -gt 0 ] 2>/dev/null || _tr_dt=0
+				while read -r _n _r _t; do
+					[ -z "$_n" ] && continue
+					_nr=""; _nt=""
+					_nr=$(echo "$_tr_snap" | awk -v i="$_n" '$1==i{print $2; exit}')
+					_nt=$(echo "$_tr_snap" | awk -v i="$_n" '$1==i{print $3; exit}')
+					[ -z "$_nr" ] && continue
+					_d1=$((_nr - _r)); _d2=$((_nt - _t))
+					[ "$_d1" -lt 0 ] 2>/dev/null && _d1=0
+					[ "$_d2" -lt 0 ] 2>/dev/null && _d2=0
+					_da=$((_d1 + _d2))
+					if [ "$_da" -gt "$_tr_best_delta" ]; then
+						_tr_best_delta=$_da
+						_tr_best_iface=$_n
+						_tr_out_rx=$_nr
+						_tr_out_tx=$_nt
+						if [ "$_tr_dt" -gt 0 ]; then
+							_tr_bps_rx=$(( _d1 / _tr_dt ))
+							_tr_bps_tx=$(( _d2 / _tr_dt ))
+						fi
+					fi
+				done <<EOF
+$(tail -n +2 "$_tr_state" 2>/dev/null)
+EOF
 			fi
-			# 3) Config / hard fallback
-			if [ -z "$_tr_iface" ]; then
-				_tr_iface=$(grep '^INFACE_CLI=' "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | cut -d, -f1)
+			# Save snapshot for next sample
+			{
+				echo "$_tr_now"
+				printf '%b' "$_tr_snap"
+			} > "$_tr_state" 2>/dev/null || true
+			# First sample or no activity: pick preferred iface (active tunnel or WAN)
+			if [ -z "$_tr_best_iface" ] || [ "$_tr_best_delta" -le 0 ]; then
+				_tr_best_iface=""
+				# prefer tunnel with non-zero counters
+				while read -r _n _r _t; do
+					[ -z "$_n" ] && continue
+					if [ "$_n" != "$_tr_wan" ]; then
+						_tr_s=$((_r + _t))
+						[ "$_tr_s" -gt 0 ] 2>/dev/null && { _tr_best_iface=$_n; _tr_out_rx=$_r; _tr_out_tx=$_t; break; }
+					fi
+				done <<EOF
+$(printf '%b' "$_tr_snap")
+EOF
+				if [ -z "$_tr_best_iface" ]; then
+					_tr_best_iface=${_tr_wan:-eth0}
+					_tr_line=$(awk -v ifc="${_tr_best_iface}:" '$1==ifc{print $2, $10; exit}' /proc/net/dev 2>/dev/null)
+					if [ -n "$_tr_line" ]; then
+						_tr_out_rx=$(echo "$_tr_line" | awk '{print $1}')
+						_tr_out_tx=$(echo "$_tr_line" | awk '{print $2}')
+					fi
+				fi
+				_tr_bps_rx=0
+				_tr_bps_tx=0
 			fi
-			[ -z "$_tr_iface" ] && _tr_iface="eth0"
-			_tr_rx=0; _tr_tx=0
-			_tr_line=$(awk -v ifc="${_tr_iface}:" '$1==ifc{print $2, $10; exit}' /proc/net/dev 2>/dev/null)
-			if [ -n "$_tr_line" ]; then
-				_tr_rx=$(echo "$_tr_line" | awk '{print $1}')
-				_tr_tx=$(echo "$_tr_line" | awk '{print $2}')
-			fi
-			case "$_tr_rx" in ''|*[!0-9]*) _tr_rx=0 ;; esac
-			case "$_tr_tx" in ''|*[!0-9]*) _tr_tx=0 ;; esac
-			printf '{"ok":true,"iface":"%s","rx":"%s","tx":"%s"}\n' \
-				"$(json_str "$_tr_iface")" "$_tr_rx" "$_tr_tx"
+			case "$_tr_out_rx" in ''|*[!0-9]*) _tr_out_rx=0 ;; esac
+			case "$_tr_out_tx" in ''|*[!0-9]*) _tr_out_tx=0 ;; esac
+			case "$_tr_bps_rx" in ''|*[!0-9]*) _tr_bps_rx=0 ;; esac
+			case "$_tr_bps_tx" in ''|*[!0-9]*) _tr_bps_tx=0 ;; esac
+			printf '{"ok":true,"iface":"%s","rx":"%s","tx":"%s","rx_bps":"%s","tx_bps":"%s"}\n' \
+				"$(json_str "$_tr_best_iface")" "$_tr_out_rx" "$_tr_out_tx" "$_tr_bps_rx" "$_tr_bps_tx"
 			;;
 		hosts)
 			check_token "$token"
