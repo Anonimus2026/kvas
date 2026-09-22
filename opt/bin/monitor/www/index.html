@@ -49,6 +49,7 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 .hdot.ok { background:#3fb950; }
 .hdot.warn { background:#d29922; }
 .hdot.bad { background:#f85149; }
+.hdot.off { background:#484f58; }
 @media (max-width:600px){
   body { padding:10px; }
   .btn { min-height:44px; padding:10px 14px; }
@@ -688,10 +689,15 @@ function renderHealthDetail(which) {
     var aport = s.ag_port || '8086';
     var run = false;
     try { run = (document.getElementById('agStatus') || {}).textContent === 'вкл'; } catch (e) {}
-    if (conf && (http || run)) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Порт :' + aport + ' слушает.<br>' + agWebLinkHtml(aport); return; }
+    if (conf && (http || run)) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Порт :' + aport + ' слушает.<br>' + agWebLinkHtml(aport, false); return; }
     if (conf && !http && !run) { el.innerHTML = '<b style="color:#d29922">AdGuard: конфиг есть, порт не слушает</b><br>Порт :' + aport + ' не найден в ss/netstat.<br>Попробуйте: <code>/opt/etc/init.d/S99adguardhome restart</code>'; return; }
-    el.innerHTML = '<b style="color:#f85149">AdGuard: выключен</b><br>ADGUARD_ENABLE=false или init-скрипт отсутствует.<br>Попробуйте: <code>kvas adguard on</code>';
+    el.innerHTML = '<b style="color:#8b949e">AdGuard: выключен</b><br>Нормально — DNS обслуживает dnsmasq (взаимоисключающие сервисы).';
   } else if (which === 'dns') {
+    var agOn = s.ag_conf === 'true';
+    if (agOn) {
+      el.innerHTML = '<b style="color:#8b949e">dnsmasq: выключен</b><br>Нормально — DNS обслуживает AdGuard (взаимоисключающие сервисы).';
+      return;
+    }
     var alive = s.dns_alive === 'running', res = s.dns_resolve === 'true', blk = s.adblock === 'true';
     if (alive && res) {
       var extra = blk ? '<br>Adblock: включён (addn-hosts).' : '<br>Adblock: выключен.';
@@ -699,7 +705,7 @@ function renderHealthDetail(which) {
       return;
     }
     if (alive && !res) { el.innerHTML = '<b style="color:#d29922">dnsmasq: жив, но порт :53 не слушает</b><br>S56dnsmasq запущен, но UDP/53 не найден.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq restart</code>'; return; }
-    el.innerHTML = '<b style="color:#f85149">dnsmasq: не запущен</b><br>S56dnsmasq не отвечает.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq start</code>';
+    el.innerHTML = '<b style="color:#f85149">dnsmasq: не запущен</b><br>S56dnsmasq не отвечает, AdGuard выключен — DNS недоступен.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq start</code>';
   } else if (which === 'fo') {
     var mode = s.fo_mode, run = s.fo_daemon === 'true';
     if (mode !== 'failover') { el.innerHTML = '<b style="color:#8b949e">Failover: выключен</b><br>Режим: ' + mode + '.<br>Попробуйте: <code>kvas failover on</code>'; return; }
@@ -726,15 +732,19 @@ function loadHealth() {
     setDot('hdVpn', vpnOk ? 'ok' : (vpnWarn ? 'warn' : 'bad'));
     if (vpnOk) {} else if (vpnWarn) warn++; else bad++;
 
-    var agOk = (d.ag_conf === 'true' && d.ag_http === 'true');
-    var agWarn = (d.ag_conf === 'true');
-    setDot('hdAdg', agOk ? 'ok' : (agWarn ? 'warn' : 'bad'));
-    if (agOk) {} else if (agWarn) warn++; else bad++;
-
-    var dnsOk = (d.dns_alive === 'running' && d.dns_resolve === 'true');
-    var dnsWarn = (d.dns_alive === 'running');
-    setDot('hdDns', dnsOk ? 'ok' : (dnsWarn ? 'warn' : 'bad'));
-    if (dnsOk) {} else if (dnsWarn) warn++; else bad++;
+    var agOn = (d.ag_conf === 'true');
+    if (agOn) {
+      var agOk = (d.ag_http === 'true');
+      setDot('hdAdg', agOk ? 'ok' : 'warn');
+      if (agOk) {} else warn++;
+      setDot('hdDns', 'off');
+    } else {
+      setDot('hdAdg', 'off');
+      var dnsOk = (d.dns_alive === 'running' && d.dns_resolve === 'true');
+      var dnsWarn = (d.dns_alive === 'running');
+      setDot('hdDns', dnsOk ? 'ok' : (dnsWarn ? 'warn' : 'bad'));
+      if (dnsOk) {} else if (dnsWarn) warn++; else bad++;
+    }
 
     if (d.fo_mode !== 'failover') { setDot('hdFo','warn'); warn++; }
     else if (d.fo_daemon === 'true') { setDot('hdFo','ok'); }
@@ -1666,6 +1676,8 @@ function failover(cmd, btn) {
 }
 
 /* ========== ADGUARD ========== */
+var AG_SUB_KEY = 'kvas_ag_web_sub';
+
 function agIsLocalHost(h) {
   h = h || '';
   if (!h) return true;
@@ -1675,16 +1687,60 @@ function agIsLocalHost(h) {
   return false;
 }
 
-function agWebLinkHtml(port) {
+function agKeenRest() {
+  var h = location.hostname || '';
+  var i = h.indexOf('.');
+  return i >= 0 ? h.substring(i + 1) : h;
+}
+
+function agGetSub() {
+  try { return (localStorage.getItem(AG_SUB_KEY) || '').trim(); } catch (e) { return ''; }
+}
+
+function agFullDomain() {
+  var sub = agGetSub();
+  if (!sub) return '';
+  if (sub.indexOf('.') >= 0) return sub;
+  return sub + '.' + agKeenRest();
+}
+
+function agSaveSub() {
+  var inp = document.getElementById('agSubInput');
+  var v = ((inp && inp.value) || '').trim().replace(/[^a-zA-Z0-9._-]/g, '');
+  if (!v) { alert('Введите поддомен, например adguard'); return; }
+  try { localStorage.setItem(AG_SUB_KEY, v); } catch (e) {}
+  loadAdguardStatus();
+}
+
+function agEditSub() {
+  try { localStorage.removeItem(AG_SUB_KEY); } catch (e) {}
+  loadAdguardStatus();
+}
+
+function agWebLinkHtml(port, editable) {
   var h = location.hostname;
   if (agIsLocalHost(h)) {
     var url = 'http://' + h + ':' + port;
     return 'Web: <a href="' + url + '" target="_blank" rel="noopener" style="color:#58a6ff;">' + url + '</a>';
   }
-  var durl = 'http://' + h;
-  return 'Web: <a href="' + durl + '" target="_blank" rel="noopener" style="color:#58a6ff;">' + durl + '</a>' +
-    '<br><span style="color:#d29922;font-size:12px;">Домен keenDNS — проброс порта ' + port +
-    ' → роутер:' + port + ' (Настройки → Доменное имя). Порт в ссылке не нужен.</span>';
+  var full = agFullDomain();
+  if (full) {
+    var durl = 'http://' + full;
+    var html = 'Web: <a href="' + durl + '" target="_blank" rel="noopener" style="color:#58a6ff;">' + durl + '</a>';
+    if (editable) {
+      html += ' <button type="button" class="btn btn-sm" onclick="agEditSub()" style="margin-left:6px;">Изменить</button>';
+    }
+    html += '<br><span style="color:#d29922;font-size:12px;">Домен keenDNS — пробросьте порт ' + port + ' → роутер:' + port + ' (Настройки → Доменное имя). Порт в ссылке не нужен.</span>';
+    return html;
+  }
+  if (editable) {
+    return 'Проброс keenDNS — поддомен (до первой точки, запоминается): ' +
+      '<input type="text" id="agSubInput" placeholder="adguard" style="width:110px;margin:4px 4px 0 4px;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">' +
+      '<button type="button" class="btn btn-sm" onclick="agSaveSub()">Сохранить</button>' +
+      '<br><span style="color:#d29922;font-size:12px;">Будет ссылка http://ПОДДОМЕН.' + agKeenRest() +
+      ' + проброс порта ' + port + ' → роутер:' + port + ' в Настройки → Доменное имя.</span>';
+  }
+  return '<span style="color:#8b949e;">Домен keenDNS — поддомен web-ссылки задаётся в карточке AdGuard; проброс порта ' + port + ' → роутер:' + port + '.</span>';
 }
 
 function adguardPoll(expect, n, btn) {
@@ -1746,7 +1802,7 @@ function loadAdguardStatus() {
     if (offBtn) offBtn.disabled = !enabled;
     if (enabled && running) {
       el.innerHTML = '<span style="color:#3fb950;">вкл</span>';
-      if (hint) hint.innerHTML = agWebLinkHtml(port);
+      if (hint) hint.innerHTML = agWebLinkHtml(port, true);
     } else if (enabled) {
       el.innerHTML = '<span style="color:#d29922;">запускается</span>';
       if (hint) hint.textContent = 'Порт ' + port + ' — сервис ещё не отвечает';
