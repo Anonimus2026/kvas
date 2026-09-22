@@ -323,6 +323,9 @@ check_protocol() {
 switch_to() {
     local proto="$1"
     local lockfile="/tmp/kvas-failover-switch.lock"
+    local from=""
+    from=$(get_active_protocol 2>/dev/null)
+    [ -z "$from" ] && from="unknown"
     
     if [ -f "$lockfile" ]; then
         local lock_age=$(( $(date +%s) - $(stat -c %Y "$lockfile" 2>/dev/null || echo 0) ))
@@ -334,6 +337,7 @@ switch_to() {
     fi
     
     log_failover "Переключение на $proto..."
+    record_switch "$from" "$proto" "auto"
     date +%s > "$lockfile"
     
     {
@@ -347,6 +351,17 @@ switch_to() {
     
     stop_failover_daemon > /dev/null 2>&1
     exit 0
+}
+
+FAILOVER_HISTORY="/opt/var/log/kvas-failover-history.log"
+
+record_switch() {
+    local from="$1" to="$2" reason="${3:-auto}"
+    mkdir -p /opt/var/log
+    echo "$(date '+%Y-%m-%d %H:%M:%S')|${from}|${to}|${reason}" >> "$FAILOVER_HISTORY"
+    tail -50 "$FAILOVER_HISTORY" > "${FAILOVER_HISTORY}.tmp" 2>/dev/null
+    mv "${FAILOVER_HISTORY}.tmp" "$FAILOVER_HISTORY" 2>/dev/null
+    log_failover "SWITCH: $from -> $to ($reason)"
 }
 
 log_failover() {

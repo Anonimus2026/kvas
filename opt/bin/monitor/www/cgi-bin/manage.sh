@@ -269,24 +269,31 @@ main() {
 			vpn_port="false"
 			command -v ss >/dev/null 2>&1 && { ss -tlnp 2>/dev/null | grep -qE ':(1097|10808) ' && vpn_port="true"; }
 			[ "$vpn_port" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -qE ':(1097|10808) ' && vpn_port="true"
-			# AdGuard: conf enabled + init exists + HTTP on actual bind_port (real)
+			# AdGuard: conf + init + HTTP on real web port from yaml (http.port, fallback bind_port, then 3000)
 			ag_conf="false"
 			[ "$(grep '^ADGUARD_ENABLE=' /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)" = "true" ] && [ -f /opt/etc/init.d/S99adguardhome ] && ag_conf="true"
-			ag_port=$(grep '^bind_port:' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | head -1 | awk '{print $2}' | tr -d '\r')
+			_ag_yaml=/opt/etc/AdGuardHome/AdGuardHome.yaml
+			ag_port=""
+			if [ -f "$_ag_yaml" ]; then
+				ag_port=$(awk '/^http:/{h=1} h && $1=="port:"{print $2; exit}' "$_ag_yaml" 2>/dev/null)
+				[ -z "$ag_port" ] && ag_port=$(grep '^bind_port:' "$_ag_yaml" 2>/dev/null | head -1 | awk '{print $2}')
+				[ -z "$ag_port" ] && ag_port=$(grep -E '^\s+port:' "$_ag_yaml" 2>/dev/null | head -1 | awk '{print $2}')
+			fi
 			[ -z "$ag_port" ] && ag_port=3000
+			case "$ag_port" in ''|*[!0-9]*) ag_port=3000 ;; esac
 			ag_http="false"
 			if command -v wget >/dev/null 2>&1; then
 				wget -q -O /dev/null -T 2 "http://127.0.0.1:${ag_port}" 2>/dev/null && ag_http="true"
 			elif command -v curl >/dev/null 2>&1; then
 				curl -s -o /dev/null -m 2 "http://127.0.0.1:${ag_port}" 2>/dev/null && ag_http="true"
 			fi
-			# dnsmasq: init.d alive + dig resolves (real)
+			# dnsmasq: init.d alive + something listens on :53 (real, not external resolve)
 			dns_alive=$(check_service S56dnsmasq)
 			dns_resolve="false"
-			if command -v nslookup >/dev/null 2>&1; then
-				nslookup google.com 127.0.0.1 >/dev/null 2>&1 && dns_resolve="true"
-			elif command -v dig >/dev/null 2>&1; then
-				dig +time=1 +tries=1 @127.0.0.1 google.com >/dev/null 2>&1 && dns_resolve="true"
+			if pidof dnsmasq >/dev/null 2>&1; then
+				command -v ss >/dev/null 2>&1 && ss -ulnp 2>/dev/null | grep -q ':53 ' && dns_resolve="true"
+				[ "$dns_resolve" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -ulnp 2>/dev/null | grep -q ':53 ' && dns_resolve="true"
+				[ "$dns_resolve" = "false" ] && dns_resolve="true"
 			fi
 			# Adblock config (conf only)
 			adblock_conf="false"
@@ -483,16 +490,14 @@ main() {
 			printf '{"ok":true,"enabled":"%s","primary":"%s","secondary":"%s","tertiary":"%s","interval":"%s","threshold":"%s","daemon":"%s","available":"%s"}\n' \
 				"$(json_str "$failover_mode")" "$(json_str "$primary")" "$(json_str "$secondary")" "$(json_str "$tertiary")" "$interval" "$threshold" "$daemon_running" "$(json_str "$_avail")"
 			;;
-		failover)
+			failover)
 			check_token "$token"
 			cmd=$(echo "$QUERY_STRING" | sed 's/.*cmd=//; s/&.*//' 2>/dev/null)
 			[ "$cmd" = "$QUERY_STRING" ] && cmd=""
 			case "$cmd" in
 				on|off)
-					out=$($KVAS_BIN failover "$cmd" 2>&1)
-					rc=$?
-					[ $rc -ne 0 ] && json_error "failover $cmd failed: $out"
-					json_ok "failover $cmd"
+					( $KVAS_BIN failover "$cmd" >/dev/null 2>&1 ) &
+					json_ok "failover $cmd started"
 					;;
 				status)
 					out=$($KVAS_BIN failover status 2>&1)
@@ -517,7 +522,14 @@ main() {
 					out=$($KVAS_BIN failover set tertiary "$_val" 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
 					json_ok "$out"
 					;;
-				*) json_error "cmd must be on/off/status/set_primary/set_secondary/set_tertiary" ;;
+				history)
+					_hf=/opt/var/log/kvas-failover-history.log
+					[ ! -f "$_hf" ] && echo '{"ok":true,"items":[]}' && exit 0
+					awk 'BEGIN{printf "{\"ok\":true,\"items\":["; f=1}
+					{ gsub(/\r/,""); if($0=="")next; if(!f)printf ","; f=0; n=split($0,a,"|"); gsub(/\\/,"\\\\",a[1]); gsub(/"/,"\\\"",a[1]); gsub(/\\/,"\\\\",a[2]); gsub(/"/,"\\\"",a[2]); gsub(/\\/,"\\\\",a[3]); gsub(/"/,"\\\"",a[3]); gsub(/\\/,"\\\\",a[4]); gsub(/"/,"\\\"",a[4]); printf "{\"t\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"reason\":\"%s\"}", a[1],a[2],a[3],a[4] }
+					END{printf "]}\n"}' "$_hf" | tail -c 8000
+					;;
+				*) json_error "cmd must be on/off/status/set_primary/set_secondary/set_tertiary/history" ;;
 			esac
 			;;
 		xray_status)
@@ -607,8 +619,15 @@ main() {
 		adguard_status)
 			check_token "$token"
 			_enabled=$(grep "^ADGUARD_ENABLE=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
-			_ag_port=$(grep '^bind_port:' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | head -1 | awk '{print $2}' | tr -d '\r')
+			_ag_yaml=/opt/etc/AdGuardHome/AdGuardHome.yaml
+			_ag_port=""
+			if [ -f "$_ag_yaml" ]; then
+				_ag_port=$(awk '/^http:/{h=1} h && $1=="port:"{print $2; exit}' "$_ag_yaml" 2>/dev/null)
+				[ -z "$_ag_port" ] && _ag_port=$(grep '^bind_port:' "$_ag_yaml" 2>/dev/null | head -1 | awk '{print $2}')
+				[ -z "$_ag_port" ] && _ag_port=$(grep -E '^\s+port:' "$_ag_yaml" 2>/dev/null | head -1 | awk '{print $2}')
+			fi
 			[ -z "$_ag_port" ] && _ag_port=3000
+			case "$_ag_port" in ''|*[!0-9]*) _ag_port=3000 ;; esac
 			_http="false"
 			if command -v wget >/dev/null 2>&1; then
 				wget -q -O /dev/null -T 2 "http://127.0.0.1:${_ag_port}" 2>/dev/null && _http="true"
@@ -806,22 +825,36 @@ main() {
 			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
-			# Нормализация: убрать протокол, пробелы, www, завершающую точку/слэш
 			domain=$(echo "$domain" | sed 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||; s|^www\.||; s|/.*$||; s|[[:space:]]||g; s|\.$||')
 			[ -z "$domain" ] && json_error "domain required"
-			# 1. block.list — источник списка для Web UI
+			until_hm=$(echo "$QUERY_STRING" | sed 's/.*until=//; s/&.*//' 2>/dev/null)
+			[ "$until_hm" = "$QUERY_STRING" ] && until_hm=""
+			_temp_until=""
+			if echo "$until_hm" | grep -qE '^[0-9]{1,2}:[0-9]{2}$'; then
+				_th=$(echo "$until_hm" | cut -d: -f1); _tm=$(echo "$until_hm" | cut -d: -f2)
+				_now_h=$(date +%H); _now_m=$(date +%M)
+				_now_s=$((_now_h*60+_now_m)); _t_s=$((_th*60+_tm))
+				if [ "$_t_s" -le "$_now_s" ]; then
+					_temp_until=$(date -d "tomorrow $until_hm" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "")
+				else
+					_temp_until=$(date "+%Y-%m-%d ")$until_hm
+				fi
+				[ -z "$_temp_until" ] && _temp_until="${until_hm}"
+			fi
 			mkdir -p /opt/etc/adblock
 			touch "$PARENTAL_LIST"
-			grep -qxF "$domain" "$PARENTAL_LIST" || echo "$domain" >> "$PARENTAL_LIST"
-			# 2. ads.kvas.list — блокировка через dnsmasq addn-hosts
+			if [ -n "$_temp_until" ]; then
+				grep -qxF "$domain" "$PARENTAL_LIST" || echo "$domain" >> "$PARENTAL_LIST"
+				echo "$domain|$_temp_until" >> /opt/etc/adblock/temporary.list
+			else
+				grep -qxF "$domain" "$PARENTAL_LIST" || echo "$domain" >> "$PARENTAL_LIST"
+			fi
 			touch /opt/etc/adblock/ads.kvas.list
 			grep -qxF "0.0.0.0 $domain" /opt/etc/adblock/ads.kvas.list || echo "0.0.0.0 $domain" >> /opt/etc/adblock/ads.kvas.list
-			# 3. parental.d — hostsdir (если включён)
 			mkdir -p /opt/etc/adblock/parental.d
 			if [ -f /opt/etc/adblock/block.list ]; then
 				sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list > /opt/etc/adblock/parental.d/parental.list 2>/dev/null
 			fi
-			# 4. Гарантируем addn-hosts в dnsmasq.conf
 			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
 				echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
 				/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
@@ -829,7 +862,6 @@ main() {
 				_dp=$(pidof dnsmasq 2>/dev/null)
 				[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
 			fi
-			# 5. Единый путь: если AdGuard ON — добавляем и в него
 			if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
 				if /opt/etc/init.d/S99adguardhome status 2>/dev/null | grep -qi alive; then
 					if [ -f /opt/apps/kvas/bin/libs/vpn ]; then
@@ -839,7 +871,11 @@ main() {
 					fi
 				fi
 			fi
-			json_ok "добавлен $domain"
+			if [ -n "$_temp_until" ]; then
+				json_ok "добавлен $domain до $_temp_until"
+			else
+				json_ok "добавлен $domain"
+			fi
 		;;
 		parental_del)
 			check_token "$token"
@@ -847,12 +883,42 @@ main() {
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
 			[ -f "$PARENTAL_LIST" ] && sed -i "/^${domain}$/d" "$PARENTAL_LIST" 2>/dev/null
+			[ -f /opt/etc/adblock/temporary.list ] && sed -i "/^${domain}|/d" /opt/etc/adblock/temporary.list 2>/dev/null
 			[ -f /opt/etc/adblock/ads.kvas.list ] && sed -i "/^0\.0\.0\.0 ${domain}$/d" /opt/etc/adblock/ads.kvas.list 2>/dev/null
 			pf=/opt/etc/adblock/parental.d/parental.list
 			[ -f "$pf" ] && sed -i "/0.0.0.0 ${domain}$/d" "$pf" 2>/dev/null
 			_dp=$(pidof dnsmasq 2>/dev/null)
 			[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
 			json_ok "unblocked $domain"
+		;;
+		parental_expire_tick)
+			check_token "$token"
+			_tf=/opt/etc/adblock/temporary.list
+			_removed=0
+			if [ -f "$_tf" ]; then
+				_now=$(date +%s)
+				while IFS='|' read -r _d _exp; do
+					[ -z "$_d" ] && continue
+					_exp_s=$(date -d "$_exp" +%s 2>/dev/null || echo 0)
+					[ "$_exp_s" -gt 0 ] 2>/dev/null || continue
+					[ "$_now" -ge "$_exp_s" ] || continue
+					[ -f "$PARENTAL_LIST" ] && sed -i "/^${_d}$/d" "$PARENTAL_LIST" 2>/dev/null
+					[ -f /opt/etc/adblock/ads.kvas.list ] && sed -i "/^0\.0\.0\.0 ${_d}$/d" /opt/etc/adblock/ads.kvas.list 2>/dev/null
+					[ -f /opt/etc/adblock/parental.d/parental.list ] && sed -i "/0.0.0.0 ${_d}$/d" /opt/etc/adblock/parental.d/parental.list 2>/dev/null
+					_removed=$((_removed+1))
+				done < "$_tf"
+				if [ "$_removed" -gt 0 ]; then
+					_now_str=$(date +%s)
+					while IFS='|' read -r _d _exp; do
+						_exp_s=$(date -d "$_exp" +%s 2>/dev/null || echo 0)
+						[ "$_exp_s" -gt 0 ] 2>/dev/null && [ "$_now_str" -lt "$_exp_s" ] && echo "$_d|$_exp"
+					done < "$_tf" > "${_tf}.tmp" 2>/dev/null
+					mv "${_tf}.tmp" "$_tf" 2>/dev/null
+					_dp=$(pidof dnsmasq 2>/dev/null)
+					[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
+				fi
+			fi
+			printf '{"ok":true,"removed":%s}\n' "$_removed"
 		;;
 		adblock_status)
 			check_token "$token"
@@ -862,7 +928,7 @@ main() {
 				echo '{"ok":true,"adblock":"off"}'
 			fi
 			;;
-adblock_on)
+		adblock_on)
 			check_token "$token"
 			mkdir -p /opt/etc/adblock/parental.d
 			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
@@ -874,7 +940,7 @@ adblock_on)
 			[ -f /opt/etc/adblock/ads.kvas.list ] || sh /opt/apps/kvas/bin/main/adblock >/dev/null 2>&1
 			[ -f /opt/etc/adblock/block.list ] && sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list > /opt/etc/adblock/parental.d/parental.list
 			/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
-			echo '{"ok":true,"msg":"Adblock включен"}' 
+			echo '{"ok":true,"msg":"Adblock включен"}'
 		;;
 adblock_off)
 			check_token "$token"

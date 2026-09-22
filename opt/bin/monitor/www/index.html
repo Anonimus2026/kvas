@@ -240,6 +240,13 @@ window.addEventListener('error', function(e){
     </div>
     <div id="foInfo" style="font-size:12px;color:#8b949e;margin-top:6px;"></div>
     <div id="foMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow-y:auto;"></div>
+    <div style="margin-top:10px;padding-top:8px;border-top:1px solid #21262d;">
+      <div class="card-row" style="justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <h4 style="font-size:13px;color:#58a6ff;">История переключений</h4>
+        <button class="btn btn-sm" onclick="loadFailoverHistory()">Обновить</button>
+      </div>
+      <div id="foHistory" style="max-height:160px;overflow-y:auto;"><div style="color:#8b949e;font-size:12px;">Загрузка...</div></div>
+    </div>
   </div>
 
   <!-- AdGuard -->
@@ -413,6 +420,11 @@ window.addEventListener('error', function(e){
           <input type="text" id="parentalInput" placeholder="example.com" style="flex:1;padding:6px 10px;background:#161b22;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-family:monospace;font-size:12px;">
           <button class="btn btn-sm success" onclick="parentalAdd()">Заблокировать</button>
         </div>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+          <label style="font-size:12px;color:#8b949e;">До (временно):</label>
+          <input type="time" id="parentalUntil" style="padding:4px 6px;background:#161b22;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;">
+          <span style="font-size:11px;color:#8b949e;">пусто = навсегда</span>
+        </div>
         <div id="parentalMsg" class="msg" style="margin-top:8px;"></div>
       </div>
     </div>
@@ -542,15 +554,19 @@ function showProgress(pct, text) {
 function hideProgress() { showProgress(-1); }
 
 /* ========== AUTH ========== */
-function api(url, cb) {
+function api(url, cb, timeoutMs) {
   var u = url.indexOf('?') > -1 ? url + '&token=' + AUTH_TOKEN : url + '?token=' + AUTH_TOKEN;
-  fetch(u).then(function(r){return r.json()}).then(function(d){cb(d)}).catch(function(e){cb({error:e.message})});
+  var ctrl = new AbortController();
+  var t = setTimeout(function(){ ctrl.abort(); }, timeoutMs || 60000);
+  fetch(u, { signal: ctrl.signal }).then(function(r){return r.json()}).then(function(d){ clearTimeout(t); cb(d); }).catch(function(e){ clearTimeout(t); cb({error:e.message}); });
 }
 
-function apiBtn(url, btn, cb) {
+function apiBtn(url, btn, cb, timeoutMs) {
   loadingBtn(btn, true);
   var u = url.indexOf('?') > -1 ? url + '&token=' + AUTH_TOKEN : url + '?token=' + AUTH_TOKEN;
-  fetch(u).then(function(r){return r.json()}).then(function(d){ loadingBtn(btn, false); cb(d); }).catch(function(e){ loadingBtn(btn, false); cb({error:e.message}); });
+  var ctrl = new AbortController();
+  var t = setTimeout(function(){ ctrl.abort(); }, timeoutMs || 60000);
+  fetch(u, { signal: ctrl.signal }).then(function(r){return r.json()}).then(function(d){ clearTimeout(t); loadingBtn(btn, false); cb(d); }).catch(function(e){ clearTimeout(t); loadingBtn(btn, false); cb({error:e.message}); });
 }
 
 function doAuth() {
@@ -623,6 +639,7 @@ function showMain() {
   document.getElementById('logoutBtn').style.display = '';
   loadSystemStatus();
   loadHealth();
+  loadFailoverHistory();
   loadVpnInterfaces();
   loadHosts();
   loadRouteLists();
@@ -677,7 +694,7 @@ function renderHealthDetail(which) {
       el.innerHTML = '<b style="color:#3fb950">dnsmasq: OK</b><br>Сервис жив, DNS-резолв работает.' + extra;
       return;
     }
-    if (alive && !res) { el.innerHTML = '<b style="color:#d29922">dnsmasq: жив, но не резолвит</b><br>S56dnsmasq запущен, но nslookup/dig через 127.0.0.1 не проходит.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq restart</code>'; return; }
+    if (alive && !res) { el.innerHTML = '<b style="color:#d29922">dnsmasq: жив, но порт :53 не слушает</b><br>S56dnsmasq запущен, но UDP/53 не найден.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq restart</code>'; return; }
     el.innerHTML = '<b style="color:#f85149">dnsmasq: не запущен</b><br>S56dnsmasq не отвечает.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq start</code>';
   } else if (which === 'fo') {
     var mode = s.fo_mode, run = s.fo_daemon === 'true';
@@ -723,7 +740,25 @@ function loadHealth() {
       hint.textContent = bad ? ('Проблемы: ' + bad + ' — нажмите на чип для деталей') : (warn ? 'Частично OK — нажмите на чип для деталей' : 'Все сервисы OK');
     }
     if (_healthOpen) renderHealthDetail(_healthOpen);
-  });
+  }, 30000);
+}
+
+function loadFailoverHistory() {
+  api('/cgi-bin/manage.sh?action=failover&cmd=history', function(d){
+    var el = document.getElementById('foHistory');
+    if (!el) return;
+    if (!d.ok || !d.items || !d.items.length) {
+      el.innerHTML = '<div style="color:#8b949e;font-size:12px;">Переключений не было</div>';
+      return;
+    }
+    el.innerHTML = '';
+    d.items.slice(-10).reverse().forEach(function(it){
+      var row = document.createElement('div');
+      row.style.cssText = 'font-size:11px;padding:3px 0;border-bottom:1px solid #21262d;color:#c9d1d9;';
+      row.innerHTML = '<span style="color:#8b949e;">' + it.t + '</span> ' + it.from + ' → <b style="color:#58a6ff;">' + it.to + '</b> <span style="color:#8b949e;">(' + it.reason + ')</span>';
+      el.appendChild(row);
+    });
+  }, 15000);
 }
 
 /* ========== TABS ========== */
@@ -1617,6 +1652,7 @@ function failover(cmd, btn) {
       el.textContent = output;
       consoleLog('failover ' + cmd + ': ' + (output || 'ok'));
       loadFailoverStatus();
+      if (cmd === 'on' || cmd === 'off') loadFailoverHistory();
     } else {
       el.className = 'msg err';
       el.textContent = d.error || 'error';
@@ -2162,17 +2198,20 @@ function adblockOn(btn) {
   apiBtn('/cgi-bin/manage.sh?action=adblock_on', btn, function(d){
     loadAdblockStatus();
     loadParentalList();
-  });
+  }, 120000);
 }
 
 function adblockOff(btn) {
   apiBtn('/cgi-bin/manage.sh?action=adblock_off', btn, function(d){
     loadAdblockStatus();
     loadParentalList();
-  });
+  }, 120000);
 }
 
 function loadParentalList() {
+  api('/cgi-bin/manage.sh?action=parental_expire_tick', function(){ loadParentalList2(); }, 15000);
+}
+function loadParentalList2() {
   api('/cgi-bin/manage.sh?action=parental_list', function(d){
     var el = document.getElementById('parentalList');
     if (!el) return;
@@ -2193,20 +2232,26 @@ function loadParentalList() {
 function parentalAdd() {
   var domain = document.getElementById('parentalInput').value.trim();
   if (!domain) return;
-  apiBtn('/cgi-bin/manage.sh?action=parental_add&domain=' + encodeURIComponent(domain), null, function(d){
+  var until = '';
+  var untilEl = document.getElementById('parentalUntil');
+  if (untilEl && untilEl.value) until = untilEl.value;
+  var url = '/cgi-bin/manage.sh?action=parental_add&domain=' + encodeURIComponent(domain);
+  if (until) url += '&until=' + encodeURIComponent(until);
+  apiBtn(url, null, function(d){
     var el = document.getElementById('parentalMsg');
     if (d.ok) {
       el.className = 'msg ok';
-      el.textContent = d.msg;
+      el.textContent = d.msg || d.error || 'OK';
       document.getElementById('parentalInput').value = '';
+      if (untilEl) untilEl.value = '';
       loadParentalList();
-      consoleLog('parental add: ' + domain);
+      consoleLog('parental add: ' + domain + (until ? ' until ' + until : ''));
     } else {
       el.className = 'msg err';
       el.textContent = d.error || 'error';
       consoleLog('parental add ERROR: ' + (d.error || 'unknown'));
     }
-  });
+  }, 30000);
 }
 
 function parentalDel(domain) {
