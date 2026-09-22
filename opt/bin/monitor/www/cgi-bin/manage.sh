@@ -718,37 +718,37 @@ main() {
 			[ ! -f "$_ag_yaml" ] && [ -f /opt/etc/.kvas/backup/AdGuardHome.yaml ] && {
 				cp /opt/etc/.kvas/backup/AdGuardHome.yaml "$_ag_yaml" 2>/dev/null || true
 			}
-			if [ -f "$_ag_yaml" ]; then
-				. /opt/apps/kvas/bin/libs/main 2>/dev/null || true
-				. /opt/apps/kvas/bin/libs/vpn 2>/dev/null || true
-				if [ -f /opt/apps/kvas/etc/init.d/S99adguard ]; then
-					cp /opt/apps/kvas/etc/init.d/S99adguard /opt/etc/init.d/S99adguardhome 2>/dev/null || true
-					chmod 755 /opt/etc/init.d/S99adguardhome 2>/dev/null || true
-				fi
-				if type adguardhome_setup >/dev/null 2>&1; then
-					out=$(adguardhome_setup 2>&1 | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			rm -f /tmp/kvas_ag_on.lock /tmp/kvas_ag_on.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_ag_on.lock
+				if [ -f "$_ag_yaml" ]; then
+					. /opt/apps/kvas/bin/libs/main 2>/dev/null || true
+					. /opt/apps/kvas/bin/libs/vpn 2>/dev/null || true
+					if [ -f /opt/apps/kvas/etc/init.d/S99adguard ]; then
+						cp /opt/apps/kvas/etc/init.d/S99adguard /opt/etc/init.d/S99adguardhome 2>/dev/null || true
+						chmod 755 /opt/etc/init.d/S99adguardhome 2>/dev/null || true
+					fi
+					if type adguardhome_setup >/dev/null 2>&1; then
+						adguardhome_setup
+					else
+						$KVAS_BIN adguard on </dev/null
+					fi
 				else
-					out=$($KVAS_BIN adguard on 2>&1 </dev/null | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+					printf 'n\nn\n' | $KVAS_BIN adguard on
 				fi
-			else
-				out=$(printf 'n\nn\n' | $KVAS_BIN adguard on 2>&1 | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			fi
-			_ag_port=""
-			if [ -f "$_ag_yaml" ]; then
-				_ag_port=$(awk '/^http:/{h=1;next} /^[a-z]/{h=0} h && $1=="address:"{n=split($2,a,":"); print a[n]; exit}' "$_ag_yaml" 2>/dev/null)
-				[ -z "$_ag_port" ] && _ag_port=$(awk '/^http:/{h=1;next} /^dns:|^[a-z]/{h=0} h && /^  port:/{print $2; exit}' "$_ag_yaml" 2>/dev/null)
-			fi
-			case "$_ag_port" in ''|*[!0-9]*|9753|6060|53) _ag_port=8086 ;; esac
-			[ -z "$out" ] && out="AdGuard включен, доступен по порту ${_ag_port}"
-			printf '{"ok":true,"msg":"%s","port":"%s"}\n' "$out" "$_ag_port"
+				rm -f /tmp/kvas_ag_on.lock 2>/dev/null || true
+			) >/tmp/kvas_ag_on.log 2>&1 &
+			printf '{"ok":true,"pending":true,"msg":"Запуск AdGuard..."}\n'
 			;;
 		adguard_off)
 			check_token "$token"
-			out=$($KVAS_BIN adguard off 2>&1 | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			_dns_ok="false"
-			pidof dnsmasq >/dev/null 2>&1 && _dns_ok="true"
-			[ -z "$out" ] && out="AdGuard остановлен, DNS переключён на dnsmasq"
-			printf '{"ok":true,"msg":"%s","dnsmasq":"%s"}\n' "$out" "$_dns_ok"
+			rm -f /tmp/kvas_ag_off.lock /tmp/kvas_ag_off.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_ag_off.lock
+				$KVAS_BIN adguard off
+				rm -f /tmp/kvas_ag_off.lock 2>/dev/null || true
+			) >/tmp/kvas_ag_off.log 2>&1 &
+			printf '{"ok":true,"pending":true,"msg":"Остановка AdGuard..."}\n'
 			;;
 		vless_new)
 			check_token "$token"

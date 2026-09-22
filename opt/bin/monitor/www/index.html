@@ -688,7 +688,7 @@ function renderHealthDetail(which) {
     var aport = s.ag_port || '8086';
     var run = false;
     try { run = (document.getElementById('agStatus') || {}).textContent === 'вкл'; } catch (e) {}
-    if (conf && (http || run)) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Порт :' + aport + ' слушает.<br><a href="http://' + location.hostname + ':' + aport + '" target="_blank" rel="noopener" style="color:#58a6ff;">Открыть web AdGuard</a>'; return; }
+    if (conf && (http || run)) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Порт :' + aport + ' слушает.<br>' + agWebLinkHtml(aport); return; }
     if (conf && !http && !run) { el.innerHTML = '<b style="color:#d29922">AdGuard: конфиг есть, порт не слушает</b><br>Порт :' + aport + ' не найден в ss/netstat.<br>Попробуйте: <code>/opt/etc/init.d/S99adguardhome restart</code>'; return; }
     el.innerHTML = '<b style="color:#f85149">AdGuard: выключен</b><br>ADGUARD_ENABLE=false или init-скрипт отсутствует.<br>Попробуйте: <code>kvas adguard on</code>';
   } else if (which === 'dns') {
@@ -1666,6 +1666,60 @@ function failover(cmd, btn) {
 }
 
 /* ========== ADGUARD ========== */
+function agIsLocalHost(h) {
+  h = h || '';
+  if (!h) return true;
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true;
+  if (h.indexOf(':') >= 0 && h.indexOf('.') < 0) return true;
+  return false;
+}
+
+function agWebLinkHtml(port) {
+  var h = location.hostname;
+  var url = 'http://' + h + ':' + port;
+  if (agIsLocalHost(h)) {
+    return 'Web: <a href="' + url + '" target="_blank" rel="noopener" style="color:#58a6ff;">' + url + '</a>';
+  }
+  return 'Web: <a href="' + url + '" target="_blank" rel="noopener" style="color:#58a6ff;">' + url + '</a>' +
+    '<br><span style="color:#d29922;font-size:12px;">Домен keenDNS — добавьте проброс порта ' + port +
+    ' → роутер:' + port + ' в Настройки → Доменное имя, иначе ссылка не откроется.</span>';
+}
+
+function adguardPoll(expect, n, btn) {
+  var el = document.getElementById('agMsg');
+  if (n > 40) {
+    el.className = 'msg err';
+    el.textContent = 'Тайм-аут: состояние не изменилось за ~80с. Обновите статус.';
+    if (btn) loadingBtn(btn, false);
+    loadAdguardStatus();
+    loadSystemStatus();
+    loadHealth();
+    return;
+  }
+  setTimeout(function(){
+    api('/cgi-bin/manage.sh?action=adguard_status', function(s){
+      if (!s.ok) { adguardPoll(expect, n + 1, btn); return; }
+      var running = s.running === 'true';
+      var enabled = s.enabled === 'true';
+      var done = (expect === 'on') ? (running && enabled) : (!enabled && !running);
+      if (done) {
+        el.className = 'msg ok';
+        el.textContent = expect === 'on' ? 'AdGuard включен' : 'AdGuard выключен';
+        if (btn) loadingBtn(btn, false);
+        loadAdguardStatus();
+        loadSystemStatus();
+        loadHealth();
+        return;
+      }
+      el.innerHTML = '<span style="color:#8b949e;">' +
+        (expect === 'on' ? 'Запуск AdGuard...' : 'Остановка AdGuard...') +
+        ' (' + (n + 1) + '×2с)</span>';
+      adguardPoll(expect, n + 1, btn);
+    }, 8000);
+  }, 2000);
+}
+
 function loadAdguardStatus() {
   api('/cgi-bin/manage.sh?action=adguard_status', function(d){
     if (!d.ok) return;
@@ -1691,7 +1745,7 @@ function loadAdguardStatus() {
     if (offBtn) offBtn.disabled = !enabled;
     if (enabled && running) {
       el.innerHTML = '<span style="color:#3fb950;">вкл</span>';
-      if (hint) hint.innerHTML = 'Web: <a href="http://' + location.hostname + ':' + port + '" target="_blank" rel="noopener" style="color:#58a6ff;">http://' + location.hostname + ':' + port + '</a>';
+      if (hint) hint.innerHTML = agWebLinkHtml(port);
     } else if (enabled) {
       el.innerHTML = '<span style="color:#d29922;">запускается</span>';
       if (hint) hint.textContent = 'Порт ' + port + ' — сервис ещё не отвечает';
@@ -1742,9 +1796,16 @@ function adguardInstall(btn) {
 
 function adguardOn(btn) {
   var el = document.getElementById('agMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Выполняется... может занять до 60с</span>';
+  el.innerHTML = '<span style="color:#8b949e;">Запуск AdGuard...</span>';
   apiBtn('/cgi-bin/manage.sh?action=adguard_on', btn, function(d){
     if (d.ok) {
+      if (d.pending) {
+        el.className = '';
+        el.innerHTML = '<span style="color:#8b949e;">Запуск AdGuard... проверка каждые 2с</span>';
+        loadingBtn(btn, true);
+        adguardPoll('on', 0, btn);
+        return;
+      }
       el.className = 'msg ok';
       el.textContent = d.msg || 'AdGuard включен';
       loadAdguardStatus();
@@ -1754,14 +1815,21 @@ function adguardOn(btn) {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка';
     }
-  }, 180000);
+  }, 15000);
 }
 
 function adguardOff(btn) {
   var el = document.getElementById('agMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Остановка... до 30с</span>';
+  el.innerHTML = '<span style="color:#8b949e;">Остановка AdGuard...</span>';
   apiBtn('/cgi-bin/manage.sh?action=adguard_off', btn, function(d){
     if (d.ok) {
+      if (d.pending) {
+        el.className = '';
+        el.innerHTML = '<span style="color:#8b949e;">Остановка AdGuard... проверка каждые 2с</span>';
+        loadingBtn(btn, true);
+        adguardPoll('off', 0, btn);
+        return;
+      }
       el.className = 'msg ok';
       el.textContent = d.msg || 'AdGuard выключен';
       loadAdguardStatus();
@@ -1771,7 +1839,7 @@ function adguardOff(btn) {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка';
     }
-  }, 120000);
+  }, 15000);
 }
 
 /* ========== VPN SETUP ========== */
