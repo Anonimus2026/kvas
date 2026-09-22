@@ -324,7 +324,7 @@ switch_to() {
     local proto="$1"
     local lockfile="/tmp/kvas-failover-switch.lock"
     local from=""
-    from=$(get_active_protocol 2>/dev/null)
+    from=$(get_active_iface 2>/dev/null)
     [ -z "$from" ] && from="unknown"
     
     if [ -f "$lockfile" ]; then
