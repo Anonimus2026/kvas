@@ -316,16 +316,16 @@ main() {
 		traffic)
 			check_token "$token"
 			_tr_state=/tmp/kvas_tr_state
+			_tr_prev_file=/tmp/kvas_tr_prev
 			_tr_now=$(date +%s 2>/dev/null || echo 0)
-			_tr_primary=$(grep "^PRIMARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
-			_tr_secondary=$(grep "^SECONDARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
-			_tr_tertiary=$(grep "^TERTIARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+			_tr_primary=$(grep "^PRIMARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2- | tr -d '\r' | awk '{$1=$1;print}')
+			_tr_secondary=$(grep "^SECONDARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2- | tr -d '\r' | awk '{$1=$1;print}')
+			_tr_tertiary=$(grep "^TERTIARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2- | tr -d '\r' | awk '{$1=$1;print}')
 			[ -z "$_tr_primary" ] && _tr_primary=vless
 			_tr_active=""
 			if [ -f /opt/apps/kvas/bin/libs/failover ]; then
-				_tr_active=$(. /opt/apps/kvas/bin/libs/failover 2>/dev/null; get_active_iface 2>/dev/null)
+				_tr_active=$(. /opt/apps/kvas/bin/libs/failover 2>/dev/null; get_active_iface 2>/dev/null | tr -d '\r' | awk '{$1=$1;print}')
 			fi
-			# Collect unique channels: primary + secondary + tertiary
 			_tr_chans=""
 			for _c in "$_tr_primary" "$_tr_secondary" "$_tr_tertiary"; do
 				[ -z "$_c" ] || [ "$_c" = "manual" ] || [ "$_c" = "-" ] && continue
@@ -333,38 +333,66 @@ main() {
 				_tr_chans="${_tr_chans}${_tr_chans:+ }${_c}"
 			done
 			[ -z "$_tr_chans" ] && _tr_chans="vless"
-			# Read prev state: "name pid rchar wchar"
-			_tr_prev_file=/tmp/kvas_tr_prev
+			_tr_old_t=$(head -1 "$_tr_state" 2>/dev/null)
+			case "$_tr_old_t" in ''|*[!0-9]*) _tr_old_t=0 ;; esac
+			_tr_dt=$(( _tr_now - _tr_old_t ))
+			[ "$_tr_dt" -gt 0 ] 2>/dev/null || _tr_dt=0
 			_tr_json=""
 			_tr_sum_rx=0
 			_tr_sum_tx=0
 			_tr_new_state=""
 			for _c in $_tr_chans; do
+				_tr_pid=""
+				# Map channel name (incl. awg_FIGARO, custom suffixes) → process
 				case "$_c" in
-					vless)    _tr_pid=$(pidof xray 2>/dev/null | awk '{print $1}') ;;
-					hysteria)  _tr_pid=$(pidof hysteria 2>/dev/null | awk '{print $1}') ;;
-					awg)       _tr_pid=$(pidof wireproxy 2>/dev/null | awk '{print $1}') ;;
-					*)         _tr_pid="" ;;
+					vless*|*vless*|Proxy21*|t2s21)
+						_tr_pid=$(pidof xray 2>/dev/null | awk '{print $1}')
+						[ -z "$_tr_pid" ] && [ -f /var/run/xray.pid ] && _tr_pid=$(cat /var/run/xray.pid 2>/dev/null)
+						;;
+					hysteria*|*hysteria*|Proxy41*|t2s41)
+						_tr_pid=$(pidof hysteria 2>/dev/null | awk '{print $1}')
+						[ -z "$_tr_pid" ] && [ -f /var/run/hysteria.pid ] && _tr_pid=$(cat /var/run/hysteria.pid 2>/dev/null)
+						;;
+					awg*|*awg*|Proxy42*|wireproxy*)
+						_tr_pid=$(pidof wireproxy 2>/dev/null | awk '{print $1}')
+						[ -z "$_tr_pid" ] && [ -f /var/run/wireproxy.pid ] && _tr_pid=$(cat /var/run/wireproxy.pid 2>/dev/null)
+						;;
+					*)
+						# unknown name: try inface_equals → description match already handled above;
+						# probe common VPN processes only if this is the active channel
+						if [ "$_c" = "$_tr_active" ]; then
+							_tr_pid=$(pidof xray 2>/dev/null | awk '{print $1}')
+							[ -z "$_tr_pid" ] && _tr_pid=$(pidof hysteria 2>/dev/null | awk '{print $1}')
+							[ -z "$_tr_pid" ] && _tr_pid=$(pidof wireproxy 2>/dev/null | awk '{print $1}')
+						fi
+						;;
 				esac
+				# Validate pid is alive
+				if [ -n "$_tr_pid" ] && ! kill -0 "$_tr_pid" 2>/dev/null; then
+					_tr_pid=""
+				fi
 				_tr_run=false
 				_tr_r=0; _tr_w=0
-				if [ -n "$_tr_pid" ] && [ -r "/proc/${_tr_pid}/io" ]; then
+				if [ -n "$_tr_pid" ]; then
 					_tr_run=true
+					# /proc/PID/io may be unreadable for cgi user — still mark running
 					_tr_io=$(awk '/^rchar:/{r=$2} /^wchar:/{w=$2} END{print r+0, w+0}' "/proc/${_tr_pid}/io" 2>/dev/null)
+					if [ -z "$_tr_io" ]; then
+						_tr_io=$(cat "/proc/${_tr_pid}/io" 2>/dev/null | awk '/^rchar:/{r=$2} /^wchar:/{w=$2} END{print r+0, w+0}')
+					fi
 					_tr_r=$(echo "$_tr_io" | awk '{print $1}')
 					_tr_w=$(echo "$_tr_io" | awk '{print $2}')
 				fi
 				case "$_tr_r" in ''|*[!0-9]*) _tr_r=0 ;; esac
 				case "$_tr_w" in ''|*[!0-9]*) _tr_w=0 ;; esac
 				_tr_rbps=0; _tr_tbps=0
-				# delta vs previous sample (same name+pid)
 				_tr_old=$(awk -v n="$_c" '$1==n{print $2, $3, $4; exit}' "$_tr_prev_file" 2>/dev/null)
 				if [ -n "$_tr_old" ] && [ "$_tr_run" = "true" ]; then
 					_tr_opid=$(echo "$_tr_old" | awk '{print $1}')
 					_tr_or=$(echo "$_tr_old" | awk '{print $2}')
 					_tr_ow=$(echo "$_tr_old" | awk '{print $3}')
-					_tr_dt=$(( _tr_now - $(head -1 "$_tr_state" 2>/dev/null || echo 0) ))
-					[ "$_tr_dt" -gt 0 ] 2>/dev/null || _tr_dt=0
+					case "$_tr_or" in ''|*[!0-9]*) _tr_or=0 ;; esac
+					case "$_tr_ow" in ''|*[!0-9]*) _tr_ow=0 ;; esac
 					if [ "$_tr_opid" = "$_tr_pid" ] && [ "$_tr_dt" -gt 0 ]; then
 						_tr_dr=$((_tr_r - _tr_or)); [ "$_tr_dr" -lt 0 ] 2>/dev/null && _tr_dr=0
 						_tr_dw=$((_tr_w - _tr_ow)); [ "$_tr_dw" -lt 0 ] 2>/dev/null && _tr_dw=0
@@ -379,8 +407,9 @@ main() {
 				[ "$_c" = "$_tr_secondary" ] && _tr_role=secondary
 				[ "$_c" = "$_tr_tertiary" ] && _tr_role=tertiary
 				_tr_isact=false
-				[ "$_c" = "$_tr_active" ] && _tr_isact=true
-				[ -z "$_tr_active" ] && [ "$_c" = "$_tr_primary" ] && [ "$_tr_run" = "true" ] && _tr_isact=true
+				[ -n "$_tr_active" ] && [ "$_c" = "$_tr_active" ] && _tr_isact=true
+				# also treat running primary as active if get_active_iface failed
+				[ "$_tr_isact" = "false" ] && [ "$_c" = "$_tr_primary" ] && [ "$_tr_run" = "true" ] && [ -z "$_tr_active" -o "$_tr_active" = "none" ] && _tr_isact=true
 				_tr_json="${_tr_json}${_tr_json:+,}{\"name\":\"$(json_str "$_c")\",\"role\":\"$_tr_role\",\"running\":\"$_tr_run\",\"active\":\"$_tr_isact\",\"rx\":\"$_tr_r\",\"tx\":\"$_tr_w\",\"rx_bps\":\"$_tr_rbps\",\"tx_bps\":\"$_tr_tbps\"}"
 			done
 			printf '%b' "$_tr_new_state" > "$_tr_prev_file" 2>/dev/null || true
