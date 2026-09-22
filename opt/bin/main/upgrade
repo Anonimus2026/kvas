@@ -127,8 +127,8 @@ select_release_from_list(){
 #	Функция выводит на экран доступные в репозитории версии пакетов Квас
 # 	и позволяет выбрать один из них в случае использования режима "отката"
 
-	url_list=$(curl -s "${release_url}" | jq -r '.[] | .assets | .[] | .browser_download_url')
-	rel_list=$(echo "${url_list}" | cut -d'/' -f8)
+	url_list=$(curl -s "${release_url}" | jq -r '.[] | .assets | .[] | .browser_download_url' | sort -r)
+	rel_list=$(echo "${url_list}" | cut -d'/' -f9 | sed 's/kvas_//; s/_all.ipk$//')
 	num=1; total=$(echo "${rel_list}" | wc -l)
 
 	if [ -n "${rel_list}" ]; then
@@ -151,21 +151,24 @@ select_release_from_list(){
 			echo -en "${QST}${GREEN} Введите номер из списка${NOCL} [1-${total}, Q-выход, Enter-новая версия]: "
 			read -r num_release
 			case "${num_release}" in
-				[qQ])					# если выбрали выход
+				[qQ])
 					print_error "Прервано пользователем!"
 					exit 0 ;;
-				[1-["${total}"])		# если выбрали один из номеров из списка
-					print_line
-					eval "${1}=$(echo "${url_list}" | sed -n "${num_release}p")"
-					break ;;
-				'')						# если просто нажали Enter (выбираем 1 позицию - крайний релиз)
+				'')
 					print_line
 					eval "${1}=$(echo "${url_list}" | sed -n '1p')"
 					break ;;
-				*)						# при прочих вариантах - выводим сообщение об ошибке
-					print_line
-					echo -e "${RED}Введите цифру от 1 до ${total}.${NOCL}" ;;
-				esac
+				*)
+					if echo "${num_release}" | grep -qE '^[0-9]+$' && [ "${num_release}" -ge 1 ] 2>/dev/null && [ "${num_release}" -le "${total}" ] 2>/dev/null; then
+						print_line
+						eval "${1}=$(echo "${url_list}" | sed -n "${num_release}p")"
+						break
+					else
+						print_line
+						echo -e "${RED}Введите цифру от 1 до ${total}.${NOCL}"
+					fi
+					;;
+			esac
 		done
 	fi
 }
@@ -183,9 +186,9 @@ remove_nano(){
 #--------------------------------------------------------------------------------------------------------------
 
 # Ссылка на репозиторий на GitHub для получения крайней версии пакета
-release_url=https://api.github.com/repos/qzeleza/kvas/releases
+release_url=https://api.github.com/repos/Anonimus2026/kvas/releases
 # Получаем ссылку на крайний релиз пакета на GitHub
-package_url=$(curl -sH "Accept: application/vnd.github.v3+json" ${release_url}/latest | sed -n 's/.*browser_download_url\": "\(.*\)\"/\1/p;'| tr -d ' ' |  sed '/^$/d')
+package_url=$(curl -s --max-time 20 -H "Accept: application/vnd.github.v3+json" "${release_url}/latest" 2>/dev/null | jq -r '[.assets[].browser_download_url] | sort | .[-1]' 2>/dev/null | tr -d " \n\r")
 # Выделяем имя пакета из ссылки
 package_name=$(get_package_name "${package_url}")
 # путь к файлу конфигурации пакета Квас
@@ -206,6 +209,19 @@ sed -i 's/\(export TERM=\).*/\1xterm-256color/' /opt/etc/profile
 set_escapes
 
 #--------------------------------------------------------------------------------------------------------------
+# Выбор репозитория для обновлений
+print_line
+echo -e "${GREEN}Выберите источник обновлений:${NOCL}"
+echo -e "  ${YELLOW}1.${NOCL} Anonimus2026/kvas (рекомендуется)"
+echo -e "  ${YELLOW}2.${NOCL} qzeleza/kvas (оригинал)"
+echo -en "${QST}${GREEN}Введите номер [1-2, Enter=1]:${NOCL} "
+read -r _repo_choice
+case "${_repo_choice}" in
+	2) release_url=https://api.github.com/repos/qzeleza/kvas/releases ;;
+	*) release_url=https://api.github.com/repos/Anonimus2026/kvas/releases ;;
+esac
+echo -e "Источник: ${BLUE}${release_url}${NOCL}"
+
 print_line	
 ready "Проверка наличия интернета"
 has_no_internet_here && {
@@ -246,13 +262,14 @@ if echo "${*}" | grep -qv 'force' ; then
 	#	Если это не форсированная установка и не откат, то
 	#	проверяем - обнаружена ли предыдущая версия Кваса
 	#	и сравниваем ее версию с новой версией
-		prev_ver=$(cat < ${kvas_conf} \
-					| grep -E 'VERSION|RELEASE' \
-					| tr -d '\n' | tr '-' '_' \
-					| sed 's/^APP_VERSION=\(.*\)APP_RELEASE=\(.*\)/\1-\2\n/')
-		next_ver=$(echo "${package_name}" |  sed 's/kvas_\(.*\)_all.*/\1/')
-		if [ "${prev_ver}" = "${next_ver}" ] ; then
-			print_error "Квас все еще свеж, обновлений пока нет."
+		prev_rel=$(grep '^APP_RELEASE=' ${kvas_conf} | cut -d= -f2 | tr -d '[:space:]')
+		next_rel=$(echo "${package_name}" | sed -n 's/.*beta-10-\([0-9][0-9]*\)_all.*/\1/p')
+		if [ -z "${next_rel}" ]; then
+			print_error "Не удалось определить номер новой версии из имени пакета."
+			exit 1
+		fi
+		if [ -n "${prev_rel}" ] && [ "${next_rel}" -le "${prev_rel}" ] 2>/dev/null; then
+			print_error "Квас все еще свеж (текущая сборка ${prev_rel}, на GitHub ${next_rel}), обновлений пока нет."
 			exit 1
 		fi
 	else
@@ -306,32 +323,25 @@ ready 'Загружаем пакет...'
 }
 
 #--------------------------------------------------------------------------------------------------------------
-# если обнаружена предыдущая незавершенная установка пакета
-if [ -f /opt/bin/kvas ] && kvas | grep -q 'Настройка пакета не завершена' ; then
-	ready 'Удаляем незавершенную ранее установку пакета ...'
+# обновление: opkg-reinstall поверх (конфиги /opt/etc сохраняются — без потери настроек)
+if [ -f /opt/bin/kvas ] && kvas 2>/dev/null | grep -q "Настройка пакета не завершена" ; then
+	ready "Удаляем незавершенную ранее установку пакета ..."
 	kvas uninstall "${remove_mode}" yes &>/dev/null && when_ok || when_err
+	ready "Устанавливаем новую версию пакета [${version}]..."
+	{
+		opkg update &> /dev/null
+		opkg install "/opt/packages/${package_name}"
+	} &>/dev/null && when_ok || when_err
 else
-#	если все хорошо и обнаружена предыдущая версия пакета, то удаляем ее
-	if [ -f /opt/bin/kvas ]; then
-		ver=$(grep "APP_VERSION=" "${kvas_conf}" | cut -d'=' -f2)
-		rel=$(grep "APP_RELEASE=" "${kvas_conf}" | cut -d'=' -f2)
-		#ready "Удаляем предыдущую версию пакета  [${ver} ${rel}]..."
-		kvas uninstall "${remove_mode}" yes # && when_ok || when_err
-	fi
+	ready "Обновляем пакет до версии [${version}] (поверх, без удаления)..."
+	{
+		opkg update &> /dev/null
+		opkg install --force-reinstall "/opt/packages/${package_name}"
+	} &>/dev/null && when_ok || when_err
 fi
 
-#--------------------------------------------------------------------------------------------------------------
-ready "Устанавливаем новую версию пакета [${version}]..."
-{
-	opkg update &> /dev/null
-	opkg install "/opt/packages/${package_name}"
-
-} &>/dev/null && when_ok || when_err
-
-#--------------------------------------------------------------------------------------------------------------
 connect_home_nets(){
-	# подключаем одну гостевую сеть к Квасу, если она имеется
-	/opt/sbin/ip a | grep global | grep -v br0 | grep -qE br[1-9] &&  {
+	/opt/sbin/ip a | grep global | grep -v br0 | grep -qE br[1-9] && {
 		clear
 		kvas vpn net add
 	}
@@ -339,34 +349,42 @@ connect_home_nets(){
 
 if ! [ -f /opt/bin/kvas ] ; then
 	print_line
-# 	если файл пакета не найден после установки пакета, значит произошла ошибка
 	print_error "Пакет установлен некорректно - отсутствуют исполняемые файлы!"
 	echo -e "${GREEN}Попробуйте установить пакет вручную командой "
 	echo -e "${BLUE}'opkg update && opkg install /opt/packages/${package_name}'${NOCL}"
 	print_line
 	exit 1
 else
-	sleep 1
+	ready "Применяем настройки новой версии (конфиги сохранены)..."
+	kvas init >/dev/null 2>&1 && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	# Если AdGuard был включён — убеждаемся что он запущен
+	if [ "$(grep '^ADGUARD_ENABLE=' /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)" = "true" ]; then
+		[ -f /opt/etc/init.d/S99adguardhome ] && /opt/etc/init.d/S99adguardhome status 2>/dev/null | grep -q alive || {
+			[ -f /opt/etc/init.d/S99adguardhome ] && /opt/etc/init.d/S99adguardhome start >/dev/null 2>&1
+		}
+	fi
+	print_line
+	# Перезапуск VPN-интерфейса после сброса iptables (OpenConnect/WG могут потерять маршрутизацию)
+	sleep 2
+	_upgrade_inface_cli=$(grep "^INFACE_CLI=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
+	case "$_upgrade_inface_cli" in
+		""|Proxy21|Proxy41) ;;  # VLESS/Hysteria — не трогаем
+		*)
+			rci_post '{"down":"true"}' "localhost:79/rci/interface/${_upgrade_inface_cli}" &>/dev/null
+			sleep 2
+			rci_post '{"up":"true"}' "localhost:79/rci/interface/${_upgrade_inface_cli}" &>/dev/null
+			sleep 3
+			;;
+	esac
+	# Включаем dns-override если не включен
 	curl -s "http://localhost:79/rci/opkg/dns-override" | grep -q true || {
-		# Отключаем системный DNS-сервер роутера
-		echo 'Отключаем работу через DNS-провайдера  роутера...'
-		echo "Возможно, что сейчас произойдет выход из сессии..."
-		echo "В этом случае необходимо заново войти в сессию по ssh"
-		echo "и выполнить команду 'kvas setup ${UPDATE_MODE}'"
-		rci_post '[{"opkg": {"dns-override": true}},{"system": {"configuration": {"save": true}}}]' &>/dev/null 
+		rci_post '[{"opkg": {"dns-override": true}},{"system": {"configuration": {"save": true}}}]' &>/dev/null
 	}
-		# 	если файл пакета найден после установки пакета,
-	# 	то запускаем установку и затем тестирование пакета
-	kvas setup "${UPDATE_MODE}" && {
-		# подключаем гостевые сети, если они имется
-		connect_home_nets
-		print_line
-		echo 'Тестируем настройки...'
-#		В данном случае, чтобы не печатать линию после
-#		окончания тестирования дважды передаем параметр upgrade
-		kvas test upgrade
-	}
+	echo 'Тестируем настройки...'
+	kvas test upgrade
 fi
+
+rm -f upgrade install
 
 rm -f upgrade install
 

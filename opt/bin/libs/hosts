@@ -59,23 +59,26 @@ cmd_hosts_one_add(){
 
 	[ -f ${HOSTS_FILE} ] || touch ${HOSTS_FILE}
 
+	local ip_val=""
+	local host_val=""
+
 	if echo "${1}" | grep -qE "${IP_FILTER}"; then
-		ip_host=${1}
-		host=${2}
+		ip_val=${1}
+		host_val=${2}
 	elif echo "${2}" | grep -qE "${IP_FILTER}"; then
-		ip=${2}
-		host=${1}
+		ip_val=${2}
+		host_val=${1}
 	else
 		error "Неправильно задан один из аргументов!" nl
 		print_line
 		exit 0
 	fi
-	ready "Доменное имя или IP ${host} удален/о..."
-	"${host}" >> ${HOSTS_FILE}
+	ready "Добавляем ${host_val} → ${ip_val}..."
+	echo "${ip_val} ${host_val}" >> ${HOSTS_FILE}
 
 	[ $? = 0 ] && {
 		when_ok "УСПЕШНО"
-		dns_server_restart "${host}"
+		dns_server_restart "${host_val}"
 	} || when_bad "ОШИБКА"
 
 }

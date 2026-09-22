@@ -74,23 +74,14 @@ print_connections_json() {
 		if [ -s /tmp/kvas-monitor/conntrack_live ]; then
 			_kvas_ct_data=$(cat /tmp/kvas-monitor/conntrack_live 2>/dev/null)
 		fi
-		if [ -z "$_kvas_ct_data" ] && command -v conntrack >/dev/null 2>&1; then
-			_kvas_conntrack_data=""
-			for _kvas_ip in $(echo "$_kvas_ips" | tr ',' ' '); do
-				_kvas_cline=$(conntrack -L -s "$_kvas_ip" 2>/dev/null | sort -u)
-				[ -n "$_kvas_cline" ] && _kvas_conntrack_data="$_kvas_conntrack_data$_kvas_cline
-"
-				_kvas_cline=$(conntrack -L -d "$_kvas_ip" 2>/dev/null | sort -u)
-				[ -n "$_kvas_cline" ] && _kvas_conntrack_data="$_kvas_conntrack_data$_kvas_cline
-"
-			done
-			_kvas_ct_data=$_kvas_conntrack_data
-		fi
-		if [ -z "$_kvas_ct_data" ] && [ -f /proc/net/nf_conntrack ]; then
+		if [ -z "$_kvas_ct_data" ]; then
 			_kvas_pat=$(echo "$_kvas_ips" | sed 's/\./\\./g; s/,/|/g')
-			_kvas_ct_data=$(grep -E "src=${_kvas_pat}|dst=${_kvas_pat}" /proc/net/nf_conntrack 2>/dev/null)
-		fi
-	fi
+			if [ -f /proc/net/nf_conntrack ]; then
+				_kvas_ct_data=$(grep -E "(src|dst)=(${_kvas_pat})" /proc/net/nf_conntrack 2>/dev/null)
+			elif command -v conntrack >/dev/null 2>&1; then
+				_kvas_ct_data=$(conntrack -L 2>/dev/null | grep -E "(src|dst)=(${_kvas_pat})")
+			fi
+		fi	fi
 
 	echo -n '['; _kvas_first=""
 	if [ -n "$_kvas_ct_data" ]; then
@@ -206,12 +197,10 @@ print_devices_json() {
 			if command -v jq >/dev/null 2>&1; then
 				_kvas_list=$(echo "$_kvas_bindings" | jq -r '.lease[] | "\(.ip)|\(.name)"' 2>/dev/null)
 			else
-				_kvas_list=$(echo "$_kvas_bindings" | sed 's/.*"lease":\[//' | sed 's/\].*//' | \
-					sed 's/},{/}\n{/g' | while IFS= read -r _kvas_entry; do
-					_kvas_ip=$(echo "$_kvas_entry" | grep -o '"ip":"[^"]*"' | cut -d'"' -f4)
-					_kvas_name=$(echo "$_kvas_entry" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
-					[ -n "$_kvas_ip" ] && echo "${_kvas_ip}|${_kvas_name}"
-				done)
+				_kvas_list=$(echo "$_kvas_bindings" | awk -F'"' '
+					/"ip":/ { ip = $4 }
+					/"name":/ { name = $4; if (ip) { print ip "|" name; ip=""; name="" } }
+				')
 			fi
 		fi
 	fi

@@ -21,7 +21,7 @@
 # . /opt/apps/kvas/bin/libs/main
 
 # Файл с тегами
-TAGS_FILE=/opt/apps/kvas/etc/conf/tags.list
+TAGS_FILE=/opt/etc/tags.list
 KVAS_LIST_FILE=/opt/etc/kvas.list
 
 # ------------------------------------------------------------------------------------------
@@ -199,31 +199,55 @@ cmd_del_domain_from_tag_list() {
     local section="$1"
     local domain="$2"
 
-    # Если задана только секция - удаляем все домены в этой секции
     if [ -z "${domain}" ] ; then
         read_ynq "Будут удалены все домены с закваской '$section' и само имя закваски.\nВы уверены?" answer
         if [[ "$answer" =~ [qn] ]] ; then return 1; fi
         [ "${answer}" = y ] && {
-            sed -i "/\[$section\]/,/\[.*\]/ { /.*$/d }" "${TAGS_FILE}"
+            cmd_del_tag_section_noninteractive "$section"
         }
         return
     else
-
         _check_domain_zone "${domain}" || return 1
-
         grep -q "\[$section\]" "${TAGS_FILE}" || {
             echo "Закваска '$section' не найдена."
             return 1
         }
-
-
         if ! grep -q "^$domain$" "${TAGS_FILE}"; then
-            error "Домен '$domain' не обнаружен в закваске '$section'."
+            echo "Домен '$domain' не обнаружен в закваске '$section'."
             return 1
         fi
-
         sed -i "/\[$section\]/,/\[.*\]/ { /^$domain$/d }" "${TAGS_FILE}"
     fi
+}
+
+cmd_create_tag_section() {
+    local section="$1"
+    [ -z "$section" ] && { echo "tag name required"; return 1; }
+    grep -q "\[$section\]" "${TAGS_FILE}" && { echo "tag '$section' already exists"; return 1; }
+
+    printf '\n[%s]\n' "$section" >> "${TAGS_FILE}"
+    shift
+    for domain in "$@"; do
+        domain=$(echo "$domain" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed 's~^https\?://~~; s~^www\.~~; s~/\+$~~')
+        [ -z "$domain" ] && continue
+        echo "$domain" >> "${TAGS_FILE}"
+    done
+}
+
+cmd_del_tag_section_noninteractive() {
+    local section="$1"
+    [ -z "$section" ] && return 1
+    grep -q "\[$section\]" "${TAGS_FILE}" || return 1
+    local tmp_tags=$(mktemp)
+    local found=0
+    while IFS= read -r line; do
+        echo "$line" | grep -q "^\[$section\]$" && { found=1; continue; }
+        if [ "$found" -eq 1 ]; then
+            echo "$line" | grep -q "^\[" && found=2
+        fi
+        [ "$found" -ne 1 ] && echo "$line" >> "$tmp_tags"
+    done < "${TAGS_FILE}"
+    mv -f "$tmp_tags" "${TAGS_FILE}"
 }
 
 
@@ -412,20 +436,124 @@ cmd_update_tags_domain_list() {
     }
     
     if [ "${_force}" = force ] ; then
-        mv -f /opt/tmp/tags.list /opt/apps/kvas/etc/conf/tags.list
+        mv -f /opt/tmp/tags.list /opt/etc/tags.list
     else
-        local _diff=$(diff /opt/apps/kvas/etc/conf/tags.list  /opt/tmp/tags.list  | grep -E '^\+\[' | tr -d +)
+        local _diff=$(diff /opt/etc/tags.list  /opt/tmp/tags.list  | grep -E '^\+\[' | tr -d +)
         if [ -n "${_diff}" ] ; then
             print_line
             echo -e "В список были добавлены следущие закваски:\n${_diff}"
             print_line
             printf "%s" "${_diff}"
-            mv -f /opt/tmp/tags.list /opt/apps/kvas/etc/conf/tags.list
+            mv -f /opt/tmp/tags.list /opt/etc/tags.list
         else
             print_line
             echo -e "В удаленном списке на ${BLUE}GitHub${NOCL} новых заквасок ${RED}не обнаружено${NOCL}."
             rm -f /opt/tmp/tags.list
         fi
 
+    fi
+}
+
+# --------------------------------------------------------------------------------------------
+#
+#   Функция для интерактивного редактирования доменов в закваске
+#   Если закваска добавлена в тоннель — пересинхронизирует домены
+#
+# ------------------------------------------------------------------------------------------
+cmd_edit_tag_section() {
+    local section="$1"
+    if [ -z "$section" ]; then
+        tag_select "редактирования" section
+        [ -z "$section" ] && { error "Закваска не выбрана."; return 1; }
+    fi
+    _check_section "$section" || return 1
+
+    while :; do
+        clear
+        print_line
+        echo -e "${GREEN}Редактирование закваски: [${section}]${NOCL}"
+        print_line
+        local domains
+        domains=$(get_tag_domain_list "$section")
+        if [ -n "$domains" ]; then
+            echo "$domains" | nl -w2 -s'. '
+        else
+            echo -e "${YELLOW}(доменов нет)${NOCL}"
+        fi
+        print_line
+        echo "  a) Добавить домен"
+        echo "  r) Удалить домен (по номеру)"
+        echo "  d) Готово"
+        print_line
+        printf "${BLUE}Выберите действие (a/r/d):${NOCL} "
+        read -r action
+        case "$action" in
+            a|A)
+                printf "Введите домен: "
+                read -r newdom
+                [ -z "$newdom" ] && { warning "Домен не введён."; continue; }
+                cmd_add_domain_to_tag_list "$section" "$newdom"
+                ;;
+            r|R)
+                printf "Номер домена для удаления: "
+                read -r num
+                [ -z "$num" ] && { warning "Номер не введён."; continue; }
+                local dom_to_del
+                dom_to_del=$(echo "$domains" | sed -n "${num}p")
+                if [ -z "$dom_to_del" ]; then
+                    error "Неверный номер."
+                    continue
+                fi
+                cmd_del_domain_from_tag_list "$section" "$dom_to_del"
+                ;;
+            d|D)
+                break
+                ;;
+            *)
+                warning "Неверный ввод. Используйте a/r/d."
+                ;;
+        esac
+    done
+
+    # Проверяем, есть ли домены этой закваски в списке защиты (тоннеле)
+    local in_list
+    in_list=$(has_section_domains_in_list "$section")
+    if [ "$in_list" -eq 1 ] || [ "$in_list" -eq 3 ]; then
+        print_line
+        ready "Закваска [${section}] добавлена в тоннель. Обновляем..."
+        cmd_del_tag_section_from_protect_list_noninteractive "$section"
+        cmd_add_tag_section_to_protect_list_noninteractive "$section"
+        print_line
+        when_ok "Синхронизация с тоннелем завершена"
+    fi
+}
+
+# --------------------------------------------------------------------------------------------
+#
+#   Неинтерактивное редактирование — заменяет все домены в закваске
+#   Используется из Web UI
+#
+# ------------------------------------------------------------------------------------------
+cmd_edit_tag_section_noninteractive() {
+    local section="$1"
+    local new_domains="$2"
+    _check_section "$section" || return 1
+
+    local was_in_tunnel=false
+    local in_list
+    in_list=$(has_section_domains_in_list "$section")
+    [ "$in_list" -eq 1 ] || [ "$in_list" -eq 3 ] && was_in_tunnel=true
+
+    if $was_in_tunnel; then
+        cmd_del_tag_section_from_protect_list_noninteractive "$section"
+    fi
+
+    cmd_del_tag_section_noninteractive "$section"
+
+    # shellcheck disable=SC2086
+    cmd_create_tag_section "$section" $new_domains
+
+    if $was_in_tunnel; then
+        cmd_add_tag_section_to_protect_list_noninteractive "$section"
     fi
 }

@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
 <title>KVAS — Защита ваших подключений</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -11,8 +12,8 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 .subtitle { color: #8b949e; font-size: 12px; margin-bottom: 16px; }
 
 /* Tabs */
-.tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 1px solid #30363d; }
-.tab { padding: 8px 20px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; transition: all .2s; user-select: none; }
+.tabs { display: flex; flex-wrap: wrap; gap: 0; margin-bottom: 16px; border-bottom: 1px solid #30363d; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tab { padding: 8px 14px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; transition: all .2s; user-select: none; white-space: nowrap; font-size: 12px; }
 .tab:hover { color: #c9d1d9; }
 .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
 .tab-content { display: none; }
@@ -93,6 +94,14 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 </style>
 </head>
 <body>
+<noscript><p style="color:#f85149;padding:12px;">Включите JavaScript для работы KVAS Web UI.</p></noscript>
+<div id="jsError" style="display:none;color:#f85149;padding:12px;border:1px solid #f85149;border-radius:6px;margin:12px;font-family:monospace;font-size:12px;"></div>
+<script>
+window.addEventListener('error', function(e){
+  var el = document.getElementById('jsError');
+  if (el) { el.style.display = 'block'; el.textContent = 'JS error: ' + e.message + ' (' + (e.filename||'').split('/').pop() + ':' + e.lineno + ')'; }
+});
+</script>
 
 <h1>KVAS</h1>
 <div class="subtitle" style="display:flex;justify-content:space-between;align-items:center;">
@@ -120,6 +129,7 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
   <div class="tab" data-tab="route" onclick="switchTab('route')">Маршрутизация</div>
   <div class="tab" data-tab="parental" onclick="switchTab('parental')">Родительский контроль</div>
   <div class="tab" data-tab="monitor" onclick="switchTab('monitor')">Мониторинг трафика</div>
+  <div class="tab" data-tab="diag" onclick="switchTab('diag')">Диагностика</div>
 </div>
 
 <!-- ========== TAB: Управление ========== -->
@@ -130,14 +140,14 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
     <h3>Состояние системы</h3>
     <div class="card-row"><label>Пакет:</label><span class="value" id="sysPkg">-</span></div>
     <div class="card-row"><label>Версия:</label><span class="value" id="sysVer">-</span></div>
-    <div class="card-row"><label>Резерв VPN:</label><span class="value" id="sysMode">-</span></div>
     <div class="card-row"><label>Хостов:</label><span class="value" id="sysHosts">-</span></div>
-    <div class="card-row"><label>Служба Xray:</label><span class="value" id="sysXrayService">-</span></div>
+    <div class="card-row"><label>Служба Xray:</label><span class="value" id="sysXrayService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysXrayVer"></span></div>
     <div class="card-row"><label>Служба Hysteria:</label><span class="value" id="sysHysteriaService">-</span></div>
-    <div class="card-row"><label>VLESS туннель:</label><span class="value" id="sysVless">-</span></div>
-    <div class="card-row"><label>Hysteria туннель:</label><span class="value" id="sysHysteria">-</span></div>
+    <div class="card-row"><label>Текущий туннель:</label><span class="value" id="sysTunnel">-</span></div>
     <div class="card-row"><label>Обновления:</label><span class="value" id="sysUpdate">-</span>
       <button class="btn btn-sm" onclick="doCheckUpdate(this)" style="margin-left:8px;">Проверить</button>
+      <button class="btn btn-sm" id="kvasUpgradeBtn" onclick="doKvasUpgrade(this)" style="margin-left:4px;display:none;">Обновить KVAS</button>
+      <button class="btn btn-sm" id="kvasRollbackBtn" onclick="doKvasRollback(this)" style="margin-left:4px;display:none;">Откатить</button>
     </div>
   </div>
 
@@ -170,8 +180,10 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
   <div class="card">
     <h3>VPN туннель</h3>
     <div class="card-row">
-      <button class="btn btn-sm" onclick="vpnSet('vless',this)">VLESS</button>
-      <button class="btn btn-sm" onclick="vpnSet('hysteria',this)">Hysteria 2</button>
+      <select id="vpnSelect" style="flex:1;padding:5px 8px;background-color:var(--bg-input,#1c2128);color:var(--fg);border:1px solid var(--border);border-radius:6px;font-size:13px;cursor:pointer;">
+        <option value="">Загрузка...</option>
+      </select>
+      <button class="btn btn-sm" onclick="vpnSetInterface(this)">Переключить</button>
     </div>
     <div id="vpnMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow-y:auto;"></div>
   </div>
@@ -179,23 +191,90 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
   <!-- Failover -->
   <div class="card">
     <h3>Автопереключение (Failover)</h3>
-    <div class="card-row">
+    <div class="card-row" style="flex-wrap:wrap;gap:6px;">
       <button class="btn btn-sm success" id="foOn" onclick="failover('on',this)">Включить</button>
       <button class="btn btn-sm danger" id="foOff" onclick="failover('off',this)">Выключить</button>
       <button class="btn btn-sm" onclick="failover('status',this)">Статус</button>
-      <span class="value" id="foStatus" style="margin-left:8px;">-</span>
     </div>
+    <div id="foChannels" style="margin-top:8px;display:none;">
+      <div class="card-row" style="gap:6px;margin-bottom:4px;">
+        <label style="font-size:12px;min-width:90px;">Основной:</label>
+        <select id="foPrimary" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;"></select>
+      </div>
+      <div class="card-row" style="gap:6px;margin-bottom:4px;">
+        <label style="font-size:12px;min-width:90px;">Резерв:</label>
+        <select id="foSecondary" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;"></select>
+      </div>
+      <div class="card-row" style="gap:6px;margin-bottom:4px;">
+        <label style="font-size:12px;min-width:90px;">2-й резерв:</label>
+        <select id="foTertiary" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;"></select>
+      </div>
+      <button class="btn btn-sm" onclick="saveFailoverChannels(this)" style="margin-top:4px;">Применить</button>
+    </div>
+    <div id="foInfo" style="font-size:12px;color:#8b949e;margin-top:6px;"></div>
     <div id="foMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow-y:auto;"></div>
+  </div>
+
+  <!-- AdGuard -->
+  <div class="card">
+    <h3>AdGuard Home</h3>
+    <div class="card-row" style="gap:6px;">
+      <button class="btn btn-sm success" id="agOn" onclick="adguardOn(this)">Включить</button>
+      <button class="btn btn-sm danger" id="agOff" onclick="adguardOff(this)">Выключить</button>
+      <span class="value" id="agStatus" style="margin-left:8px;">-</span>
+    </div>
+    <div id="agMsg" class="msg" style="font-size:11px;max-height:150px;overflow-y:auto;"></div>
+  </div>
+
+  <!-- VPN Setup -->
+  <div class="card">
+    <h3>Настройка VPN</h3>
+    <div class="card-row" style="gap:6px;flex-direction:column;align-items:stretch;">
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input type="text" id="vlessLink" placeholder="vless://..." style="flex:1;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+        <button class="btn btn-sm" onclick="vlessNew(this)">VLESS</button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input type="text" id="hysteriaLink" placeholder="hysteria://..." style="flex:1;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+        <button class="btn btn-sm" onclick="hysteriaNew(this)">Hysteria</button>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input type="text" id="awgLink" placeholder="awg://... или /path/to/file.conf" style="flex:1;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+        <button class="btn btn-sm" onclick="awgNew(this)">AmneziaWG</button>
+        <input type="file" id="awgFileInput" style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;" onchange="awgFileSelected(this)">
+        <label for="awgFileInput" class="btn btn-sm" style="white-space:nowrap;cursor:pointer;">Обзор</label>
+        <button class="btn btn-sm" id="awgToggleBtn" onclick="awgToggle(this)" style="white-space:nowrap;">Стоп</button>
+      </div>
+    </div>
+    <div id="vpnSetupMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:300px;overflow-y:auto;margin-top:6px;"></div>
+  </div>
+
+  <!-- Xray Core -->
+  <div class="card">
+    <h3>Xray Core</h3>
+    <div class="card-row" style="flex-wrap:wrap;gap:6px;align-items:center;">
+      <span style="font-size:12px;">Версия: <span class="value" id="xrayVer" style="color:#58a6ff;">-</span></span>
+      <span style="font-size:12px;">Статус: <span id="xrayRun" style="color:#8b949e;">-</span></span>
+    </div>
+    <div class="card-row" style="gap:6px;margin-top:6px;">
+      <select id="xrayVerSelect" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
+        <option value="">Загрузка...</option>
+      </select>
+      <button class="btn btn-sm" onclick="xrayInstall(this)">Установить</button>
+    </div>
+    <div id="xrayMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:300px;overflow-y:auto;margin-top:6px;"></div>
   </div>
 
   <!-- System Actions -->
   <div class="card">
     <h3>Действия</h3>
-    <div class="card-row">
+    <div class="card-row" style="flex-wrap:wrap;gap:6px;">
       <button class="btn btn-sm" onclick="doUpdate(this)">Обновить списки</button>
+      <button class="btn btn-sm" onclick="doBackupDownload(this)">Бэкап (скачать)</button>
+      <button class="btn btn-sm" onclick="doRestoreUpload(this)">Восстановить (загрузить)</button>
       <button class="btn btn-sm" onclick="doBackup(this)">Бэкап</button>
       <button class="btn btn-sm" onclick="doRestore(this)">Восстановить</button>
-      <button class="btn btn-sm primary" onclick="doKvasInit(this)">Перезагрузка Квас — kvas init</button>
+      <button class="btn btn-sm primary" onclick="doKvasInit(this)">Перезагрузка Квас</button>
     </div>
     <div id="sysMsg" class="msg"></div>
   </div>
@@ -362,6 +441,48 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 </div>
 
 </div><!-- /tab-monitor -->
+
+<div id="tab-diag" class="tab-content">
+
+<div class="card">
+  <h3>Проверка системы</h3>
+  <div class="card-row" style="gap:8px;flex-wrap:wrap;">
+    <button class="btn" onclick="kvasTest(this)">kvas test</button>
+    <button class="btn" onclick="kvasDebug(this)">kvas debug</button>
+    <button class="btn btn-sm" onclick="kvasDebugDns(this)">debug dns</button>
+    <button class="btn btn-sm" onclick="kvasDebugIptables(this)">debug iptables</button>
+  </div>
+  <pre id="diagOutput" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;max-height:300px;overflow-y:auto;font-size:11px;color:#c9d1d9;font-family:monospace;white-space:pre-wrap;margin-top:8px;"><span style="color:#8b949e;">Нажмите кнопку для запуска...</span></pre>
+</div>
+
+<div class="card">
+  <h3>Тест туннеля к сайту</h3>
+  <div class="card-row" style="gap:8px;flex-wrap:wrap;align-items:center;">
+    <select id="tunnelTestSelect" style="min-width:140px;padding:5px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:13px;cursor:pointer;">
+      <option value="">Загрузка...</option>
+    </select>
+    <input type="text" id="tunnelTestSite" placeholder="example.com" style="flex:1;min-width:180px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:13px;">
+  <button class="btn btn-sm" onclick="tunnelTestSite(this)">Проверить</button>
+</div>
+<div class="card-row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px;">
+  <span style="font-size:12px;color:#8b949e;">Тест входящей скорости:</span>
+  <button class="btn btn-sm" onclick="tunnelSpeedTest(this)">Тест скорости (Hetzner 100MB)</button>
+</div>
+  <div id="tunnelTestResult" style="margin-top:8px;font-size:12px;"></div>
+</div>
+
+<div class="card">
+  <h3>Логи</h3>
+  <div class="card-row" style="gap:8px;flex-wrap:wrap;">
+    <button class="btn btn-sm" onclick="loadKvasLog('error')">Ошибки</button>
+    <button class="btn btn-sm" onclick="loadKvasLog('info')">Квас</button>
+    <button class="btn btn-sm" onclick="loadKvasLog('syslog')">Система</button>
+    <button class="btn btn-sm" onclick="clearKvasLog(this)">Очистить лог ошибок</button>
+  </div>
+  <pre id="logOutput" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;max-height:400px;overflow-y:auto;font-size:11px;color:#c9d1d9;font-family:monospace;white-space:pre-wrap;margin-top:8px;"><span style="color:#8b949e;">Выберите тип лога...</span></pre>
+</div>
+
+</div><!-- /tab-diag -->
 </div><!-- /mainUi -->
 
 <script>
@@ -474,11 +595,16 @@ function showMain() {
   document.getElementById('mainUi').style.display = 'block';
   document.getElementById('logoutBtn').style.display = '';
   loadSystemStatus();
+  loadVpnInterfaces();
   loadHosts();
   loadRouteLists();
   loadParentalList();
   loadAdblockStatus();
+  loadAdguardStatus();
+  loadXrayStatus();
+  updateAwgToggleBtn();
   loadFailoverStatus();
+  loadTunnelTestInterfaces();
   loadTags();
   fetchDevices();
   logMsg('log-info', 'Мониторинг трафика KVAS');
@@ -714,20 +840,28 @@ function loadSystemStatus() {
     if (d.ok) {
       document.getElementById('sysPkg').textContent = d.pkg || '-';
       document.getElementById('sysVer').textContent = d.ver || '-';
-      document.getElementById('sysMode').textContent = d.mode || '-';
+      // sysMode removed — duplicated by sysTunnel
       document.getElementById('sysHosts').textContent = d.hosts || '-';
       var xraySvc = d.xray_service || '-';
       document.getElementById('sysXrayService').textContent = xraySvc === 'running' ? 'работает' : (xraySvc === 'stopped' ? 'остановлена' : (xraySvc === 'not_installed' ? 'не установлена' : xraySvc));
+      document.getElementById('sysXrayVer').textContent = d.xray_version ? ('v' + d.xray_version) : '';
       var hysteriaSvc = d.hysteria_service || '-';
       document.getElementById('sysHysteriaService').textContent = hysteriaSvc === 'running' ? 'работает' : (hysteriaSvc === 'stopped' ? 'остановлена' : (hysteriaSvc === 'not_installed' ? 'не установлена' : hysteriaSvc));
-      document.getElementById('sysVless').innerHTML = '<span style="color:#8b949e;">проверка...</span>';
-      document.getElementById('sysHysteria').innerHTML = '<span style="color:#8b949e;">проверка...</span>';
+      document.getElementById('sysTunnel').innerHTML = '<span style="color:#8b949e;">проверка...</span>';
       api('/cgi-bin/manage.sh?action=tunnel_check', function(t) {
         if (t.ok) {
           var ok = '<span style="color:#3fb950;">\u2713</span> ';
           var fail = '<span style="color:#f85149;">\u2717</span> ';
-          document.getElementById('sysVless').innerHTML = t.vless ? ok + 'работает' : fail + 'не работает';
-          document.getElementById('sysHysteria').innerHTML = t.hysteria ? ok + 'работает' : fail + 'не работает';
+          var mode = d.mode || '-';
+          if (mode === 'vless') {
+            document.getElementById('sysTunnel').innerHTML = 'VLESS ' + (t.vless ? ok + 'работает' : fail + 'не работает');
+          } else if (mode === 'hysteria') {
+            document.getElementById('sysTunnel').innerHTML = 'Hysteria ' + (t.hysteria ? ok + 'работает' : fail + 'не работает');
+          } else if (t.other_desc) {
+            document.getElementById('sysTunnel').innerHTML = t.other_desc + ' ' + (t.other ? ok + 'работает' : fail + 'не работает');
+          } else {
+            document.getElementById('sysTunnel').innerHTML = mode + ' ' + fail + 'не работает';
+          }
         }
       });
     }
@@ -737,15 +871,144 @@ function loadSystemStatus() {
 function doCheckUpdate(btn) {
   apiBtn('/cgi-bin/manage.sh?action=check_update', btn, function(d){
     var el = document.getElementById('sysUpdate');
+    var upgradeBtn = document.getElementById('kvasUpgradeBtn');
+    var rollbackBtn = document.getElementById('kvasRollbackBtn');
     if (d.ok) {
       var upd = d.update || '-';
-      if (upd === 'up_to_date') el.textContent = 'актуальная версия';
-      else if (upd && upd.indexOf('available:') === 0) el.textContent = 'доступно: ' + upd.split(':')[1];
-      else el.textContent = upd;
+      if (upd === 'up_to_date') {
+        el.textContent = 'актуальная версия';
+        if (upgradeBtn) upgradeBtn.style.display = 'none';
+        if (rollbackBtn) rollbackBtn.style.display = 'inline-block';
+      } else if (upd && upd.indexOf('available:') === 0) {
+        var ver = upd.split(':')[1].trim();
+        el.innerHTML = '<span style="color:#3fb950;">доступна ' + ver + '</span>';
+        if (upgradeBtn) {
+          upgradeBtn.textContent = 'Обновить до ' + ver;
+          upgradeBtn.style.display = 'inline-block';
+          upgradeBtn.className = 'btn btn-sm success';
+        }
+        if (rollbackBtn) rollbackBtn.style.display = 'none';
+      } else {
+        el.textContent = upd;
+        if (upgradeBtn) upgradeBtn.style.display = 'none';
+        if (rollbackBtn) rollbackBtn.style.display = 'none';
+      }
     } else {
       el.textContent = d.error || 'ошибка';
+      if (upgradeBtn) upgradeBtn.style.display = 'none';
+      if (rollbackBtn) rollbackBtn.style.display = 'none';
     }
   });
+}
+
+function doKvasRollback(btn) {
+  if (!confirm('Откатить KVAS на предыдущую версию? Это займёт 1-2 минуты.')) return;
+  var el = document.getElementById('sysMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Откат KVAS... может занять до 120с</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=rollback&token=' + AUTH_TOKEN;
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 120000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.innerHTML = (d.output || 'KVAS откатан.') + '<br><span style="color:#3fb950;">Web UI перезапускается... страница обновится через 15 секунд...</span>';
+      setTimeout(function() { window.location.href = window.location.pathname + '?v=' + Date.now(); }, 15000);
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка отката';
+    }
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+}
+
+function doKvasUpgrade(btn) {
+  if (!confirm('Обновить KVAS? Это займёт 1-2 минуты.')) return;
+  var el = document.getElementById('sysMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Обновление KVAS... может занять до 120с. Страница обновится автоматически.</span>';
+  // Меняем кнопку сразу на синюю "Обновить страницу"
+  btn.textContent = 'Обновить страницу';
+  btn.className = 'btn btn-sm primary';
+  btn.disabled = false;
+  btn.onclick = function() { window.location.href = window.location.pathname + '?v=' + Date.now(); };
+
+  // Запускаем upgrade (ответ может не прийти — web сервер перезапускается)
+  var u = '/cgi-bin/manage.sh?action=upgrade&token=' + AUTH_TOKEN;
+  fetch(u).catch(function() {});
+
+  // Через 20 секунд проверяем — поднялся ли web UI
+  setTimeout(function() {
+    // Пробуем перезагрузить страницу
+    window.location.href = window.location.pathname + '?v=' + Date.now();
+  }, 20000);
+}
+
+function tunnelTestSite(btn) {
+  var sel = document.getElementById('tunnelTestSelect');
+  var iface = sel.value;
+  var site = document.getElementById('tunnelTestSite').value.trim();
+  if (!iface) { alert('Выберите туннель'); return; }
+  if (!site) { alert('Введите сайт'); return; }
+  site = site.replace(/^https?:\/\//, '');
+  var el = document.getElementById('tunnelTestResult');
+  el.innerHTML = '<span style="color:#8b949e;">Проверка ' + site + ' через ' + (sel.options[sel.selectedIndex].textContent) + '...</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=tunnel_test_site&token=' + AUTH_TOKEN + '&iface=' + encodeURIComponent(iface) + '&site=' + encodeURIComponent(site);
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 30000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) {
+      var httpMap = {'200':'OK','301':'Редирект','302':'Редирект','403':'Запрещено','404':'Не найдено','500':'Ошибка сервера','502':'Шлюз недоступен','000':'Нет ответа'};
+      var httpDesc = httpMap[d.http] || '';
+      var httpColor = d.http === '200' ? '#3fb950' : (d.http === '000' ? '#f85149' : '#f0883e');
+      var ipColor = d.ip === 'нет ответа' ? '#f85149' : '#3fb950';
+      var speedColor = d.speed > 1024 ? '#3fb950' : (d.speed > 100 ? '#f0883e' : '#f85149');
+      var html = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">';
+      html += '<span>IP: <span style="color:' + ipColor + ';font-weight:bold;">' + d.ip + '</span></span>';
+      html += '<span>HTTP: <span style="color:' + httpColor + ';font-weight:bold;">' + d.http + '</span>';
+      if (httpDesc) html += ' <span style="color:#8b949e;font-size:11px;">' + httpDesc + '</span>';
+      html += '</span>';
+      html += '<span>Время: <span style="color:#8b949e;">' + d.time + 's</span></span>';
+      html += '<span>Скорость: <span style="color:' + speedColor + ';font-weight:bold;">' + d.speed + '</span> <span style="color:#8b949e;font-size:11px;">KB/s</span></span>';
+      html += '<span style="color:#8b949e;font-size:11px;">(' + (d.method === 'socks' ? 'SOCKS5' : 'interface') + ')</span>';
+      html += '</div>';
+      el.innerHTML = html;
+    } else {
+      el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + (d.error || 'неизвестная') + '</span>';
+    }
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + e.message + '</span>'; });
+}
+
+function tunnelSpeedTest(btn) {
+  var sel = document.getElementById('tunnelTestSelect');
+  var iface = sel.value;
+  if (!iface) { alert('Выберите туннель'); return; }
+  var el = document.getElementById('tunnelTestResult');
+  el.innerHTML = '<span style="color:#8b949e;">Тест входящей скорости через ' + (sel.options[sel.selectedIndex].textContent) + '... (до 60с)</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=tunnel_speed_test&token=' + AUTH_TOKEN + '&iface=' + encodeURIComponent(iface);
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 90000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) {
+      var speedKB = d.speed;
+      var speedMB = (speedKB / 1024).toFixed(1);
+      var speedColor = speedKB > 1024 ? '#3fb950' : (speedKB > 100 ? '#f0883e' : '#f85149');
+      var html = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">';
+      html += '<span>IP: <span style="color:#3fb950;font-weight:bold;">' + d.ip + '</span></span>';
+      html += '<span>Входящая скорость: <span style="color:' + speedColor + ';font-weight:bold;">' + speedMB + ' MB/s</span> <span style="color:#8b949e;font-size:11px;">(' + speedKB + ' KB/s)</span></span>';
+      html += '<span>Время: <span style="color:#8b949e;">' + d.time + 's</span></span>';
+      html += '</div>';
+      el.innerHTML = html;
+    } else {
+      el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + (d.error || 'неизвестная') + '</span>';
+    }
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.innerHTML = '<span style="color:#f85149;">' + (e.name === 'AbortError' ? 'Превышено время ожидания (90с)' : 'Ошибка: ' + e.message) + '</span>'; });
 }
 
 /* ========== HOSTS ========== */
@@ -896,6 +1159,92 @@ function hostDel(domain) {
   });
 }
 
+function loadVpnInterfaces() {
+  api('/cgi-bin/manage.sh?action=vpn_interfaces', function(d){
+    var sel = document.getElementById('vpnSelect');
+    if (!sel) return;
+    sel.innerHTML = '';
+    if (d.ok && d.interfaces) {
+      d.interfaces.forEach(function(i){
+        var opt = document.createElement('option');
+        opt.value = i.ent;
+        opt.textContent = i.desc + ' [' + i.ent + ']';
+        if (i.active) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+  });
+}
+
+function vpnSetInterface(btn) {
+  var sel = document.getElementById('vpnSelect');
+  var iface = sel.value;
+  if (!iface) return;
+  apiBtn('/cgi-bin/manage.sh?action=vpn_set&iface=' + encodeURIComponent(iface), btn, function(d){
+    var el = document.getElementById('vpnMsg');
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg;
+      consoleLog('vpn set ' + iface + ': ' + d.msg);
+      loadSystemStatus();
+      loadVpnInterfaces();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'error';
+      consoleLog('vpn set ' + iface + ' ERROR: ' + (d.error || 'unknown'));
+    }
+  });
+}
+
+function awgToggle(btn) {
+  var el = document.getElementById('vpnSetupMsg');
+  var btnEl = document.getElementById('awgToggleBtn');
+  var action = btnEl.textContent.trim() === 'Стоп' ? 'tunnel_stop' : 'tunnel_start';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=' + action + '&token=' + AUTH_TOKEN + '&iface=awg';
+  fetch(u).then(function(r) { return r.json(); }).then(function(d) {
+    loadingBtn(btn, false);
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || '';
+      // Update button state
+      if (action === 'tunnel_stop') {
+        btnEl.textContent = 'Старт';
+        btnEl.className = 'btn btn-sm success';
+      } else {
+        btnEl.textContent = 'Стоп';
+        btnEl.className = 'btn btn-sm danger';
+      }
+      loadSystemStatus();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  }).catch(function(e) {
+    loadingBtn(btn, false);
+    el.textContent = 'Ошибка: ' + e.message;
+  });
+}
+
+function updateAwgToggleBtn() {
+  var btn = document.getElementById('awgToggleBtn');
+  if (!btn) return;
+  api('/cgi-bin/manage.sh?action=awg_status', function(d) {
+    if (!d.ok) return;
+    if (d.running === 'true') {
+      btn.textContent = 'Стоп';
+      btn.className = 'btn btn-sm danger';
+    } else if (d.installed === 'true') {
+      btn.textContent = 'Старт';
+      btn.className = 'btn btn-sm success';
+    } else {
+      btn.textContent = 'Не установлен';
+      btn.className = 'btn btn-sm';
+      btn.disabled = true;
+    }
+  });
+}
+
 function vpnSet(proto, btn) {
   apiBtn('/cgi-bin/manage.sh?action=vpn_set&proto=' + proto, btn, function(d){
     var el = document.getElementById('vpnMsg');
@@ -914,7 +1263,232 @@ function vpnSet(proto, btn) {
 /* ========== FAILOVER ========== */
 function loadFailoverStatus() {
   api('/cgi-bin/manage.sh?action=failover_status', function(d){
-    if (d.ok) document.getElementById('foStatus').textContent = d.enabled !== 'manual' ? 'вкл (' + d.primary + ')' : 'выкл';
+    if (!d.ok) return;
+    var el = document.getElementById('foInfo');
+    var channelsDiv = document.getElementById('foChannels');
+    
+    // Заполняем dropdown доступными каналами с исключением уже выбранных
+    var available = (d.available || '').split(' ').filter(function(s){return s;});
+    
+    var primary = (d.primary && d.primary !== '-') ? d.primary : '';
+    var secondary = (d.secondary && d.secondary !== '-' && d.secondary !== 'manual') ? d.secondary : '';
+    var tertiary = d.tertiary || '';
+    
+    // Primary — все каналы
+    var selP = document.getElementById('foPrimary');
+    selP.innerHTML = '';
+    available.forEach(function(ch){
+      var opt = document.createElement('option'); opt.value = ch; opt.textContent = ch;
+      if (ch === primary) opt.selected = true;
+      selP.appendChild(opt);
+    });
+    
+    // Secondary — все кроме primary
+    var selS = document.getElementById('foSecondary');
+    selS.innerHTML = '';
+    var optNone = document.createElement('option'); optNone.value = ''; optNone.textContent = '— не выбрано —'; selS.appendChild(optNone);
+    available.forEach(function(ch){
+      if (ch === primary) return; // исключаем primary
+      var opt = document.createElement('option'); opt.value = ch; opt.textContent = ch;
+      if (ch === secondary) opt.selected = true;
+      selS.appendChild(opt);
+    });
+    
+    // Tertiary — все кроме primary и secondary
+    var selT = document.getElementById('foTertiary');
+    selT.innerHTML = '';
+    var optNone2 = document.createElement('option'); optNone2.value = ''; optNone2.textContent = '— не выбрано —'; selT.appendChild(optNone2);
+    available.forEach(function(ch){
+      if (ch === primary || ch === secondary) return; // исключаем primary и secondary
+      var opt = document.createElement('option'); opt.value = ch; opt.textContent = ch;
+      if (ch === tertiary) opt.selected = true;
+      selT.appendChild(opt);
+    });
+    
+    // При изменении primary — обновляем secondary и tertiary (исключаем новый primary)
+    selP.onchange = function() {
+      var newP = selP.value;
+      // Обновляем secondary
+      var curS = selS.value;
+      selS.innerHTML = '';
+      var ns = document.createElement('option'); ns.value = ''; ns.textContent = '— не выбрано —'; selS.appendChild(ns);
+      available.forEach(function(ch){
+        if (ch === newP) return;
+        var opt = document.createElement('option'); opt.value = ch; opt.textContent = ch;
+        if (ch === curS) opt.selected = true;
+        selS.appendChild(opt);
+      });
+      // Обновляем tertiary
+      var curT = selT.value;
+      selT.innerHTML = '';
+      var nt = document.createElement('option'); nt.value = ''; nt.textContent = '— не выбрано —'; selT.appendChild(nt);
+      available.forEach(function(ch){
+        if (ch === newP || ch === selS.value) return;
+        var opt = document.createElement('option'); opt.value = ch; opt.textContent = ch;
+        if (ch === curT) opt.selected = true;
+        selT.appendChild(opt);
+      });
+    };
+    // При изменении secondary — обновляем tertiary
+    selS.onchange = function() {
+      var curP = selP.value;
+      var newS = selS.value;
+      var curT = selT.value;
+      selT.innerHTML = '';
+      var nt = document.createElement('option'); nt.value = ''; nt.textContent = '— не выбрано —'; selT.appendChild(nt);
+      available.forEach(function(ch){
+        if (ch === curP || ch === newS) return;
+        var opt = document.createElement('option'); opt.value = ch; opt.textContent = ch;
+        if (ch === curT) opt.selected = true;
+        selT.appendChild(opt);
+      });
+    };
+    
+    channelsDiv.style.display = 'block';
+    
+    if (d.enabled === 'manual') {
+      el.innerHTML = '<span style="color:#f85149;">Выключено</span>';
+    } else {
+      var html = '';
+      html += '<b>Демон:</b> ' + (d.daemon === 'true' ? '<span style="color:#3fb950;">запущен</span>' : '<span style="color:#f85149;">остановлен</span>') + ' &nbsp; ';
+      html += '<b>Интервал:</b> ' + (d.interval || '?') + 'с';
+      el.innerHTML = html;
+    }
+  });
+}
+
+function saveFailoverChannels(btn) {
+  var primary = document.getElementById('foPrimary').value;
+  var secondary = document.getElementById('foSecondary').value || 'manual';
+  var tertiary = document.getElementById('foTertiary').value || '';
+  
+  // Сохраняем primary (val последний в URL — apiBtn добавит &token=)
+  var u1 = '/cgi-bin/manage.sh?action=failover&cmd=set_primary&val=' + encodeURIComponent(primary);
+  apiBtn(u1, btn, function(d1){
+    if (!d1.ok) { document.getElementById('foMsg').textContent = d1.error; return; }
+    // Сохраняем secondary
+    var u2 = '/cgi-bin/manage.sh?action=failover&cmd=set_secondary&val=' + encodeURIComponent(secondary);
+    apiBtn(u2, btn, function(d2){
+      if (!d2.ok) { document.getElementById('foMsg').textContent = d2.error; return; }
+      // Сохраняем tertiary
+      if (tertiary) {
+        var u3 = '/cgi-bin/manage.sh?action=failover&cmd=set_tertiary&val=' + encodeURIComponent(tertiary);
+        apiBtn(u3, btn, function(d3){
+          document.getElementById('foMsg').className = 'msg ok';
+          document.getElementById('foMsg').textContent = 'Каналы сохранены: ' + primary + ' → ' + secondary + ' → ' + tertiary;
+          loadFailoverStatus();
+        });
+      } else {
+        // Очищаем tertiary
+        var u3 = '/cgi-bin/manage.sh?action=failover&cmd=set_tertiary&val=';
+        apiBtn(u3, btn, function(d3){
+          document.getElementById('foMsg').className = 'msg ok';
+          document.getElementById('foMsg').textContent = 'Каналы сохранены: ' + primary + ' → ' + secondary;
+          loadFailoverStatus();
+        });
+      }
+    });
+  });
+}
+
+function kvasTest(btn) {
+  var el = document.getElementById('diagOutput');
+  el.innerHTML = '<span style="color:#8b949e;">Выполняется kvas test... (может занять 10-30с)</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=kvas_test&token=' + AUTH_TOKEN;
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 60000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) { el.textContent = d.output || 'нет вывода'; }
+    else { el.textContent = 'Ошибка: ' + (d.error || 'неизвестная'); }
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+}
+
+function kvasDebug(btn) {
+  var el = document.getElementById('diagOutput');
+  el.innerHTML = '<span style="color:#8b949e;">Выполняется kvas debug... (может занять 5-20с)</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=kvas_debug&token=' + AUTH_TOKEN;
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 60000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) { el.textContent = d.output || 'нет вывода'; }
+    else { el.textContent = 'Ошибка: ' + (d.error || 'неизвестная'); }
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+}
+
+function kvasDebugDns(btn) {
+  var el = document.getElementById('diagOutput');
+  el.innerHTML = '<span style="color:#8b949e;">Выполняется debug dns...</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=kvas_debug_dns&token=' + AUTH_TOKEN;
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 60000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) { el.textContent = d.output || 'нет вывода'; }
+    else { el.textContent = 'Ошибка: ' + (d.error || 'неизвестная'); }
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+}
+
+function kvasDebugIptables(btn) {
+  var el = document.getElementById('diagOutput');
+  el.innerHTML = '<span style="color:#8b949e;">Выполняется debug iptables...</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=kvas_debug_iptables&token=' + AUTH_TOKEN;
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 60000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) { el.textContent = d.output || 'нет вывода'; }
+    else { el.textContent = 'Ошибка: ' + (d.error || 'неизвестная'); }
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+}
+
+function loadTunnelTestInterfaces() {
+  api('/cgi-bin/manage.sh?action=vpn_interfaces', function(d) {
+    var sel = document.getElementById('tunnelTestSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Выберите туннель...</option>';
+    if (d.ok && d.interfaces) {
+      d.interfaces.forEach(function(i) {
+        var opt = document.createElement('option');
+        opt.value = i.cli || i.ent;
+        opt.textContent = i.desc + ' [' + (i.ent || '?') + ']';
+        if (i.active) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+  });
+}
+
+
+function loadKvasLog(type) {
+  var el = document.getElementById('logOutput');
+  el.innerHTML = '<span style="color:#8b949e;">Загрузка...</span>';
+  api('/cgi-bin/manage.sh?action=kvas_log&type=' + type, function(d) {
+    if (d.ok) {
+      el.textContent = d.log || 'лог пуст';
+    } else {
+      el.textContent = 'Ошибка: ' + (d.error || 'неизвестная');
+    }
+  });
+}
+
+function clearKvasLog(btn) {
+  apiBtn('/cgi-bin/manage.sh?action=kvas_log_clear', btn, function(d) {
+    var el = document.getElementById('logOutput');
+    if (d.ok) {
+      el.textContent = d.msg || 'очищен';
+    } else {
+      el.textContent = 'Ошибка: ' + (d.error || 'неизвестная');
+    }
   });
 }
 
@@ -933,6 +1507,203 @@ function failover(cmd, btn) {
       consoleLog('failover ' + cmd + ' ERROR: ' + (d.error || 'unknown'));
     }
   });
+}
+
+/* ========== ADGUARD ========== */
+function loadAdguardStatus() {
+  api('/cgi-bin/manage.sh?action=adguard_status', function(d){
+    if (!d.ok) return;
+    var el = document.getElementById('agStatus');
+    if (d.adguard === 'on') {
+      el.innerHTML = '<span style="color:#3fb950;">вкл</span>';
+    } else {
+      el.innerHTML = '<span style="color:#f85149;">выкл</span>';
+    }
+  });
+}
+
+function adguardOn(btn) {
+  var el = document.getElementById('agMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Выполняется... может занять до 30с</span>';
+  apiBtn('/cgi-bin/manage.sh?action=adguard_on', btn, function(d){
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || 'AdGuard включен';
+      loadAdguardStatus();
+      loadSystemStatus();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  });
+}
+
+function adguardOff(btn) {
+  var el = document.getElementById('agMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Выполняется...</span>';
+  apiBtn('/cgi-bin/manage.sh?action=adguard_off', btn, function(d){
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || 'AdGuard выключен';
+      loadAdguardStatus();
+      loadSystemStatus();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  });
+}
+
+/* ========== VPN SETUP ========== */
+function vlessNew(btn) {
+  var link = document.getElementById('vlessLink').value.trim();
+  if (!link) { alert('Введите ссылку vless://...'); return; }
+  var el = document.getElementById('vpnSetupMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Настройка VLESS... может занять до 60с</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=vless_new&token=' + AUTH_TOKEN + '&link=' + encodeURIComponent(link);
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 60000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'VLESS настроен'; }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+    loadSystemStatus(); loadVpnInterfaces();
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+}
+
+function hysteriaNew(btn) {
+  var link = document.getElementById('hysteriaLink').value.trim();
+  if (!link) { alert('Введите ссылку hysteria://...'); return; }
+  var el = document.getElementById('vpnSetupMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Настройка Hysteria... может занять до 120с</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=hysteria_new&token=' + AUTH_TOKEN + '&link=' + encodeURIComponent(link);
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 120000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'Hysteria настроена'; }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+    loadSystemStatus();
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+}
+
+function awgNew(btn) {
+  // Если загружен файл — используем его (с переносами), иначе — текст из поля
+  var link = window._awgFileContent || document.getElementById('awgLink').value.trim();
+  if (!link || link.length < 10) {
+    alert('Выберите файл через «Обзор» или введите ссылку awg://...');
+    window._awgFileContent = null;
+    return;
+  }
+  var el = document.getElementById('vpnSetupMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Настройка AmneziaWG... может занять до 60с</span>';
+  loadingBtn(btn, true);
+
+  // Кодируем в URL-safe base64
+  var encoded = btoa(link).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  var u = '/cgi-bin/manage.sh?action=awg_new_b64&token=' + AUTH_TOKEN + '&data=' + encoded;
+  // Очищаем после использования
+  window._awgFileContent = null;
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 60000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'AmneziaWG настроен'; loadVpnInterfaces(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+    loadSystemStatus(); loadVpnInterfaces();
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+}
+
+function awgFileSelected(input) {
+  var file = input.files[0];
+  if (!file) {
+    alert('Файл не выбран');
+    return;
+  }
+  var el = document.getElementById('vpnSetupMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Чтение файла ' + file.name + '...</span>';
+  // Показываем имя файла в поле ввода (контент храним в переменной)
+  document.getElementById('awgLink').value = '📁 ' + file.name;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    window._awgFileContent = e.target.result;
+    el.innerHTML = '<span style="color:#3fb950;">Файл: ' + file.name + ' (' + e.target.result.length + ' симв). Нажмите AmneziaWG.</span>';
+  };
+  reader.onerror = function() {
+    el.innerHTML = '<span style="color:#f85149;">Ошибка чтения файла</span>';
+  };
+  reader.readAsText(file);
+}
+
+function awgViewConfig(btn) {
+  var el = document.getElementById('vpnSetupMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Загрузка конфигурации...</span>';
+  loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=awg_config', function(d) {
+    loadingBtn(btn, false);
+    if (d.ok && d.config) {
+      el.className = 'msg ok';
+      el.innerHTML = '<pre style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px;font-size:11px;color:#c9d1d9;font-family:monospace;white-space:pre-wrap;max-height:400px;overflow-y:auto;">' + d.config.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+    } else {
+      el.className = 'msg err';
+      el.textContent = 'Конфигурация не найдена. Настройте: kvas awg new';
+    }
+  });
+}
+
+/* ========== XRAY CORE ========== */
+function loadXrayStatus() {
+  api('/cgi-bin/manage.sh?action=xray_status', function(d){
+    if (!d.ok) return;
+    document.getElementById('xrayVer').textContent = d.version || 'не установлена';
+    var run = document.getElementById('xrayRun');
+    if (d.running === 'true') {
+      run.innerHTML = '<span style="color:#3fb950;">запущен</span>';
+    } else {
+      run.innerHTML = '<span style="color:#f85149;">остановлен</span>';
+    }
+  });
+  api('/cgi-bin/manage.sh?action=xray_versions', function(d){
+    var sel = document.getElementById('xrayVerSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Выберите версию...</option>';
+    if (d.ok && d.versions) {
+      d.versions.forEach(function(v){
+        var opt = document.createElement('option');
+        opt.value = v; opt.textContent = v;
+        sel.appendChild(opt);
+      });
+    }
+  });
+}
+
+function xrayInstall(btn) {
+  var ver = document.getElementById('xrayVerSelect').value;
+  if (!ver) { alert('Выберите версию'); return; }
+  var el = document.getElementById('xrayMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Установка ' + ver + '... (может занять до 60с)</span>';
+  loadingBtn(btn, true);
+  var u = '/cgi-bin/manage.sh?action=xray_install&token=' + AUTH_TOKEN + '&version=' + encodeURIComponent(ver);
+  var ctrl = new AbortController();
+  var timer = setTimeout(function() { ctrl.abort(); }, 120000);
+  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+    clearTimeout(timer); loadingBtn(btn, false);
+    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.output || 'Установлено';
+      loadXrayStatus();
+      loadSystemStatus();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
 }
 
 /* ========== ACTIONS ========== */
@@ -968,6 +1739,61 @@ function doRestore(btn) {
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; }
     else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
   });
+}
+
+function doBackupDownload(btn) {
+  var el = document.getElementById('sysMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Создание архива...</span>';
+  loadingBtn(btn, true);
+  apiBtn('/cgi-bin/manage.sh?action=backup_download', btn, function(d){
+    loadingBtn(btn, false);
+    if (d.ok) {
+      var a = document.createElement('a');
+      a.href = d.url + '?t=' + Date.now();
+      a.download = (d.name || 'kvas_backup') + '.tar.gz';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      el.className = 'msg ok';
+      el.innerHTML = '<b>Архив скачан</b><br><b>Файлы в архиве:</b><pre style="font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto;margin-top:4px;">' + String(d.files || '').replace(/\\n/g, '\n') + '</pre>';
+      setTimeout(function(){ api('/cgi-bin/manage.sh?action=backup_cleanup', function(){}); }, 60000);
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка создания архива';
+    }
+  });
+}
+
+function doRestoreUpload(btn) {
+  var el = document.getElementById('sysMsg');
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.tar.gz,.tgz,.gz';
+  input.style.display = 'none';
+  input.onchange = function() {
+    var file = input.files[0];
+    if (!file) return;
+    el.innerHTML = '<span style="color:#8b949e;">Восстановление из ' + file.name + '...</span>';
+    loadingBtn(btn, true);
+    var u = '/cgi-bin/manage.sh?action=restore_upload&token=' + AUTH_TOKEN;
+    var ctrl = new AbortController();
+    var timer = setTimeout(function() { ctrl.abort(); }, 30000);
+    fetch(u, { method: 'POST', body: file, signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
+      clearTimeout(timer); loadingBtn(btn, false);
+      try { var d = JSON.parse(t) } catch(e) { d = { error: 'JSON parse error: ' + t.substring(0, 200) } }
+      if (d.ok) {
+        el.className = 'msg ok';
+        el.innerHTML = '<b>Восстановлено</b><br><pre style="font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto;margin-top:4px;">' + String(d.output || '').replace(/\\n/g, '\n') + '</pre>';
+        loadSystemStatus();
+      } else {
+        el.className = 'msg err';
+        el.textContent = d.error || 'Ошибка восстановления';
+      }
+    }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+  };
+  document.body.appendChild(input);
+  input.click();
+  document.body.removeChild(input);
 }
 
 /* ========== MONITOR (existing) ========== */
@@ -1100,7 +1926,7 @@ function toggleMonitor() {
   if (monitoring) startPolling(); else stopPolling();
 }
 
-function startPolling() { pollErrors = 0; poll(); pollTimer = setInterval(poll, 2000); setStatus('Мониторинг запущен', 'status-ok'); }
+function startPolling() { pollErrors = 0; poll(); pollTimer = setInterval(poll, 5000); setStatus('Мониторинг запущен', 'status-ok'); }
 
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -1359,14 +2185,21 @@ function loadRouteLists() {
   // Load available guest networks
   api('/cgi-bin/manage.sh?action=route_guest_networks&token=' + AUTH_TOKEN, function(d) {
     var sel = document.getElementById('routeGuestNet');
+    if (!sel) return;
     sel.innerHTML = '<option value="">Выберите сеть...</option>';
-    if (d.ok && d.networks) {
+    if (d.ok && d.networks && d.networks.length) {
       d.networks.forEach(function(n) {
         var opt = document.createElement('option');
         opt.value = n.id;
         opt.textContent = n.id + ' - ' + n.name;
         sel.appendChild(opt);
       });
+    } else if (d.error) {
+      var opt = document.createElement('option');
+      opt.value = ''; opt.textContent = 'Ошибка: ' + d.error; sel.appendChild(opt);
+    } else {
+      var opt = document.createElement('option');
+      opt.value = ''; opt.textContent = 'Нет доступных сетей'; sel.appendChild(opt);
     }
   });
 }

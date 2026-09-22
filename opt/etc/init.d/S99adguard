@@ -34,7 +34,7 @@ PREARGS=""
 DESC=${PROCS}
 PATH=/opt/sbin:/opt/bin:/opt/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 case ${1} in
-        start|restart)
+        start)
                 . /opt/apps/kvas/bin/libs/vpn
                 cmd_kvas_init initd
                 ready "Перезапускаем AdGuardHome"
@@ -51,6 +51,21 @@ case ${1} in
                         print_line
                         sleep 3
                         cat < "${ADGUARDHOME_LOG}" | tail | grep error
+                fi
+
+        ;;
+
+        restart)
+                . /opt/apps/kvas/bin/libs/main
+                ready "Перезапускаем AdGuardHome"
+                . /opt/etc/init.d/rc.func &>/dev/null
+                sleep 1
+		if [ -f "${PIDFILE}" ]; then
+                        when_ok "УСПЕШНО"
+                        print_line
+                else
+                        when_bad "ОШИБКА"
+                        print_line
                 fi
 
         ;;

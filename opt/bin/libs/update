@@ -31,7 +31,7 @@ cmd_adguard_update(){
 				print_line
 				ready "${BLUE}Обновляем пакет ${full_adguard_name}...${NOCL}"
 				{
-					curl -kfsSL "${url_update}" -o "/tmp/${full_adguard_name}.tar.gz"
+					curl -kfsSL --max-time 120 "${url_update}" -o "/tmp/${full_adguard_name}.tar.gz"
 		#			Делаем копию предыдущей версии пакета
 
 					cp -f "${bin_path}/${full_adguard_name}" "${copy_name}"

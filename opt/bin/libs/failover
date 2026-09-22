@@ -3,30 +3,27 @@
 #
 # 	ПРОЕКТ КВАС
 #
-# 	Модуль автопереключения между vless и hysteria
+# 	Модуль автопереключения между VPN каналами
+# 	Поддержка: vless, hysteria, OpenConnect, WireGuard, AWG, и др.
 # ------------------------------------------------------------------------------------------
-#
-#	Разработчик: MiMoCode
-#	Дата: 14.07.2026
-#	Лицензия: Apache License 2.0
-#
-# ------------------------------------------------------------------------------------------
-
+FAILOVER_FLAG=/opt/etc/kvas-failover-enabled
 . /opt/apps/kvas/bin/libs/main
 . /opt/apps/kvas/bin/libs/vpn
+. /opt/apps/kvas/bin/libs/awg 2>/dev/null
 
-# Конфигурация failover
 FAILOVER_CONF="/opt/etc/kvas.failover.conf"
 FAILOVER_LOG="/opt/var/log/kvas-failover.log"
 
-# Инициализация конфига failover
+IFACE_VLESS="Proxy21"
+IFACE_HYSTERIA="Proxy41"
+
 init_failover_conf() {
     if [ ! -f "$FAILOVER_CONF" ]; then
         cat > "$FAILOVER_CONF" << 'EOF'
 FAILOVER_MODE=failover
-VLESS_PRIORITY=1
-HYSTERIA_PRIORITY=2
-CHECK_INTERVAL=15
+PRIMARY=vless
+SECONDARY=hysteria
+CHECK_INTERVAL=30
 FAIL_THRESHOLD=2
 AUTO_START=yes
 EOF
@@ -35,106 +32,321 @@ EOF
 
 load_failover_conf() {
     init_failover_conf
-    . "$FAILOVER_CONF"
+    # Не используем source — имена каналов могут содержать спецсимволы (скобки и т.д.)
+    FAILOVER_MODE=$(grep "^FAILOVER_MODE=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    PRIMARY=$(grep "^PRIMARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    SECONDARY=$(grep "^SECONDARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    TERTIARY=$(grep "^TERTIARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    CHECK_INTERVAL=$(grep "^CHECK_INTERVAL=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    FAIL_THRESHOLD=$(grep "^FAIL_THRESHOLD=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    AUTO_START=$(grep "^AUTO_START=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
 }
 
 save_failover_conf() {
     init_failover_conf
+    # Валидация: PRIMARY и SECONDARY не должны совпадать
+    if [ "$PRIMARY" = "$SECONDARY" ]; then
+        SECONDARY=""
+    fi
+    [ -z "$SECONDARY" ] && SECONDARY="manual"
     cat > "$FAILOVER_CONF" << EOF
 FAILOVER_MODE=${FAILOVER_MODE:-failover}
-VLESS_PRIORITY=${VLESS_PRIORITY:-1}
-HYSTERIA_PRIORITY=${HYSTERIA_PRIORITY:-2}
+PRIMARY=${PRIMARY:-vless}
+SECONDARY=${SECONDARY:-manual}
+TERTIARY=${TERTIARY:-}
 CHECK_INTERVAL=${CHECK_INTERVAL:-15}
 FAIL_THRESHOLD=${FAIL_THRESHOLD:-2}
 AUTO_START=${AUTO_START:-yes}
 EOF
 }
 
-# Проверка работоспособности vless
-check_vless() {
-    local pidfile="/var/run/xray.pid"
-    local was_running=0
-    
-    if [ -f "$pidfile" ] && kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
-        was_running=1
+# Автоопределение доступных VPN каналов
+# Возвращает список имён через пробел
+get_available_channels() {
+    local channels=""
+    # vless — если xray запущен
+    if pidof xray >/dev/null 2>&1; then
+        channels="$channels vless"
     fi
-    
-    if [ "$was_running" -eq 0 ]; then
-        /opt/etc/init.d/S97xray start 2>/dev/null
+    # hysteria — если бинарник и конфиг есть
+    if [ -f /opt/apps/kvas/hysteria/bin/hysteria ] && [ -f /opt/apps/kvas/hysteria/etc/conf/env.sh ]; then
+        channels="$channels hysteria"
     fi
-    
-    local ip=""
-    local attempt=0
-    while [ $attempt -lt 3 ]; do
-        ip=$(curl -s --connect-timeout 3 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
-        if [ -n "$ip" ] && echo "$ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
-            break
-        fi
-        attempt=$((attempt + 1))
-        [ $attempt -lt 3 ] && sleep 2
-    done
-    
-    local result=1
-    if [ -n "$ip" ] && echo "$ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
-        result=0
+    # awg — если бинарник и конфиг есть
+    if [ -f /opt/apps/kvas/awg/bin/wireproxy ] && [ -f /opt/apps/kvas/awg/etc/conf/env.sh ]; then
+        channels="$channels awg"
     fi
-    
-    if [ "$was_running" -eq 0 ]; then
-        /opt/etc/init.d/S97xray stop 2>/dev/null
-    fi
-    
-    return $result
+    # Другие интерфейсы из inface_equals (кроме bridges и ethernet)
+    while IFS='|' read -r cli ent desc rest; do
+        [ -n "$ent" ] && [ -n "$desc" ] || continue
+        case "$ent" in
+            t2s*|ezcfg*|br*|eth*|ra*|apcli*) ;;
+            *)
+                local d=$(echo "$desc" | sed 's/^"//; s/"$//')
+                [ -n "$d" ] && channels="$channels $d"
+                ;;
+        esac
+    done < /opt/etc/inface_equals 2>/dev/null
+    echo "$channels" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' '
 }
 
-# Проверка работоспособности hysteria
-check_hysteria() {
-    local pidfile="/var/run/hysteria.pid"
-    local bin_path="/opt/apps/kvas/hysteria/bin/hysteria"
+# Интерактивный выбор каналов при 'kvas failover on'
+interactive_setup_channels() {
+    local available=$(get_available_channels)
+    local count=$(echo "$available" | wc -w)
     
-    if [ ! -f "$pidfile" ] || ! kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
-        return 1
+    # Если только 1 канал — без вопросов
+    if [ "$count" -le 1 ]; then
+        PRIMARY=$(echo "$available" | awk '{print $1}')
+        [ -z "$PRIMARY" ] && PRIMARY="vless"
+        SECONDARY="manual"
+        echo "Доступен только один канал: $PRIMARY"
+        return
     fi
     
-    local ip=$(curl -s --connect-timeout 5 -x "socks5://127.0.0.1:10808" "https://ifconfig.me" 2>/dev/null)
-    if [ -n "$ip" ] && echo "$ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+    # Список каналов с номерами
+    echo ""
+    echo "Доступные каналы:"
+    local n=0
+    for ch in $available; do
+        n=$((n + 1))
+        echo "  $n. $ch"
+    done
+    echo ""
+    
+    # Выбор основного
+    local active=$(get_active_iface)
+    local default_num=1
+    n=0
+    for ch in $available; do
+        n=$((n + 1))
+        [ "$ch" = "$active" ] && default_num=$n
+    done
+    
+    echo -n "Основной канал [1-$count, Enter=$default_num]: "
+    read -r _choice
+    [ -z "$_choice" ] && _choice=$default_num
+    PRIMARY=$(echo "$available" | awk -v n="$_choice" '{print $n}')
+    [ -z "$PRIMARY" ] && PRIMARY=$(echo "$available" | awk '{print $1}')
+    
+    # Выбор резервного
+    if [ "$count" -ge 2 ]; then
+        echo ""
+        echo "Резервный канал (кроме $PRIMARY):"
+        local rn=0
+        for ch in $available; do
+            [ "$ch" = "$PRIMARY" ] && continue
+            rn=$((rn + 1))
+            echo "  $rn. $ch"
+        done
+        echo -n "Выберите [1-$rn, Enter=пропустить]: "
+        read -r _choice2
+        if [ -n "$_choice2" ]; then
+            local ri=0
+            for ch in $available; do
+                [ "$ch" = "$PRIMARY" ] && continue
+                ri=$((ri + 1))
+                [ "$ri" = "$_choice2" ] && { SECONDARY="$ch"; break; }
+            done
+        fi
+    fi
+    
+    # Выбор второго резервного
+    if [ "$count" -ge 3 ] && [ -n "$SECONDARY" ]; then
+        echo ""
+        echo "Второй резервный канал (кроме $PRIMARY и $SECONDARY):"
+        local tn=0
+        for ch in $available; do
+            [ "$ch" = "$PRIMARY" ] || [ "$ch" = "$SECONDARY" ] && continue
+            tn=$((tn + 1))
+            echo "  $tn. $ch"
+        done
+        if [ "$tn" -gt 0 ]; then
+            echo -n "Выберите [1-$tn, Enter=пропустить]: "
+            read -r _choice3
+            if [ -n "$_choice3" ]; then
+                local ti=0
+                for ch in $available; do
+                    [ "$ch" = "$PRIMARY" ] || [ "$ch" = "$SECONDARY" ] && continue
+                    ti=$((ti + 1))
+                    [ "$ti" = "$_choice3" ] && { TERTIARY="$ch"; break; }
+                done
+            fi
+        fi
+    fi
+    
+    [ -z "$SECONDARY" ] && SECONDARY="manual"
+    [ -z "$TERTIARY" ] && TERTIARY=""
+    
+    echo ""
+    echo "Настроено: основной=$PRIMARY, резерв=$SECONDARY${TERTIARY:+, второй резерв=$TERTIARY}"
+}
+
+# Автонастройка (без вопросов) — для web UI и автоматического режима
+auto_setup_channels() {
+    local active=$(get_active_iface)
+    local available=$(get_available_channels)
+    
+    if [ "$active" != "none" ]; then
+        PRIMARY="$active"
+    else
+        PRIMARY=$(echo "$available" | awk '{print $1}')
+        [ -z "$PRIMARY" ] && PRIMARY="vless"
+    fi
+    
+    SECONDARY=""
+    for ch in $available; do
+        [ "$ch" != "$PRIMARY" ] && { SECONDARY="$ch"; break; }
+    done
+    
+    TERTIARY=""
+    if [ -n "$SECONDARY" ]; then
+        for ch in $available; do
+            [ "$ch" != "$PRIMARY" ] && [ "$ch" != "$SECONDARY" ] && { TERTIARY="$ch"; break; }
+        done
+    fi
+    
+    [ -z "$SECONDARY" ] && SECONDARY="manual"
+}
+
+# Получение интерфейса по имени протокола
+get_iface() {
+    case "$1" in
+        vless)    echo "$IFACE_VLESS" ;;
+        hysteria) echo "$IFACE_HYSTERIA" ;;
+        *)
+            # Произвольный интерфейс — ищем в inface_equals
+            grep "|$1|" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f1
+            ;;
+    esac
+}
+
+# Получение текущего активного интерфейса
+get_active_iface() {
+    local current_cli=$(get_config_value INFACE_CLI 2>/dev/null)
+    local current_ent=$(get_config_value INFACE_ENT 2>/dev/null)
+    
+    if [ "$current_cli" = "$IFACE_VLESS" ]; then echo "vless"; return; fi
+    if [ "$current_cli" = "$IFACE_HYSTERIA" ]; then echo "hysteria"; return; fi
+    if [ "$current_cli" = "Proxy42" ]; then echo "awg"; return; fi
+    
+    # Для других интерфейсов — ищем по entware-имени в inface_equals
+    if [ -n "$current_ent" ] && [ -n "$current_cli" ]; then
+        local desc=$(grep "|${current_ent}|" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f3 | sed 's/^"//; s/"$//')
+        [ -n "$desc" ] && echo "$desc" || echo "$current_ent"
+        return
+    fi
+    
+    # Fallback: если config пуст, проверяем интерфейс по ip link
+    if [ -n "$current_ent" ]; then
+        /opt/sbin/ip link show "$current_ent" 2>/dev/null | grep -q '<.*UP' && {
+            echo "$current_ent"
+            return
+        }
+    fi
+    
+    echo "none"
+}
+
+# Проверка vless через socks5
+check_vless() {
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://127.0.0.1:1097" "https://myip.addr.tools" 2>/dev/null)
+    if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+    fi
+    if [ -n "$test_ip" ] && ! echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+        VLESS_IP="$test_ip"
         return 0
     fi
-    
     return 1
 }
 
-get_active_protocol() {
-    if check_vless; then
-        echo "vless"
-    elif check_hysteria; then
-        echo "hysteria"
-    else
-        echo "none"
+# Проверка hysteria через socks5
+check_hysteria() {
+    local env_conf="/opt/apps/kvas/hysteria/etc/conf/env.sh"
+    [ -f "$env_conf" ] || return 1
+    . "$env_conf"
+    [ -z "$PROXY_LOCAL_IP" ] || [ -z "$PROXY_LOCAL_PORT_SOCKS" ] && return 1
+    local test_ip=$(curl -s --connect-timeout 6 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://myip.addr.tools" 2>/dev/null)
+    if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
     fi
+    if [ -n "$test_ip" ] && ! echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+        HYSTERIA_IP="$test_ip"
+        return 0
+    fi
+    return 1
 }
 
-# Переключение на vless - используем switch_vpn_on из vpn библиотеки
-switch_to_vless() {
-    log_failover "Переключение на VLESS..."
-    
-    # Используем switch_vpn_on - ту же функцию что и kvas vpn set
-    # Proxy21 - это entware имя для vless интерфейса
-    switch_vpn_on "Proxy21" "Proxy21" 2>/dev/null
-    
-    log_failover "Переключено на VLESS"
-    return 0
+# Проверка произвольного TUN-интерфейса через --interface
+check_tun_interface() {
+    local ent="$1"
+    [ -z "$ent" ] && return 1
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 --interface "$ent" "https://myip.addr.tools" 2>/dev/null)
+    if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 --interface "$ent" "https://ifconfig.me" 2>/dev/null)
+    fi
+    if [ -n "$test_ip" ] && ! echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+        TUN_IP="$test_ip"
+        return 0
+    fi
+    return 1
 }
 
-# Переключение на hysteria - используем switch_vpn_on из vpn библиотеки
-switch_to_hysteria() {
-    log_failover "Переключение на Hysteria..."
+# Универсальная проверка протокола по имени (vless/hysteria/описание/cli/entware)
+check_protocol() {
+    local proto="$1"
+    case "$proto" in
+        vless)    check_vless ;;
+        hysteria) check_hysteria ;;
+        awg)      check_awg ;;
+        *)
+            # Произвольный интерфейс — ищем entware-имя
+            # Поиск по: cli (поле 1), entware (поле 2), описание (поле 3 с/без кавычек)
+            local ent=""
+            # По cli имени
+            ent=$(awk -F'|' -v name="$proto" '$1==name {print $2; exit}' /opt/etc/inface_equals 2>/dev/null)
+            # По entware имени
+            [ -z "$ent" ] && ent=$(awk -F'|' -v name="$proto" '$2==name {print $2; exit}' /opt/etc/inface_equals 2>/dev/null)
+            # По описанию (с кавычками)
+            [ -z "$ent" ] && ent=$(grep "\"${proto}\"" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f2)
+            # По описанию (без кавычек)
+            [ -z "$ent" ] && ent=$(grep "$proto" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f2)
+            # Если entware имя совпадает с proto (передали nwg1 вместо описания)
+            [ -z "$ent" ] && ent="$proto"
+            check_tun_interface "$ent"
+            ;;
+    esac
+}
+
+# Переключение на указанный протокол/интерфейс
+switch_to() {
+    local proto="$1"
+    local lockfile="/tmp/kvas-failover-switch.lock"
     
-    # Используем switch_vpn_on - ту же функцию что и kvas vpn set
-    # Proxy41 - это entware имя для hysteria интерфейса
-    switch_vpn_on "Proxy41" "Proxy41" 2>/dev/null
+    if [ -f "$lockfile" ]; then
+        local lock_age=$(( $(date +%s) - $(stat -c %Y "$lockfile" 2>/dev/null || echo 0) ))
+        if [ "$lock_age" -lt 120 ]; then
+            log_failover "Переключение уже в процессе (${lock_age}с), пропускаем"
+            return 0
+        fi
+        rm -f "$lockfile"
+    fi
     
-    log_failover "Переключено на Hysteria"
-    return 0
+    log_failover "Переключение на $proto..."
+    date +%s > "$lockfile"
+    
+    {
+        sleep 10
+        /opt/apps/kvas/bin/kvas vpn set "$proto"
+        rm -f "$lockfile"
+        if [ -f "$FAILOVER_FLAG" ]; then
+            /opt/apps/kvas/bin/kvas failover start >> /opt/var/log/kvas-failover.log 2>&1
+        fi
+    } < /dev/null >> /opt/var/log/kvas-failover.log 2>&1 &
+    
+    stop_failover_daemon > /dev/null 2>&1
+    exit 0
 }
 
 log_failover() {
@@ -142,68 +354,93 @@ log_failover() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     mkdir -p /opt/var/log
     echo "[$timestamp] $msg" >> "$FAILOVER_LOG"
-    if [ -f "$FAILOVER_LOG" ]; then
-        tail -100 "$FAILOVER_LOG" > "${FAILOVER_LOG}.tmp"
-        mv "${FAILOVER_LOG}.tmp" "$FAILOVER_LOG"
-    fi
+    tail -100 "$FAILOVER_LOG" > "${FAILOVER_LOG}.tmp" 2>/dev/null
+    mv "${FAILOVER_LOG}.tmp" "$FAILOVER_LOG" 2>/dev/null
 }
-
-FAIL_COUNT=0
 
 run_failover_check() {
     load_failover_conf
     
-    if [ "$FAILOVER_MODE" != "failover" ]; then
-        return 0
-    fi
+    [ "$FAILOVER_MODE" != "failover" ] && return 0
     
-    local active=$(get_active_protocol)
-    local vless_ok=0
-    local hysteria_ok=0
+    local active=$(get_active_iface)
+    local secondary="${SECONDARY:-manual}"
+    local tertiary="${TERTIARY:-}"
     
-    check_vless && vless_ok=1
-    check_hysteria && hysteria_ok=1
-    
-    local primary=""
-    local secondary=""
-    
-    if [ "$VLESS_PRIORITY" -lt "$HYSTERIA_PRIORITY" ]; then
-        primary="vless"
-        secondary="hysteria"
-    else
-        primary="hysteria"
-        secondary="vless"
-    fi
-    
-    log_failover "Проверка: vless=$vless_ok hysteria=$hysteria_ok active=$active primary=$primary"
-    
-    if [ "$active" = "$primary" ]; then
-        FAIL_COUNT=0
-        return 0
-    elif [ "$active" = "none" ] || [ "$active" != "$primary" ]; then
-        FAIL_COUNT=$((FAIL_COUNT + 1))
-        
-        if [ "$FAIL_COUNT" -ge "$FAIL_THRESHOLD" ]; then
-            log_failover "Превышен порог ошибок ($FAIL_COUNT). Переключение..."
-            
-            if [ "$primary" = "vless" ] && [ "$vless_ok" -eq 1 ]; then
-                switch_to_vless
-            elif [ "$primary" = "hysteria" ] && [ "$hysteria_ok" -eq 1 ]; then
-                switch_to_hysteria
-            elif [ "$secondary" = "vless" ] && [ "$vless_ok" -eq 1 ]; then
-                switch_to_vless
-            elif [ "$secondary" = "hysteria" ] && [ "$hysteria_ok" -eq 1 ]; then
-                switch_to_hysteria
+    # Если active == PRIMARY — проверяем PRIMARY
+    if [ "$active" = "$PRIMARY" ]; then
+        if check_protocol "$PRIMARY"; then
+            return 0
+        else
+            log_failover "$PRIMARY недоступен."
+            # Пробуем SECONDARY, потом TERTIARY
+            if [ "$secondary" != "manual" ] && check_protocol "$secondary"; then
+                log_failover "Переключение на $secondary..."
+                switch_to "$secondary"
+            elif [ -n "$tertiary" ] && check_protocol "$tertiary"; then
+                log_failover "Переключение на $tertiary (второй резерв)..."
+                switch_to "$tertiary"
+            else
+                log_failover "Ни один канал не доступен. Ожидаем."
             fi
-            
-            FAIL_COUNT=0
+            return 0
         fi
     fi
+    
+    # Если active == SECONDARY — проверяем можно ли вернуться на PRIMARY
+    if [ "$active" = "$secondary" ]; then
+        log_failover "Обнаружен $secondary. Проверяем $PRIMARY..."
+        if check_protocol "$PRIMARY"; then
+            log_failover "$PRIMARY восстановлен. Возврат."
+            switch_to "$PRIMARY"
+        else
+            log_failover "$PRIMARY всё ещё недоступен."
+        fi
+        return 0
+    fi
+    
+    # Если active == TERTIARY — проверяем PRIMARY и SECONDARY
+    if [ -n "$tertiary" ] && [ "$active" = "$tertiary" ]; then
+        log_failover "Активен $tertiary (второй резерв). Проверяем выше..."
+        if check_protocol "$PRIMARY"; then
+            log_failover "$PRIMARY восстановлен. Возврат."
+            switch_to "$PRIMARY"
+        elif [ "$secondary" != "manual" ] && check_protocol "$secondary"; then
+            log_failover "$secondary восстановлен. Переключение."
+            switch_to "$secondary"
+        else
+            log_failover "Остаёмся на $tertiary."
+        fi
+        return 0
+    fi
+    
+    # Если active == none — пытаемся запустить PRIMARY, потом SECONDARY, потом TERTIARY
+    if [ "$active" = "none" ]; then
+        log_failover "Нет активного интерфейса. Проверяем каналы..."
+        if check_protocol "$PRIMARY"; then
+            log_failover "$PRIMARY доступен. Переключение."
+            switch_to "$PRIMARY"
+        elif [ "$secondary" != "manual" ] && check_protocol "$secondary"; then
+            log_failover "Переключение на $secondary..."
+            switch_to "$secondary"
+        elif [ -n "$tertiary" ] && check_protocol "$tertiary"; then
+            log_failover "Переключение на $tertiary..."
+            switch_to "$tertiary"
+        else
+            log_failover "Ни один канал не доступен. Ожидаем."
+        fi
+        return 0
+    fi
+    
+    # Если active — какой-то другой интерфейс (не PRIMARY, не SECONDARY, не TERTIARY)
+    # Не трогаем — пользователь выбрал вручную через kvas vpn set
+    log_failover "Активен $active (не primary/secondary/tertiary). Оставляем как есть."
+    return 0
 }
 
 start_failover_daemon() {
     load_failover_conf
-    sleep 60
+    log_failover "Демон запущен (primary=$PRIMARY, secondary=$SECONDARY, интервал=${CHECK_INTERVAL}с)"
     while true; do
         run_failover_check >> /dev/null 2>&1
         sleep "$CHECK_INTERVAL"
@@ -224,41 +461,87 @@ show_failover_status() {
     
     echo "=== Статус автопереключения ==="
     echo "Режим: $FAILOVER_MODE"
-    echo "Приоритет VLESS: $VLESS_PRIORITY"
-    echo "Приоритет Hysteria: $HYSTERIA_PRIORITY"
-    echo "Интервал проверки: $CHECK_INTERVAL сек"
-    echo "Порог ошибок: $FAIL_THRESHOLD"
+    echo "Основное: $PRIMARY"
+    echo "Резерв: ${SECONDARY:-manual}"
+    [ -n "$TERTIARY" ] && echo "Второй резерв: $TERTIARY"
+    echo "Интервал: $CHECK_INTERVAL сек"
+    echo "Порог: $FAIL_THRESHOLD"
     echo ""
     
-    echo "Текущий статус:"
-    local active=$(get_active_protocol)
+    local active=$(get_active_iface)
+    echo "Активный: $active"
+    echo ""
+    echo "Проверка всех каналов:"
     
-    if check_vless; then
-        echo -e "  VLESS:    ${GREEN}Работает${NC}"
-    else
-        echo -e "  VLESS:    ${RED}Не работает${NC}"
-    fi
-    
-    if check_hysteria; then
-        echo -e "  Hysteria: ${GREEN}Работает${NC}"
-    else
-        echo -e "  Hysteria: ${RED}Не работает${NC}"
-    fi
+    # Проверяем ВСЕ доступные каналы
+    local available=$(get_available_channels)
+    for ch in $available; do
+        _show_channel_status "$ch"
+    done
     
     echo ""
-    echo "Активный протокол: ${BLUE}${active}${NC}"
-    
     local pidfile="/var/run/kvas-failover.pid"
     if [ -f "$pidfile" ] && kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
-        echo -e "Демон: ${GREEN}Запущен${NC} (PID: $(cat "$pidfile"))"
+        echo "Демон: запущен (PID: $(cat "$pidfile"))"
     else
-        echo -e "Демон: ${RED}Остановлен${NC}"
+        echo "Демон: остановлен"
     fi
     
-    if [ -f "$FAILOVER_LOG" ]; then
+    [ -f "$FAILOVER_LOG" ] && {
         echo ""
         echo "Последние события:"
         tail -5 "$FAILOVER_LOG" | sed 's/^/  /'
+    }
+}
+
+# Показать статус канала с различением типов
+_show_channel_status() {
+    local ch="$1"
+    local _ent=""
+    
+    # Определяем тип и проверяем запущен ли
+    case "$ch" in
+        vless)
+            if ! pidof xray >/dev/null 2>&1; then
+                ready "$ch" && when_alert "ОСТАНОВЛЕН"
+                return
+            fi
+            ;;
+        hysteria)
+            if ! pidof hysteria >/dev/null 2>&1; then
+                ready "$ch" && when_alert "ОСТАНОВЛЕН"
+                return
+            fi
+            ;;
+        awg)
+            if [ ! -f /var/run/wireproxy.pid ] || ! kill -0 "$(cat /var/run/wireproxy.pid 2>/dev/null)" 2>/dev/null; then
+                ready "$ch" && when_alert "ОСТАНОВЛЕН"
+                return
+            fi
+            ;;
+        *)
+            # TUN интерфейс — ищем entware-имя
+            _ent=$(grep "$ch" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f2)
+            [ -z "$_ent" ] && _ent="$ch"
+            if ! /opt/sbin/ip link show "$_ent" 2>/dev/null | grep -q '<.*UP'; then
+                ready "$ch" && when_bad "ИНТЕРФЕЙС DOWN"
+                return
+            fi
+            ;;
+    esac
+    
+    # Сервис запущен — проверяем интернет
+    if check_protocol "$ch"; then
+        local ip=""
+        case "$ch" in
+            vless) ip="$VLESS_IP" ;;
+            hysteria) ip="$HYSTERIA_IP" ;;
+            awg) ip="$AWG_IP" ;;
+            *) ip="$TUN_IP" ;;
+        esac
+        ready "$ch" && when_ok "РАБОТАЕТ (IP: ${ip:-?})"
+    else
+        ready "$ch" && when_alert "НЕ ОТВЕЧАЕТ"
     fi
 }
 
@@ -267,8 +550,18 @@ cmd_failover() {
         on)
             load_failover_conf
             FAILOVER_MODE=failover
+            touch "$FAILOVER_FLAG"
+            # Интерактивный выбор если есть TTY, иначе автонастройка
+            if [ -t 0 ]; then
+                interactive_setup_channels
+            else
+                auto_setup_channels
+            fi
             save_failover_conf
             echo "Автопереключение включено"
+            echo "  Основное: $PRIMARY"
+            echo "  Резерв: $SECONDARY"
+            [ -n "$TERTIARY" ] && echo "  Второй резерв: $TERTIARY"
             mkdir -p /opt/var/log
             local pidfile="/var/run/kvas-failover.pid"
             if [ -f "$pidfile" ] && kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
@@ -282,28 +575,29 @@ cmd_failover() {
         off)
             load_failover_conf
             FAILOVER_MODE=manual
+            rm -f "$FAILOVER_FLAG"
             save_failover_conf
             stop_failover_daemon
             echo "Автопереключение отключено"
             ;;
-        vless-only)
+        primary)
             load_failover_conf
-            FAILOVER_MODE=vless-only
+            PRIMARY="${2}"
             save_failover_conf
-            echo "Режим: только VLESS"
+            echo "Основное подключение: $PRIMARY"
             ;;
-        hysteria-only)
+        secondary)
             load_failover_conf
-            FAILOVER_MODE=hysteria-only
+            SECONDARY="${2}"
             save_failover_conf
-            echo "Режим: только Hysteria"
+            echo "Резервное подключение: $SECONDARY"
             ;;
         start)
             local pidfile="/var/run/kvas-failover.pid"
             if [ -f "$pidfile" ] && kill -0 $(cat "$pidfile" 2>/dev/null) 2>/dev/null; then
                 echo "Демон уже запущен"
             else
-                start_failover_daemon &
+                start_failover_daemon > /dev/null 2>&1 &
                 echo $! > "$pidfile"
                 echo "Демон запущен"
             fi
@@ -316,57 +610,81 @@ cmd_failover() {
             ;;
         set)
             case "${2}" in
-                vless-priority)
+                primary)
                     load_failover_conf
-                    VLESS_PRIORITY="${3:-1}"
-                    [ "$VLESS_PRIORITY" = "1" ] && HYSTERIA_PRIORITY=2 || HYSTERIA_PRIORITY=1
+                    PRIMARY="${3}"
                     save_failover_conf
-                    echo "VLESS приоритет: $VLESS_PRIORITY"
+                    echo "Основное: $PRIMARY"
                     ;;
-                hysteria-priority)
+                secondary)
                     load_failover_conf
-                    HYSTERIA_PRIORITY="${3:-1}"
-                    [ "$HYSTERIA_PRIORITY" = "1" ] && VLESS_PRIORITY=2 || VLESS_PRIORITY=1
+                    SECONDARY="${3}"
                     save_failover_conf
-                    echo "Hysteria приоритет: $HYSTERIA_PRIORITY"
+                    echo "Резерв: $SECONDARY"
+                    ;;
+                tertiary)
+                    load_failover_conf
+                    TERTIARY="${3}"
+                    save_failover_conf
+                    echo "Второй резерв: $TERTIARY"
                     ;;
                 interval)
                     load_failover_conf
                     CHECK_INTERVAL="${3:-15}"
                     save_failover_conf
-                    echo "Интервал проверки: $CHECK_INTERVAL сек"
+                    echo "Интервал: $CHECK_INTERVAL сек"
                     ;;
                 threshold)
                     load_failover_conf
                     FAIL_THRESHOLD="${3:-2}"
                     save_failover_conf
-                    echo "Порог ошибок: $FAIL_THRESHOLD"
+                    echo "Порог: $FAIL_THRESHOLD"
                     ;;
                 *)
-                    echo "Использование: kvas failover set {vless-priority|hysteria-priority|interval|threshold} [значение]"
+                    echo "Использование: kvas failover set {primary|secondary|interval|threshold} [значение]"
                     ;;
             esac
             ;;
         log)
-            if [ -f "$FAILOVER_LOG" ]; then
-                tail -${2:-20} "$FAILOVER_LOG"
+            [ -f "$FAILOVER_LOG" ] && tail -${2:-20} "$FAILOVER_LOG" || echo "Лог пуст"
+            ;;
+        test)
+            echo "=== Тест failover ==="
+            load_failover_conf
+            echo "Проверяем $PRIMARY..."
+            if check_protocol "$PRIMARY"; then
+                local ip=""; case "$PRIMARY" in vless) ip="$VLESS_IP" ;; hysteria) ip="$HYSTERIA_IP" ;; *) ip="$TUN_IP" ;; esac
+                echo "  $PRIMARY: работает (IP: ${ip:-?})"
             else
-                echo "Лог пуст"
+                echo "  $PRIMARY: НЕ работает"
             fi
+            echo "Проверяем ${SECONDARY:-hysteria}..."
+            if check_protocol "${SECONDARY:-hysteria}"; then
+                local ip=""; case "${SECONDARY:-hysteria}" in vless) ip="$VLESS_IP" ;; hysteria) ip="$HYSTERIA_IP" ;; *) ip="$TUN_IP" ;; esac
+                echo "  ${SECONDARY:-hysteria}: работает (IP: ${ip:-?})"
+            else
+                echo "  ${SECONDARY:-hysteria}: НЕ работает"
+            fi
+            echo ""
+            echo "Активный: $(get_active_iface)"
             ;;
         *)
-            echo "Использование: kvas failover {on|off|start|stop|status|set|log}"
+            echo "Использование: kvas failover {on|off|start|stop|status|set|log|test}"
             echo ""
             echo "Команды:"
-            echo "  on              - включить автопереключение"
-            echo "  off             - отключить автопереключение"
-            echo "  vless-only      - только VLESS"
-            echo "  hysteria-only   - только Hysteria"
-            echo "  start           - запустить демон мониторинга"
-            echo "  stop            - остановить демон"
-            echo "  status          - показать статус"
-            echo "  set <param> [val] - настроить параметры"
-            echo "  log [N]         - показать последние N записей лога"
+            echo "  on                    - включить автопереключение"
+            echo "  off                   - отключить"
+            echo "  start                 - запустить демон"
+            echo "  stop                  - остановить демон"
+            echo "  status                - статус"
+            echo "  primary <name>        - основной канал (vless|hysteria|<interface>)"
+            echo "  secondary <name>      - резервный канал (vless|hysteria|<interface>)"
+            echo "  set primary <name>    - установить основной"
+            echo "  set secondary <name>  - установить резервный"
+            echo "  set interval <N>      - интервал (сек)"
+            echo "  set threshold <N>     - порог ошибок"
+            echo "  log [N]               - последние N записей"
+            echo "  test                  - тест каналов"
             ;;
     esac
 }

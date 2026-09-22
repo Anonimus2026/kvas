@@ -45,15 +45,20 @@ log() {
 }
 R=""
 L=""
+CL=""
 while IFS='' read -r L; do
     L=$(echo "$L" | tr -d '\r')
     [ -z "$L" ] && break
     [ -z "$R" ] && R="$L"
+    # Парсим Content-Length для POST
+    case "$L" in
+        [Cc]ontent-[Ll]ength:*) CL="${L#*: }"; CL="${CL//[!0-9]/}" ;;
+    esac
 done
 M=$(echo "$R" | awk '{print $1}')
 P=$(echo "$R" | awk '{print $2}')
 S=$(echo "$P" | sed 's/[?#].*//')
-log "request method=${M:-unknown} path=${P:-/}"
+log "request method=${M:-unknown} path=${P:-/} content-length=${CL:-0}"
 
 if echo "$S" | grep -q '^/cgi-bin/'; then
     Q="${P#*\?}"
@@ -62,8 +67,20 @@ if echo "$S" | grep -q '^/cgi-bin/'; then
     if [ -x "$X" ]; then
         export QUERY_STRING="$Q"
         export REQUEST_METHOD="$M"
-        printf "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
-        "$X"
+        export CONTENT_LENGTH="$CL"
+        # Для POST: пишем body в временный файл, потом передаём через stdin
+        if [ "$M" = "POST" ] && [ -n "$CL" ] && [ "$CL" -gt 0 ] 2>/dev/null; then
+            # POST: создаём временный файл с body, передаём через переменную
+            _post_file="/tmp/kvas_post_body_$$"
+            head -c "$CL" > "$_post_file" 2>/dev/null
+            printf "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+            export KVAS_POST_BODY="$_post_file"
+            "$X"
+            rm -f "$_post_file"
+        else
+            printf "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+            "$X"
+        fi
         log "cgi ok script=$X query=${Q:-<empty>}"
     else
         log "cgi missing script=$X"

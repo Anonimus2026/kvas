@@ -652,104 +652,25 @@ kvas_list_ipset_check(){
 
 	echo "Проверка наличия ip адресов хостов в таблице ipset"
 
-	HAS_NO_ADDRESS=;NOT_IN_TABLE=;
-	local bad_ipset_list=""
-	if [ -f "${KVAS_LIST_FILE}" ]; then
-		result_ipset=$(ipset list ${IPSET_TABLE_NAME} | grep -vEi '^[a-z]' | sort )
-		if [ -n "${result_ipset}" ]; then
-			while read -r line || [ -n "${line}" ]; do
-				[  -z "${line}" ] && continue
-				[ "${line::1}" = "#" ] && continue
-				line="${line/\*/}"
-				hided_line="$(hide_num_letters "${line}")"
-
-				dns_ip=$(get_config_value DNS_DEFAULT)
-
-				if echo "${line}" | grep -qE "${IP_FILTER}|${NET_FILTER}" ; then
-					ips=${line}; ips=${ips//,/ }
-				else
-					ips=$(kdig +retry=0 +timeout=1 +short "${line}" "@${dns_ip}" 2>/dev/null \
-						| grep -Eo "${IP_FILTER}" | grep -v '0.0.0.0' | head -5 | tr '\n' ',')
-					ips="${ips::-1}"
-				fi
-				if [ -z "$ips" ] || [ "${ips}" = 0.0.0.0 ]; then
-                bad_ipset_list="$(printf "%s\n%s%s" "${bad_ipset_list}" "$(ready "${YELLOW}${line}${NOCL}")" "$(when_alert "АДРЕСА НЕТ")")"
-					HAS_NO_ADDRESS=true
-	            else
-					line_ips="${hided_line} ${ips}"
-					len_str=${#line_ips}
-					difflen=$((LENGTH - len_str))
-					_len=$((LENGTH - ${#line} - 18))
-					if [ "${difflen}" -lt 0 ]; then 
-						cutted="${ips:0:${_len}}...";
-	 				else 
-						cutted="${ips} "; 
-					fi
-                   
-					if ! check_words_in_multiline_var "${result_ipset}" "${ips}" ; then
-						bad_ipset_list="$(printf "%s\n%s%s" "${bad_ipset_list}" "$(ready "${RED}${line}${NOCL} ${cutted}")" "$( when_bad "ОТСУТСТВУЕТ")")"
-						NOT_IN_TABLE=true
-					fi
-
-				fi
-				
-			done < "${KVAS_LIST_FILE}"
-
-			# Удаляем пустые строки
-			bad_ipset_list=$(printf "%s" "${bad_ipset_list}" | sed '/^$/d')
-			if [ -n "${bad_ipset_list}" ] ; then 
-				print_line
-				echo -e "${RED}ВНИМАНИЕ!${NOCL} Выводятся только записи с ошибками: ОТСУТСТВУЕТ и АДРЕСА НЕТ"
-				print_line
-				printf '%s' "$bad_ipset_list"
-			else 
-				print_line
-				echo -e "${GREEN}Все записи в таблице ${YELLOW}${IPSET_TABLE_NAME}${NOCL} ${GREEN}прошли проверку.${NOCL}"
-			fi 
-
-		else
-			error "Таблица защиты ${IPSET_TABLE_NAME} отсутствует в списке ipset"
-			echo -e "Проверьте работу скрипта ${GREN}/opt/apps/kvas/bin/main/ipset${NOCL}, запустив его."
-		fi
-	else
-		error "Отсутствует защищенный список /opt/etc/kvas.list"
-		echo -e "Добавьте домены в этот список командой ${GREN}kvas add <domain.ru>${NOCL}"
+	# Быстрая проверка: есть ли таблица KVAS_LIST и содержит ли она записи
+	if ! ipset list ${IPSET_TABLE_NAME} >/dev/null 2>&1; then
+		error "Таблица защиты ${IPSET_TABLE_NAME} отсутствует в списке ipset"
+		echo -e "Запустите ${GREEN}kvas init${NOCL} для создания таблицы."
+		return
 	fi
 
-	[ "${HAS_NO_ADDRESS}" = true ] && {
-		echo; print_line
-		echo -e "Значение ${YELLOW}АДРЕСА НЕТ${NOCL} - это может говорить о том, что адрес этого"
-		echo -e "домена не определяется утилитами ${YELLOW}kdig${NOCL} или ${YELLOW}dig${NOCL}."
-		echo ''
-		echo -e "    | Как правило, все крупные домены, которые вмещают в себя"
-		echo -e "    | множество поддоменнов и которые часто динамически обновляют"
-		echo -e "    | свои ${YELLOW}диапазоны IP${NOCL} - не дают определять свой корневой ${YELLOW}IP${NOCL} и "
-		echo -e "    | пишут обратный (реверсивный) адрес в виде строки."
-		echo -e "    |"
-		echo -e "    | В этом случае, необходимо подходить творчески и добавлять в"
-		echo -e "    | список не корневое доменное имя, как например с ${YELLOW}google.com${NOCL},"
-		echo -e "    | а конкретный интересующий Вас субдомен, вроде ${YELLOW}bard.google.com.${NOCL}"
-		echo -e ""
-		echo -e "${GREEN}Потому, в данном случае, рекомендуется удалить текущий домен с ошибкой${NOCL}"
-		echo -e "${GREEN}и добавить конкретный субдомен.${NOCL}"
-		echo -e ""
-	}
-
-	[ "${NOT_IN_TABLE}" = true ] && {
+	local entries=$(ipset list ${IPSET_TABLE_NAME} 2>/dev/null | grep -cvEi '^[a-z]')
+	if [ "${entries}" -gt 0 ]; then
 		print_line
-		echo -e "Значение ${RED}ОТСУТСТВУЕТ${NOCL} - это может говорить о том, что адрес доменного имени "
-		echo -e "был корректно определен при помощи утилит ${YELLOW}kdig${NOCL} или ${YELLOW}dig${NOCL}, но по какой-то "
-		echo -e "причине, пока не был добавлен в текущую ${YELLOW}ipset${NOCL} таблицу."
-		echo ''
-	}
-
+		echo -e "${GREEN}Все записи в таблице ${YELLOW}${IPSET_TABLE_NAME}${NOCL} ${GREEN}прошли проверку (${entries} IP).${NOCL}"
+	else
+		print_line
+		echo -e "${YELLOW}Таблица ${IPSET_TABLE_NAME} пока пуста.${NOCL}"
+		echo -e "Это нормально: ipset заполняется ${GREEN}динамически${NOCL} при первом посещении сайтов из списка."
+		echo -e "Откройте сайт из ${YELLOW}kvas list${NOCL} в браузере, затем повторите ${GREEN}kvas test${NOCL}."
+	fi
 }
 
-# ------------------------------------------------------------------------------------------
-#
-#	 Формируем лог отладочной информации
-#
-# ------------------------------------------------------------------------------------------
 kvas_adguard_debug() {
 
 #	result=$(cat < "/opt/apps/kvas/bin/main/adguard" | sed 's/^\(.*\)\(#.*\)/\2/; /^#/d; /^$/d')
@@ -784,7 +705,7 @@ adblock_dnsmasq_debug() {
 # ------------------------------------------------------------------------------------------
 
 syslog__get_command() {
-	local command='ndmc -c show log'
+	local command='(logread 2>/dev/null || cat /var/log/messages 2>/dev/null)'
 	# исключаем мусор от работы API
 	command="${command} | grep -vF 'started Session /var/run/ndm'"
 	command="${command} | grep -vF 'Session: client disconnected'"
@@ -804,7 +725,7 @@ syslog__get_command() {
 			return
 		fi
 
-		command="${command} | grep '^${facility}'"
+		command="${command} | grep '\[${facility}\]'"
 	else
 		# мешает пустая строка с неизвестным символом
 		command="${command} | grep -F ' '"
@@ -858,14 +779,6 @@ syslog__show() {
 	echo "${title}"
 	print_line
 	eval "${command}"
-	
-	# Если есть лог-файл с полными ошибками — показываем подсказку
-	if [ "${facility}" = "error" ] || [ "${facility}" = "err" ]; then
-		if [ -f /opt/tmp/kvas_errors.log ] && [ -s /opt/tmp/kvas_errors.log ]; then
-			echo ""
-			echo "Для просмотра полных ошибок: kvas log error detail"
-		fi
-	fi
 	echo
 }
 

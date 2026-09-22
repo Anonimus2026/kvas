@@ -12,7 +12,7 @@
     "inbounds": [
         {
             "listen": "127.0.0.1",
-            "port":  "@VLESS_SSR_PORT",
+            "port":  @VLESS_SSR_PORT,
             "protocol": "socks",
             "settings": {
                 "udp": true
@@ -27,11 +27,11 @@
                 "vnext": [
                     {
                         "address": "@VLESS_ADDRESS",
-                        "port": "@VLESS_PORT",
+                        "port": @VLESS_PORT,
                         "users": [
                             {
                                 "id": "@VLESS_ID",
-                                "flow": "xtls-rprx-vision",
+                                @VLESS_FLOW_FIELD
                                 "encryption": "none"
                             }
                         ]
@@ -40,19 +40,8 @@
             },
             "streamSettings": {
                 "network": "@VLESS_NETWORK",
-                "security": "reality",
-                "realitySettings": {
-                    "publicKey": "@VLESS_PUB_KEY",
-                    "fingerprint": "@VLESS_BROWSER_FP",
-                    "serverName": "@VLESS_SNI",
-                    "shortId": "@VLESS_SHORT_ID",
-                    "spiderX": "/"
-                },
-                "tcpSettings": {
-                    "header": {
-                        "type": "none"
-                    }
-                }
+                "security": "@VLESS_SECURITY",
+                @VLESS_STREAM_SETTINGS
             }
         }
     ]

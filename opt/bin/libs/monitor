@@ -2,6 +2,7 @@
 
 MONITOR_PID_FILE=/var/run/kvas-monitor.pid
 MONITOR_WEB_PID_FILE=/var/run/kvas-monitor-web.pid
+MONITOR_WEB_FLAG=/opt/etc/kvas-monitor-web-enabled
 MONITOR_DNS_LOG=/tmp/kvas-dns.log
 MONITOR_DATA_DIR=/tmp/kvas-monitor
 MONITOR_WWW_DIR=/opt/apps/kvas/bin/monitor/www
@@ -305,7 +306,7 @@ cmd_monitor_start() {
 
 	{
 		while true; do
-			sleep 2
+			sleep 5
 			local data=$(monitor__get_conntrack "$(echo "$selected_ips" | tr ' ' ',')")
 			echo "$data" > "$MONITOR_DATA_DIR/conntrack_live"
 		done
@@ -497,6 +498,8 @@ cmd_monitor_web_start() {
 			echo "Откройте: http://$(hostname):$MONITOR_PORT/"
 			[ "$has_conntrack" -eq 0 ] && echo "ВНИМАНИЕ: conntrack не установлен — данные о соединениях не будут отображаться"
 			[ "$has_curl" -eq 0 ] && echo "ВНИМАНИЕ: curl не установлен — список DHCP устройств не будет загружен"
+			# Save flag for auto-start after reboot
+			touch "$MONITOR_WEB_FLAG"
 			monitor__web_log "web ui started: backend=$tool port=$MONITOR_PORT"
 			;;
 		ERROR*)
@@ -560,6 +563,7 @@ cmd_monitor_web_stop() {
 	# Also call launcher stop for cleanup
 	sh /opt/apps/kvas/bin/monitor/launcher.sh stop 2>/dev/null
 	rm -f "$MONITOR_WEB_PID_FILE"
+	rm -f "$MONITOR_WEB_FLAG"
 	monitor__disable_dns_log
 	echo "Веб-интерфейс остановлен"
 	monitor__web_log "web ui stopped"

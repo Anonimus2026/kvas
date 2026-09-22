@@ -1,0 +1,419 @@
+#!/bin/sh
+# ------------------------------------------------------------------------------------------
+#
+# 	ПРОЕКТ КВАС
+#
+# 	Данный файл служит для поддержки hysteria протокола
+# ------------------------------------------------------------------------------------------
+#
+#	Разработчик: jobgomel
+#	Дата: 14/07/2026
+#	Лицензия: Apache License 2.0
+#
+# ------------------------------------------------------------------------------------------
+
+. /opt/apps/kvas/bin/libs/main
+
+# Изолированные базовые пути приложения
+APP_NAME="kvas-hysteria"
+APP_BASE="/opt/apps/kvas/hysteria"
+ENV_CONFIG="${APP_BASE}/etc/conf/env.sh"
+
+# Импортируем глобальные переменные проекта
+if [ -f "$ENV_CONFIG" ]; then
+    . "$ENV_CONFIG"
+else
+    echo "Критическая ошибка: Файл конфигурации среды $ENV_CONFIG не найден!"
+    exit 1
+fi
+
+# Пути к компонентам приложения
+BIN_PATH="${APP_BASE}/bin/hysteria"
+TEMPLATE_CONFIG="${APP_BASE}/etc/conf/config.yaml"
+TEMPLATE_INIT="${APP_BASE}/etc/init.d/S99hysteria"
+CHECK_SPACE_SCRIPT="${APP_BASE}/etc/ndm/check_space.sh"
+TEST_SCRIPT="${APP_BASE}/etc/ndm/test_connection.sh"
+
+# Глобальные системные пути Entware
+FINAL_CONFIG_DIR="/opt/etc/hysteria"
+FINAL_CONFIG_PATH="${FINAL_CONFIG_DIR}/config.yaml"
+SYSTEM_INIT_PATH="/opt/etc/init.d/S99hysteria"
+
+cmd_hysteria_status() {
+    echo "=== Менеджер Kvas-Hysteria ==="
+    if [ -f "$BIN_PATH" ]; then
+        VERSION=$($BIN_PATH -v 2>/dev/null | head -n 1)
+        echo -e "Статус: ${GREEN}Установлен${NC} ($VERSION)"
+    else
+        echo -e "Статус: ${RED}Не установлен${NC}"
+    fi
+
+    PIDFILE="/var/run/hysteria.pid"
+    if [ -f "$PIDFILE" ] && kill -0 $(cat $PIDFILE) 2>/dev/null; then
+        echo -e "Служба: ${GREEN}Запущена${NC} (PID: $(cat $PIDFILE))"
+    else
+        echo -e "Служба: ${RED}Остановлена${NC}"
+    fi
+
+    if [ -f "$FINAL_CONFIG_PATH" ]; then
+        echo -e "Конфигурация: ${GREEN}Активна${NC} ($FINAL_CONFIG_PATH)"
+        SERVER=$(grep '^server:' "$FINAL_CONFIG_PATH" | awk '{print $2}')
+        echo " -> Сервер: $SERVER"
+    else
+        echo -e "Конфигурация: ${YELLOW}Ожидает импорта ссылки (add)${NC}"
+    fi
+    echo "----------------------------------------"
+    echo "Использование:"
+    echo "  kvas hysteria install          - Скачать/обновить бинарный файл Hysteria"
+    echo "  kvas hysteria new              - Настройка нового подключения"
+    echo "  kvas hysteria test             - Экспресс-тест проксирования туннеля"
+    echo "  kvas hysteria start | stop | restart"
+}
+
+cmd_hysteria_test() {
+    if [ -f "$TEST_SCRIPT" ]; then "$TEST_SCRIPT"; else return 1; fi
+}
+
+# Функция скачивания бинарника с fallback зеркалами
+_download_hysteria_binary() {
+    local version="$1"
+    local arch="$2"
+    local output="$3"
+    local is_sf="${4:-no}"
+
+    local suffix=""
+    [ "$is_sf" = "yes" ] && suffix="-sf"
+
+    # Список зеркал для скачивания (пробуем по порядку)
+    local URLS="
+        https://github.com/apernet/hysteria/releases/download/${version}/hysteria-linux-${arch}${suffix}
+        https://ghfast.top/https://github.com/apernet/hysteria/releases/download/${version}/hysteria-linux-${arch}${suffix}
+        https://mirror.ghproxy.com/https://github.com/apernet/hysteria/releases/download/${version}/hysteria-linux-${arch}${suffix}
+        https://gh-proxy.com/https://github.com/apernet/hysteria/releases/download/${version}/hysteria-linux-${arch}${suffix}
+    "
+
+    for url in $URLS; do
+        url=$(echo "$url" | tr -d '[:space:]')
+        [ -z "$url" ] && continue
+
+        echo -e "  Пробуем: ${BLUE}$(echo "$url" | cut -d'/' -f3)${NC}"
+        rm -f "$output"
+        curl -L --connect-timeout 10 --max-time 120 -o "$output" "$url" 2>/dev/null
+
+        if [ -s "$output" ]; then
+            chmod +x "$output"
+            # Проверяем что файл действительно бинарник
+            if "$output" version >/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+        rm -f "$output"
+    done
+
+    return 1
+}
+
+cmd_hysteria_install() {
+    if [ -f "$CHECK_SPACE_SCRIPT" ]; then
+        if ! "$CHECK_SPACE_SCRIPT"; then
+            exit 1
+        fi
+    fi
+
+    echo "Определение архитектуры процессора..."
+    ARCH=$(uname -m)
+    echo -e "  uname -m: ${YELLOW}$ARCH${NC}"
+
+    case "$ARCH" in
+        *aarch64*|*arm64*)            BINARY_ARCH="arm64" ;;
+        *armv7*|*armv6*|*arm*)        BINARY_ARCH="arm" ;;
+        *mipsel*|*mipsle*)            BINARY_ARCH="mipsle" ;;
+        *mips64el*)                   BINARY_ARCH="mipsle" ;;
+        *mips*)                       BINARY_ARCH="mipsle" ;;
+        *x86_64*|*amd64*)             BINARY_ARCH="amd64" ;;
+        *i?86*|*x86*)                 BINARY_ARCH="386" ;;
+        *)                            BINARY_ARCH="" ;;
+    esac
+
+    if [ -z "$BINARY_ARCH" ]; then
+        echo -e "${RED}Ошибка: Неподдерживаемая архитектура: $ARCH${NC}"
+        echo -e "${YELLOW}Попробуйте скачать бинарник вручную: kvas hysteria install manual${NC}"
+        exit 1
+    fi
+
+    echo -e "  Определена: ${BLUE}$BINARY_ARCH${NC}"
+
+    echo "Запрос актуальной версии Hysteria с GitHub..."
+    LATEST_VERSION=$(curl -s --max-time 10 https://api.github.com/repos/apernet/hysteria/releases/latest 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null)
+    # валидация: тег должен выглядеть как версия (v2.x или app/v2.x), иначе — hardcoded fallback
+    case "$LATEST_VERSION" in
+        v[0-9]*|app/v[0-9]*) : ;;
+        *) LATEST_VERSION="" ;;
+    esac
+    if [ -z "$LATEST_VERSION" ]; then
+        echo -e "${YELLOW}Предупреждение: не удалось получить версию через API, используем app/v2.12.2${NC}"
+        LATEST_VERSION="app/v2.12.2"
+    fi
+
+    echo -e "Версия: ${BLUE}$LATEST_VERSION${NC}, архитектура: ${YELLOW}$BINARY_ARCH${NC}"
+
+    # Инициализируем путь к временному файлу
+    TMP_BIN_PATH="${BIN_PATH}.tmp"
+    rm -f "$TMP_BIN_PATH"
+
+    # Пробуем стандартную сборку
+    echo -e "Скачиваем ${BLUE}Hysteria $LATEST_VERSION${NC} для ${YELLOW}$BINARY_ARCH${NC}..."
+    if _download_hysteria_binary "$LATEST_VERSION" "$BINARY_ARCH" "$TMP_BIN_PATH" "no"; then
+        echo -e "${GREEN}Бинарник успешно скачан и проверен (${BINARY_ARCH})${NC}"
+    else
+        # Пробуем softfloat для MIPS
+        if [ "$BINARY_ARCH" = "mipsle" ] || [ "$BINARY_ARCH" = "mips" ]; then
+            echo -e "${YELLOW}Пробуем softfloat-вариант...${NC}"
+            if _download_hysteria_binary "$LATEST_VERSION" "$BINARY_ARCH" "$TMP_BIN_PATH" "yes"; then
+                echo -e "${GREEN}Бинарник успешно скачан и проверен (${BINARY_ARCH}-sf)${NC}"
+            else
+                echo -e "${RED}Ошибка: Бинарник не подошел для ${BINARY_ARCH}.${NC}"
+                echo -e "${YELLOW}Скачайте вручную: hysteria-linux-${BINARY_ARCH} с https://github.com/apernet/hysteria/releases${NC}"
+                rm -f "$TMP_BIN_PATH"
+                exit 1
+            fi
+        # Пробуем mipsle как fallback для Keenetic (если uname показал arm64 но устройство MIPS)
+        elif [ "$BINARY_ARCH" = "arm64" ]; then
+            echo -e "${YELLOW}Бинарник arm64 не подошел. Пробуем mipsle (для Keenetic)...${NC}"
+            if _download_hysteria_binary "$LATEST_VERSION" "mipsle" "$TMP_BIN_PATH" "no"; then
+                echo -e "${GREEN}Бинарник успешно скачан и проверен (mipsle)${NC}"
+            elif _download_hysteria_binary "$LATEST_VERSION" "mipsle" "$TMP_BIN_PATH" "yes"; then
+                echo -e "${GREEN}Бинарник успешно скачан и проверен (mipsle-sf)${NC}"
+            else
+                echo -e "${RED}Ошибка: Ни arm64, ни mipsle бинарники не подошли.${NC}"
+                echo -e "${YELLOW}Скачайте вручную с https://github.com/apernet/hysteria/releases${NC}"
+                rm -f "$TMP_BIN_PATH"
+                exit 1
+            fi
+        else
+            echo -e "${RED}Ошибка: Бинарник не подошел для ${BINARY_ARCH}.${NC}"
+            echo -e "${YELLOW}Скачайте вручную: hysteria-linux-${BINARY_ARCH} с https://github.com/apernet/hysteria/releases${NC}"
+            rm -f "$TMP_BIN_PATH"
+            exit 1
+        fi
+    fi
+
+    # Проверяем, запущена ли служба прямо сейчас
+    WAS_RUNNING=0
+    PIDFILE="/var/run/hysteria.pid"
+    if [ -f "$SYSTEM_INIT_PATH" ] && [ -f "$PIDFILE" ] && kill -0 $(cat $PIDFILE) 2>/dev/null; then
+        WAS_RUNNING=1
+        echo "Останавливаем текущую службу для быстрой замены бинарного файла..."
+        "$SYSTEM_INIT_PATH" stop
+    fi
+
+    # Производим атомарную замену бинарника
+    mv "$TMP_BIN_PATH" "$BIN_PATH"
+    chmod +x "$BIN_PATH"
+    ln -sf "$BIN_PATH" /opt/bin/hysteria
+
+    echo -e "${GREEN}Бинарный файл успешно развернут!${NC}"
+
+    # Если служба до этого работала — запускаем её обратно на новом бинарнике
+    if [ "$WAS_RUNNING" -eq 1 ]; then
+        echo "Перезапускаем службу..."
+        "$SYSTEM_INIT_PATH" start
+        sleep 2
+
+        if ! cmd_hysteria_test; then
+            echo ""
+            echo -e "${YELLOW}Возможно, конфигурация устарела или неверна.${NC}"
+            echo -e "${YELLOW}Чтобы обновить подключение, выполните команду:${NC}"
+            echo -e "  ${BLUE}kvas hysteria add \"hysteria2://...\"${NC}"
+            echo -e "${RED}Важно:${NC} Кавычки ${GREEN}\"\"${NC} обязательны, чтобы ссылка не ломала терминал!"
+        fi
+    else
+        echo ""
+        echo -e "${YELLOW}Чтобы настроить подключение, выполните команду:${NC}"
+        echo -e "  ${BLUE}kvas hysteria add \"hysteria2://...\"${NC}"
+        echo -e "${RED}Важно:${NC} Кавычки ${GREEN}\"\"${NC} обязательны, чтобы ссылка не ломала терминал!"
+    fi
+}
+
+urldecode() {
+    echo "$1" | sed 's/+/ /g; s/%\([0-9A-F][0-9A-F]\)/\\x\1/g' | xargs -0 printf
+}
+
+cmd_hysteria_add() {
+    URL="$1"
+    if [ -z "$URL" ]; then
+        echo -e "${RED}Ошибка: Не указана ссылка!${NC}"
+        exit 1
+    fi
+
+    echo "Разбираем конфигурацию пира..."
+    URL=$(echo "$URL" | tr -d '[:space:]')
+
+    # Убираем имя сервера после #
+    URL_NO_FRAGMENT=$(echo "$URL" | sed 's/#.*//')
+
+    # Извлекаем auth и server:port
+    MAIN_PART=$(echo "$URL_NO_FRAGMENT" | sed -E 's|hysteria2://||;s|h2://||;s|\?.*||')
+    AUTH=$(echo "$MAIN_PART" | cut -d'@' -f1)
+    SERVER_PORT=$(echo "$MAIN_PART" | cut -d'@' -f2)
+    SERVER=$(echo "$SERVER_PORT" | cut -d':' -f1)
+    PORT=$(echo "$SERVER_PORT" | cut -d':' -f2)
+
+    # Очищаем SERVER от http://, https:// и лишних символов
+    SERVER=$(echo "$SERVER" | sed -E 's|^https?://||;s|^/||;s|/.*||')
+
+    # Извлекаем query параметры
+    QUERY=$(echo "$URL_NO_FRAGMENT" | sed -n -E 's/.*\?(.*)/\1/p')
+
+    # Декодируем и извлекаем параметры
+    SNI=$(echo "$QUERY" | sed -n -E 's/.*[?&]sni=([^&#]*).*/\1/p' | head -1)
+    FP=$(echo "$QUERY" | sed -n -E 's/.*[?&]fp=([^&#]*).*/\1/p' | head -1)
+    OBFS_TYPE=$(echo "$QUERY" | sed -n -E 's/.*[?&]obfs=([^&#]*).*/\1/p' | head -1)
+    OBFS_PASS=$(echo "$QUERY" | sed -n -E 's/.*[?&]obfs-password=([^&#]*).*/\1/p' | head -1)
+
+    # Декодируем URL-encoded значения
+    [ -n "$SNI" ] && SNI=$(urldecode "$SNI")
+    [ -n "$FP" ] && FP=$(urldecode "$FP")
+    [ -n "$OBFS_TYPE" ] && OBFS_TYPE=$(urldecode "$OBFS_TYPE")
+    [ -n "$OBFS_PASS" ] && OBFS_PASS=$(urldecode "$OBFS_PASS")
+
+    # Если SNI не задан, берём из имени сервера
+    [ -z "$SNI" ] && SNI="$SERVER"
+
+    # echo "  Auth: $AUTH"  # \u043d\u0435 \u0432\u044b\u0432\u043e\u0434\u0438\u043c \u0442\u043e\u043a\u0435\u043d \u0430\u0443\u0442\u0435\u043d\u0442\u0438\u0444\u0438\u043a\u0430\u0446\u0438\u0438 \u0432 \u043b\u043e\u0433
+    echo "  Server: $SERVER"
+    echo "  Port: ${PORT:-443}"
+    echo "  SNI: $SNI"
+    echo "  FP: ${FP:-chrome}"
+    echo "  OBFS: $OBFS_TYPE"
+
+    if [ -z "$AUTH" ] || [ -z "$SERVER" ]; then
+        echo -e "${RED}Ошибка парсинга ссылки.${NC}"
+        echo -e "${YELLOW}Формат: ${BLUE}hysteria2://ТОКЕН@ДОМЕН:ПОРТ?sni=ДОМЕН${NC}"
+        exit 1
+    fi
+
+    # Создаем директорию для конфигурации, если её нет
+    mkdir -p "$FINAL_CONFIG_DIR"
+
+    # Генерируем конфиг
+    cat > "$FINAL_CONFIG_PATH" << EOC
+server: ${SERVER}:${PORT:-443}
+auth: ${AUTH}
+tls:
+  sni: ${SNI}
+  fingerprint: ${FP:-chrome}
+EOC
+
+    # Добавляем obfs если salamander
+    if [ "$OBFS_TYPE" = "salamander" ] && [ -n "$OBFS_PASS" ]; then
+        cat >> "$FINAL_CONFIG_PATH" << EOC
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${OBFS_PASS}
+EOC
+    fi
+
+    # Добавляем настройки прокси
+    cat >> "$FINAL_CONFIG_PATH" << EOC
+
+socks5:
+  listen: ${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}
+http:
+  listen: ${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_HTTP}
+bandwidth:
+  up: 50 mbps
+  down: 100 mbps
+EOC
+
+    echo -e "${GREEN}Конфигурация успешно сгенерирована: $FINAL_CONFIG_PATH${NC}"
+
+    # Активация службы автозапуска
+    ln -sf "$TEMPLATE_INIT" "$SYSTEM_INIT_PATH"
+
+    "$SYSTEM_INIT_PATH" restart
+    sleep 2
+
+    # Интеграция с KeeneticOS API
+    echo "Интеграция с KeeneticOS API..."
+    curl -s --max-time 5 -d '[{"interface": { "name": "'${KEENETIC_PROXY_NAME}'","no": true }}]' "localhost:79/rci/" > /dev/null 2>&1
+
+    API_DATA='[{
+        "interface": {
+            "name": "'${KEENETIC_PROXY_NAME}'",
+            "description": "'${KEENETIC_PROXY_DESC}'",
+            "proxy": {
+                "protocol": { "proto": "'${PROXY_PROTO}'" },
+                "upstream": { "host": "'${PROXY_LOCAL_IP}'", "port": "'${PROXY_LOCAL_PORT_SOCKS}'" },
+                "socks5-udp": true
+            }
+        },
+        "system": { "configuration": { "save": true } }
+    }]'
+
+    curl -s --max-time 5 -d "${API_DATA}" "localhost:79/rci/" > /dev/null 2>&1
+    curl -s --max-time 5 -d '[{"interface": {"name": "'${KEENETIC_PROXY_NAME}'", "up": true}}]' "localhost:79/rci/" > /dev/null 2>&1
+
+    echo -e "${GREEN}Интерфейс '${KEENETIC_PROXY_DESC}' успешно обновлен в KeeneticOS!${NC}"
+    echo ""
+    cmd_hysteria_test
+}
+
+cmd_hysteria_uninstall() {
+    echo "Деактивация и остановка служб..."
+    [ -f "$SYSTEM_INIT_PATH" ] && "$SYSTEM_INIT_PATH" stop
+
+    echo "Удаление прокси-интерфейса из KeeneticOS..."
+    curl -s --max-time 5 -d '[{"interface": { "name": "'${KEENETIC_PROXY_NAME}'","no": true },"system": {"configuration": {"save": true}}}]' "localhost:79/rci/" > /dev/null 2>&1
+
+    echo "Удаление симлинков и файлов пакета..."
+    rm -f /opt/bin/hysteria "$SYSTEM_INIT_PATH" /var/run/hysteria.pid
+    rm -rf "$FINAL_CONFIG_DIR" "$APP_BASE"
+    echo -e "${GREEN}Пакет kvas-hysteria успешно удален.${NC}"
+}
+
+cmd_hysteria_start() {
+    if [ -f "$SYSTEM_INIT_PATH" ]; then
+        "$SYSTEM_INIT_PATH" start
+        sleep 2
+        cmd_hysteria_test
+    else
+        echo -e "${RED}Ошибка: Конфигурация не инициализирована. Сначала вызовите add${NC}"
+    fi
+}
+
+cmd_hysteria_stop() {
+    if [ -f "$SYSTEM_INIT_PATH" ]; then
+        "$SYSTEM_INIT_PATH" stop
+    else
+        echo -e "${RED}Ошибка: Конфигурация не инициализирована.${NC}"
+    fi
+}
+
+cmd_hysteria_restart() {
+    if [ -f "$SYSTEM_INIT_PATH" ]; then
+        "$SYSTEM_INIT_PATH" restart
+        sleep 2
+        cmd_hysteria_test
+    else
+        echo -e "${RED}Ошибка: Конфигурация не инициализирована. Сначала вызовите add${NC}"
+    fi
+}
+
+cmd_hysteria_new() {
+    # Если hysteria не установлена — устанавливаем
+    if [ ! -f "$BIN_PATH" ]; then
+        echo "Hysteria не установлена. Запускаем установку..."
+        cmd_hysteria_install
+    fi
+
+    local hysteria_link=''
+    read_value "Вставьте ссылку hysteria2:// :" hysteria_link
+    if [ "${hysteria_link}" = "q" ]; then
+        echo "Отмена."
+        return
+    fi
+    cmd_hysteria_add "${hysteria_link}"
+}

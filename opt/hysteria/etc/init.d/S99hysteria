@@ -1,0 +1,45 @@
+#!/bin/sh
+ENABLED=yes
+PROG="/opt/bin/hysteria"
+ARGS="client -c /opt/etc/hysteria/config.yaml"
+PIDFILE="/var/run/hysteria.pid"
+
+case "$1" in
+    start)
+        [ "$ENABLED" != "yes" ] && exit 0
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+            echo "Hysteria уже запущена."
+        else
+            rm -f "$PIDFILE"
+            if [ ! -x "$PROG" ]; then
+                echo "Hysteria не запущена: бинарник $PROG отсутствует."
+                exit 1
+            fi
+            "$PROG" $ARGS >/dev/null 2>&1 &
+            echo $! > "$PIDFILE"
+            sleep 1
+            if ! kill -0 "$!" 2>/dev/null; then
+                echo "Hysteria не запустилась (упала на старте - проверьте config.yaml)."
+                rm -f "$PIDFILE"
+                exit 1
+            fi
+            echo "Hysteria успешно запущена."
+        fi
+        ;;
+    stop)
+        if [ -f "$PIDFILE" ]; then
+            kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+            rm -f "$PIDFILE"
+            echo "Hysteria остановлена."
+        else
+            echo "Hysteria не запущена."
+        fi
+        ;;
+    restart)
+        $0 stop && sleep 2 && $0 start
+        ;;
+    *)
+        echo "Использование: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac

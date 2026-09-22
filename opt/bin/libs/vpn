@@ -66,10 +66,6 @@ update_ipset(){
 		refresh_dnsmasq_ipset_table
 	else
 		refresh_adguard_ipset_table
-		[ "${stage}" = initd ] || {
-			ready "${prefix}Перезапускаем сервис AdGuard Home"
-			/opt/etc/init.d/S99adguardhome restart &>/dev/null && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
-		}
 	fi
 }
 
@@ -125,7 +121,7 @@ reset_all_connection(){
 			if is_vless_over_proxy_enabled ; then
 				log_warning 'Перезапуск клиента VLESS (рестарт тоннеля)'
 
-				${XRAY_INIT} restart
+				${XRAY_INIT} restart >/dev/null 2>&1
 			fi
 
 			cli_request="localhost:79/rci/interface/${inface}"
@@ -155,7 +151,7 @@ cmd_kvas_init(){
 
 #	Производим перезапуск подключения к интернету
 #	если не режим update и если текущее подключение не ssr
-	if [ "${stage}" = refresh ] || ! has_ssr_enable ; then
+	if [ "${stage}" = "refresh" ] || ( [ "${stage}" != "no_reset" ] && ! has_ssr_enable ) ; then
 			reset_all_connection
 	fi
 
@@ -182,7 +178,7 @@ service_restart(){
 	srv_name=${1}
 	srv_initd=${2}
 	ready "Перезапускаем ${srv_name}"
-	if "/opt/etc/init.d/${srv_initd}" restart &> /dev/null; then
+	if "/opt/etc/init.d/${srv_initd}" restart >/dev/null 2>&1; then
 		when_ok "УСПЕШНО"
 	else
 		when_bad "ОШИБКА"
@@ -191,33 +187,60 @@ service_restart(){
 }
 
 all_services_restart() {
+	local _cli=$(get_config_value 'INFACE_CLI')
+
 	if has_adguard_enable ; then
 		log_warning 'Перезапуск DNS сервера AdGuardHome'
-
 		service_restart 'DNS сервер AdGuardHome' 'S99adguardhome'
 	else
 		log_warning 'Перезапуск служб DNS'
-
 		service_restart 'DNS сервер DNSMasq'  'S56dnsmasq'
 		service_restart 'DNS сервер DNSCrypt' 'S09dnscrypt-proxy2'
 	fi
 
+	# Hysteria — только если текущий интерфейс Proxy41
 	if [ -f /opt/apps/kvas/hysteria/bin/hysteria ]; then
 		[ -f /opt/bin/hysteria ] || ln -sf /opt/apps/kvas/hysteria/bin/hysteria /opt/bin/hysteria
 		[ -f /opt/etc/init.d/S99hysteria ] || ln -sf /opt/apps/kvas/hysteria/etc/init.d/S99hysteria /opt/etc/init.d/S99hysteria
-		log_warning 'Перезапуск Hysteria 2'
-
-		service_restart 'Hysteria 2' 'S99hysteria'
+		case "$_cli" in
+			*Proxy41*|*hysteria*)
+				log_warning 'Перезапуск Hysteria 2'
+				service_restart 'Hysteria 2' 'S99hysteria'
+				;;
+		esac
 	fi
 
+	# VLESS/xray — запускать если: текущий интерфейс Proxy21 ИЛИ xray установлен (для failover)
 	if is_shadowsocks_enabled ; then
 		log_warning 'Перезапуск клиента ShadowSocks (рестарт всех служб)'
-
 		service_restart 'клиент ShadowSocks' 'S22shadowsocks'
 	elif is_vless_over_proxy_enabled ; then
 		log_warning 'Перезапуск клиента VLESS'
+		service_restart 'клиента VLESS' 'S24xray'
+	elif [ -f /opt/apps/kvas/etc/init.d/S97xray ]; then
+		# xray установлен но не активный — запускаем для failover проверок
+		/opt/etc/init.d/S97xray status 2>/dev/null | grep -q alive || /opt/etc/init.d/S97xray start &>/dev/null
+ 	fi
 
-		service_restart 'клиент VLESS' 'S24xray'
+	# AmneziaWG (wireproxy-awg) — если установлен
+	if [ -f /opt/apps/kvas/awg/bin/wireproxy ]; then
+		[ -f /opt/etc/init.d/S99awg ] || ln -sf /opt/apps/kvas/awg/etc/init.d/S99awg /opt/etc/init.d/S99awg
+		case "$_cli" in
+			*Proxy42*|*awg*)
+				log_warning 'Перезапуск AmneziaWG'
+				service_restart 'AmneziaWG' 'S99awg'
+				;;
+		esac
+	fi
+
+	# Перезапуск failover daemon если был включён
+	if [ -f /opt/etc/kvas-failover-enabled ]; then
+		log_warning 'Перезапуск failover daemon'
+		# Убиваем старый демон если завис
+		kill $(cat /var/run/kvas-failover.pid 2>/dev/null) 2>/dev/null
+		rm -f /var/run/kvas-failover.pid
+		# Запускаем новый
+		/opt/bin/kvas failover start >/dev/null 2>&1
 	fi
 }
 
@@ -565,6 +588,7 @@ ipv6_inface_status() {
 #
 # ------------------------------------------------------------------------------------------
 adguardhome_change_and_get_config_ip() {
+	[ -f "${ADGUARDHOME_CONFIG}" ] || return 0
 	ip_filter="[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}"
 	ip_dns_adguard=$(cat < "${ADGUARDHOME_CONFIG}" | sed -n '/^dns/,/port:/p' | grep -o "${ip_filter}")
 #	Если DNS порт установлен в значение 0.0.0.0 (все адреса), то меняем его на ip роутера
@@ -583,11 +607,21 @@ adguardhome_change_and_get_config_ip() {
 # ------------------------------------------------------------------------------------------
 adguardhome_setup() {
 
+	if [ ! -f "${ADGUARDHOME_CONFIG}" ]; then
+		adguardhome_check_config
+	fi
+	if [ ! -f "${ADGUARDHOME_CONFIG}" ]; then
+		when_bad "СБОЙ"
+		error "Файл конфигурации AdGuard Home не найден. Запустите 'kvas adguard on' заново."
+		exit 1
+	fi
+
 	ip=$(adguardhome_change_and_get_config_ip)
 	port=${MAIN_DNS_PORT}
 	localhost="127.0.0.1"
 
 	ready "AdGuard Home установлен в качестве основного DNS сервера"
+	set_config_value "ADGUARD_ENABLE" "true"
 
 #	в случае установленного dnsmasq останавливаем его и архивируем
 	[ -f /opt/etc/init.d/S56dnsmasq ] && {
@@ -653,7 +687,7 @@ adguardhome_setup() {
 		when_bad "СБОЙ";
 		error "Возникла ошибка при установке AdGuard Home в качестве основного DNS сервера."
 		print_line
-		cat < "${ADGUARDHOME_LOG}" | tail
+		[ -f "${ADGUARDHOME_LOG}" ] && cat < "${ADGUARDHOME_LOG}" | tail
 		exit 1
 	fi
 }
@@ -792,17 +826,32 @@ adguardhome_check_config() {
 			pid_to_kill=$(ps -w | grep 'AdGuardHome -l /opt/var/log/AdGuardHome.log' | grep -v 'grep' | cut -d' ' -f1)
 			[ -n "${pid_to_kill}" ] && kill -9 "${pid_to_kill}" &> /dev/null
 #			Запускаем новую чистую настройку AdGuardHome
-			[ -f /opt/bin/AdGuardHome ] || opkg install adguardhome-go &> /dev/null
+			[ -f /opt/bin/AdGuardHome ] || opkg install adguardhome-go
+			if [ ! -f /opt/bin/AdGuardHome ]; then
+				when_bad "СБОЙ"
+				error "Не удалось установить пакет AdGuard Home."
+				error "Проверьте подключение к интернету и выполните: opkg update && opkg install adguardhome-go"
+				exit 1
+			fi
 			/opt/bin/AdGuardHome -c "${tmp_conf}" -l "${log_file}" &
 			sleep 2
 
+			_agh_wait=0
 			while true; do
 				if cat < "${log_file}" | grep 'go to http' | grep -qv ':3000' || cat < "${log_file}" | grep -q ' listen tcp 0.0.0.0:3000: bind: address already in use' ; then
-					mv "${tmp_conf}" "${ADGUARDHOME_CONFIG}"
+					[ -f "${tmp_conf}" ] && mv "${tmp_conf}" "${ADGUARDHOME_CONFIG}"
 					killall AdGuardHome
 					adguardhome_setup
 					print_line
 					exit 0
+				fi
+				_agh_wait=$((_agh_wait + 1))
+				if [ ${_agh_wait} -gt 120 ]; then
+					killall AdGuardHome &> /dev/null
+					when_bad "СБОЙ"
+					error "Тайм-аут ожидания настройки AdGuard Home (120с)."
+					error "Откройте http://$(get_router_ip):3000 в браузере для завершения настройки."
+					exit 1
 				fi
 				# Пауза в секундах между проверками
 				sleep 1
@@ -837,10 +886,10 @@ adguardhome_install_locally() {
 
 			[ -f /opt/etc/hosts ] && cp /opt/etc/hosts "${KVAS_BACKUP_PATH}/hosts"
 
-			opkg update &> /dev/null
-			opkg remove adguardhome-go --force-depends &> /dev/null
-			opkg install adguardhome-go --force-maintainer  &> /dev/null
-		} &> /dev/null && when_ok "УСПЕШНО" || when_bad "С ОШИБКОЙ"
+			opkg update
+			opkg remove adguardhome-go --force-depends 2>/dev/null
+			opkg install adguardhome-go --force-maintainer
+		} && when_ok "УСПЕШНО" || when_bad "С ОШИБКОЙ"
 
 		. /opt/apps/kvas/bin/libs/update
 		cmd_adguard_update
@@ -868,12 +917,55 @@ dns_server_install_remotely(){
 	if [ "${_ip_port}" = q ] ; then exit_q; print_line; exit 1; fi
 
 	if echo "${_ip_port}" | grep -qE "${IP_PORT_FILTER}" ; then 
-		nslookup ya.ru ${_ip_port/#/:/} &> /dev/null
-		[ $? -eq 0 ] || { error "Введенный адрес ${_ip_port/#/:/} недоступен."; exit 1; }
+		_remote_ip=$(echo "${_ip_port}" | cut -d':' -f1)
+		_ok=0
+		for _i in 1 2 3; do
+			nslookup google.com "${_remote_ip}" &> /dev/null && { _ok=1; break; }
+			sleep 2
+		done
+		[ ${_ok} -eq 1 ] || {
+			warning "Не удалось проверить доступность ${_ip_port} (возможно, сервисы перезапускаются)."
+			warning "Продолжаем настройку — если DNS не работает, проверьте сервер вручную."
+		}
 		ready "Подключаем DNS сервер на удаленном устройстве..."
 		{
-			cmd_dns_crypt_off
-			cmd_dnsmasq_dns_change "${_ip_port/:/#}" 
+#			выключаем локальный AdGuard если он включён
+			set_config_value "ADGUARD_ENABLE" "false"
+			[ -f "${ADGUARDHOME_DEMON}" ] && "${ADGUARDHOME_DEMON}" stop &> /dev/null
+			kill -9 $(pgrep AdGuardHome) &> /dev/null
+
+#			восстанавливаем S56dnsmasq из бэкапа если был перемещён локальным AdGuard
+			if [ ! -f /opt/etc/init.d/S56dnsmasq ] && [ -f "${KVAS_BACKUP_PATH}/S56dnsmasq" ]; then
+				cp "${KVAS_BACKUP_PATH}/S56dnsmasq" /opt/etc/init.d/S56dnsmasq
+			fi
+
+#			восстанавливаем S09dnscrypt-proxy2 из бэкапа если был перемещён
+			if [ ! -f /opt/etc/init.d/S09dnscrypt-proxy2 ] && [ -f "${KVAS_BACKUP_PATH}/S09dnscrypt-proxy2" ]; then
+				cp "${KVAS_BACKUP_PATH}/S09dnscrypt-proxy2" /opt/etc/init.d/S09dnscrypt-proxy2
+			fi
+
+#			останавливаем dnscrypt-proxy2
+			[ -f /opt/etc/init.d/S09dnscrypt-proxy2 ] && /opt/etc/init.d/S09dnscrypt-proxy2 stop &> /dev/null
+
+#			восстанавливаем S96kvas как стартовый сервис
+			cp /opt/apps/kvas/etc/init.d/S96kvas "${KVAS_START_FILE}" 2>/dev/null
+
+#			переустанавливаем dnsmasq с правильным upstream (из DNS_DEFAULT)
+			dnsmasq_install 'remote' &> /dev/null
+
+#			меняем upstream DNS на удалённый сервер
+			_remote_dns="${_ip_port/:/#}"
+			sed -i "s/\(server=\).*/\1${_remote_dns}/" "${DNSMASQ_CONFIG}"
+			set_config_value DNS_DEFAULT "${_remote_dns}"
+
+#			перезапускаем dnsmasq с новым upstream
+			[ -f /opt/etc/init.d/S56dnsmasq ] && /opt/etc/init.d/S56dnsmasq restart &> /dev/null
+
+#			обновляем iptables/ipset
+			ip4__flush 'chain table'
+			ip4__dns__add_routing_for_home
+			ip4_firewall_set_all_rules
+			update_ipset "no_reset"
 
 		} &> /dev/null && when_ok "УСПЕШНО" || when_bad "С ОШИБКОЙ"
 	else 
@@ -911,6 +1003,10 @@ cmd_adguardhome_on() {
 			adguardhome_setup
 		elif  echo "${status}" | grep -q "НУЖНО ПЕРЕУСТАНОВИТЬ" ; then
 			adguardhome_install_locally
+		elif echo "${status}" | grep -q "ВНЕШНИЙ" ; then
+			error "Пакет AdGuard Home не установлен на роутере." no_newline
+			print_line
+			adguardhome_install_locally
 		else
 			adguardhome_setup
 		fi
@@ -927,7 +1023,8 @@ cmd_adguardhome_on() {
 #
 # ------------------------------------------------------------------------------------------
 cmd_adguardhome_off(){
-	ready "AdGuard Home в качестве DNS сервера удален"
+
+	set_config_value "ADGUARD_ENABLE" "false"	ready "AdGuard Home в качестве DNS сервера удален"
 	[ -f "${ADGUARDHOME_CONFIG}" ] && sed -i "s/\( port:\) .*/\1 0/" "${ADGUARDHOME_CONFIG}"
 	[ -f "${ADGUARDHOME_DEMON}" ] && {
 		${ADGUARDHOME_DEMON} stop &> /dev/null
@@ -955,6 +1052,76 @@ cmd_adguardhome_off(){
 	else
 		when_bad "С ОШИБКОЙ";
 		error "Возникла ошибка при удалении AdGuard Home из системы."
+		exit 1
+	fi
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	 Полное удаление AdGuard Home из системы
+#	 Удаляет бинарник, пакет, конфиги, данные; возвращает dnsmasq+dnscrypt
+#
+# ------------------------------------------------------------------------------------------
+cmd_adguardhome_uninstall() {
+
+	ready "Полное удаление AdGuard Home из системы"
+	print_line
+
+#	Останавливаем и убиваем процесс
+	[ -f "${ADGUARDHOME_DEMON}" ] && ${ADGUARDHOME_DEMON} stop &> /dev/null
+	kill -9 $(pgrep AdGuardHome) &> /dev/null
+
+#	Флаг ADGUARD_ENABLE = false
+	set_config_value "ADGUARD_ENABLE" "false"
+
+#	Останавливаем dnsmasq/dnscrypt если работают
+	[ -f /opt/etc/init.d/S56dnsmasq ] && {
+		/opt/etc/init.d/S56dnsmasq stop &> /dev/null
+		kill -9 $(pgrep dnsmasq) &> /dev/null
+	}
+	[ -f /opt/etc/init.d/S09dnscrypt-proxy2 ] && {
+		/opt/etc/init.d/S09dnscrypt-proxy2 stop &> /dev/null
+		kill -9 $(pgrep dnscrypt-proxy) &> /dev/null
+	}
+
+#	Удаляем файл конфигурации
+	[ -f "${ADGUARDHOME_CONFIG}" ] && rm -f "${ADGUARDHOME_CONFIG}"
+#	Удаляем директорию с данными AdGuardHome
+	[ -d /opt/etc/AdGuardHome ] && rm -rf /opt/etc/AdGuardHome
+#	Удаляем лог
+	[ -f "${ADGUARDHOME_LOG}" ] && rm -f "${ADGUARDHOME_LOG}"
+#	Удаляем ipset-файл
+	[ -f /opt/etc/AdGuardHome/kvas.ipset ] && rm -f /opt/etc/AdGuardHome/kvas.ipset 2>/dev/null
+#	Удаляем init-скрипт S99adguardhome
+	[ -f "${ADGUARDHOME_DEMON}" ] && rm -f "${ADGUARDHOME_DEMON}"
+
+#	Удаляем бинарник и пакет через opkg
+	[ -f /opt/bin/AdGuardHome ] && rm -f /opt/bin/AdGuardHome
+	opkg remove adguardhome-go --force-depends 2>/dev/null
+
+#	Восстанавливаем S96kvas как стартовый сервис
+	cp /opt/apps/kvas/etc/init.d/S96kvas "${KVAS_START_FILE}" 2>/dev/null
+
+#	Устанавливаем dnsmasq
+	dnsmasq_install '' &> /dev/null
+
+#	Обновляем правила ip4tables
+	ip4__flush 'chain'
+	ip4__dns__add_routing_for_home
+	ip4_firewall_set_all_rules
+
+#	Устанавливаем dnscrypt
+	dns_crypt_install ''
+
+#	Восстанавливаем /opt/etc/hosts из бэкапа
+	[ -f "${KVAS_BACKUP_PATH}/hosts" ] && cp -f "${KVAS_BACKUP_PATH}/hosts" /opt/etc/hosts
+
+	if [ $? = 0 ]; then
+		when_ok "УСПЕШНО"
+		warning "AdGuard Home полностью удалён. DNS сервер: dnsmasq + dnscrypt-proxy2."
+	else
+		when_bad "С ОШИБКОЙ"
+		error "Возникла ошибка при удалении AdGuard Home."
 		exit 1
 	fi
 }
@@ -1428,7 +1595,7 @@ dnsmasq_install(){
 	sed -i "s/@LOCAL_IP/${local_ip}/g; s/@INFACE/${inface}/g; s/@UPLEVEL_DNS/${uplevel_dns}/g;" /opt/etc/dnsmasq.conf 1> /dev/null 2> "${ERROR_LOG_FILE}"
 	ready_status "${?}" "Проблема при настройке файлов конфигурации dnsmasq"
 	# Если запуск функции был не при установке пакета Квас
-	[ -z "${is_install_stage}" ] && cmd_kvas_init "no"
+	[ -z "${is_install_stage}" ] && cmd_kvas_init "no_reset"
 
 }
 
@@ -1482,6 +1649,12 @@ cmd_dnsmasq_dns_change() {
 		return 2
 	fi
 
+	# Защита от self-loop: upstream не должен указывать на собственный порт dnsmasq
+	case "${dns_new}" in
+		*"#${DNSMASQ_PORT}")
+			error "Upstream ${dns_new} указывает на собственный порт dnsmasq (${DNSMASQ_PORT}) — self-loop."
+			return 2 ;;
+	esac
 	cmd=${2:-restart}
 	dnsmasq_dns_change "${dns_new}" "${cmd}"
 }
@@ -1521,7 +1694,7 @@ cmd_dnsmasq_port_change() {
 			ready "Замена порта на ${port} в dnsmasq завершена"
 			sed -i "s/\(port=\).*/\1${port}/"  "${DNSMASQ_CONFIG}"
 			set_config_value DNSMASQ_PORT "${port}"
-			[ "${cmd}" = restart ] && cmd_kvas_init "no" &> /dev/null
+			[ "${cmd}" = restart ] && cmd_kvas_init "no_reset" >/dev/null 2>&1
 			[ $? = 0 ] && when_alert "УСПЕШНО" || when_bad "С ОШИБКОЙ"
 		fi
 	}
@@ -2100,7 +2273,10 @@ EOF
 
 		if [[ $attempt -gt 0 ]]; then
 			# получаем описание интерфейса
-			description=$(get_value_interface_field "${inface_cli}" description | sed 's|\/|\\/|g')
+			description=$(get_value_interface_field "${inface_cli}" description)
+			[ -z "${description}" ] && description=$(get_value_interface_field "${inface_cli}" interface-name)
+			[ -z "${description}" ] && description="${inface_cli}"
+			description=$(echo "${description}" | sed 's|\/|\\/|g')
 
 			# Ищем интерфейс PROXY_VLESS_NAME в списке и обновляем его описание 
 			# данное имя (PROXY_VLESS_NAME) дается интерфейсу при его создании и оно уникально, чтобы не спутать его с другими Proxy
@@ -2326,6 +2502,19 @@ create_vless_config(){
 		[ -f "${VLESS_CONFIG_FILE}" ] || cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}"
 		vless_link_parse "${vless_link}" "${VLESS_CONFIG_FILE}"
 		if [ $? -eq 0 ]; then
+			print_line
+			echo -e "${GREEN}Распарсенные параметры VLESS:${NOCL}"
+			echo -e "  ID:       ${BLUE}$(grep -oP '"id":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null || echo '(не задан)')${NOCL}"
+			echo -e "  Address:  ${BLUE}$(grep -oP '"address":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null || echo '(не задан)')${NOCL}"
+			echo -e "  Port:     ${BLUE}$(grep -oP '"port":\s*\K[0-9]+' "${VLESS_CONFIG_FILE}" 2>/dev/null | head -1 || echo '(не задан)')${NOCL}"
+			echo -e "  Network:  ${BLUE}$(grep -oP '"network":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null || echo '(не задан)')${NOCL}"
+			echo -e "  Security: ${BLUE}$(grep -oP '"security":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null | head -1 || echo '(не задан)')${NOCL}"
+			echo -e "  SNI:      ${BLUE}$(grep -oP '"serverName":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null || echo '(не задан)')${NOCL}"
+			echo -e "  Flow:     ${BLUE}$(grep -oP '"flow":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null || echo '(не задан / не требуется)')${NOCL}"
+			echo -e "  PubKey:   ${BLUE}$(grep -oP '"publicKey":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null || echo '(не задан / не Reality)')${NOCL}"
+			echo -e "  ShortID:  ${BLUE}$(grep -oP '"shortId":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null || echo '(не задан / не Reality)')${NOCL}"
+			echo -e "  FP:       ${BLUE}$(grep -oP '"fingerprint":\s*"\K[^"]+' "${VLESS_CONFIG_FILE}" 2>/dev/null || echo '(не задан)')${NOCL}"
+			print_line
 			break
 		fi
 		echo -e "${RED}Ошибка в ссылке. Попробуйте снова (r-повторить, q-пропустить)${NOCL}"
@@ -2352,7 +2541,19 @@ start_vless(){
 		# Запуск xray в случае, если конфигурация xray не содержит ошибок
 		ready "Запускаем xray сервис..."
 		service_action S97xray start && when_ok "УСПЕШНО" 
+		# Краткий тест коннективности (захват stderr xray)
+		_xray_test=$(${XRAY} run -test -c ${VLESS_CONFIG_FILE} 2>&1)
+		if ! echo "${_xray_test}" | grep -q "Configuration OK"; then
+			echo -e "${YELLOW}Предупреждение xray:${NOCL} ${_xray_test}"
+		fi
 		vpn_on "${_inface_entware}" &> /dev/null
+		# ждём поднятия тоннельного интерфейса, иначе таблица маршрутов 1001 не заполнится
+		if [ -n "${_inface_entware}" ]; then
+			for _w in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+				/opt/sbin/ip -4 a show dev "${_inface_entware}" 2>/dev/null | grep -q "inet " && break
+				sleep 1
+			done
+		fi
 		# Проверяем работу (без вывода)
 		test_vless_proxy "${_inface_entware}" >/dev/null 2>&1
 		
@@ -2372,10 +2573,10 @@ switch_vpn_on(){
 #	Меняем интерфейс в файле ndm
 	ndm_interface_change "${inface_entware}" "${cli_inface}"
 	
-	# Останавливаем xray, если запушен	
-	${XRAY_INIT} stop &> /dev/null
-
+	# Останавливаем xray только при переключении на shadowsocks
+	# При переключении на VLESS/Hysteria — не трогаем (нужен для failover)
 	if [[ "${inface_entware}" =~ ${SSR_ENTWARE_TEMPL} ]]; then
+		${XRAY_INIT} stop &> /dev/null
 		vpn_off &> /dev/null
 		shadowsocks_backup
 		shadowsocks_on
@@ -2391,7 +2592,7 @@ switch_vpn_on(){
 			vpn_on "${inface_entware}"
 		fi
 	fi
-	[ "${is_install_stage}" = no ] && cmd_kvas_init "no" &> /dev/null
+	[ "${is_install_stage}" = no ] && cmd_kvas_init "no_reset" >/dev/null 2>&1
 
 	#------------------------------------------------------
 	# Если есть подключенные гостевые сети
@@ -2433,14 +2634,17 @@ select_vpn_interface() {
 	total=$(cat < "${INFACE_NAMES_FILE}" | wc -l)
 	local hysteria_num=$((total + 1))
 	local skip_num=$((total + 2))
+	# защита от фонового вызова без TTY (иначе бесконечный цикл + спам лога)
+	[ -t 0 ] || { error "[select_vpn_interface] запуск без терминала — пропуск"; return 1; }
 	while true; do
 		print_line
 		echo -e "  ${GREEN}H${NOCL}) Hysteria 2 — настроить Hysteria (автоматическая установка)"
 		echo -e "  ${GREEN}R${NOCL}) Restore — восстановить настройки из резервной копии"
+		echo -e "  ${GREEN}U${NOCL}) Update — пересканировать интерфейсы"
 		echo -e "  ${GREEN}S${NOCL}) Пропустить выбор — настроить позже"
 		echo ""
-		echo -en "${BLUE}Выберите номер 1-${total}, H, R, S, или Q-выход:${NOCL} "
-		read -r num_vpn_inface
+		echo -en "${BLUE}Выберите номер 1-${total}, H, R, U, S, или Q-выход:${NOCL} "
+		read -r num_vpn_inface || break
 		if [[ "$num_vpn_inface" =~ ^[\-]?[0-9]+$ ]]; then
 			print_line
 			set_config_value "ADDR_MAN" ""
@@ -2452,26 +2656,39 @@ select_vpn_interface() {
 				error "Число должно быть в пределах от 1 до ${total}"
 				continue
 			fi
-		elif [[ "$num_vpn_inface" =~ ^[Hh]$ ]]; then
+		elif [ "$num_vpn_inface" = "H" ] || [ "$num_vpn_inface" = "h" ]; then
 			print_line
 			echo -e "${GREEN}Hysteria 2 будет настроена после завершения setup...${NOCL}"
 			echo -e "${YELLOW}Установка отложена: DNS ещё не настроен, бинарник будет скачан позже.${NOCL}"
 			set_config_value "SETUP_HYSTERIA" "pending"
 			print_line
 			break
-		elif [[ "$num_vpn_inface" =~ ^[Rr]$ ]]; then
+		elif [ "$num_vpn_inface" = "R" ] || [ "$num_vpn_inface" = "r" ]; then
 			print_line
 			restore_backups
 			print_line
 			warning "Настройки восстановлены из резервной копии."
 			print_line
+			inface_entware=$(get_config_value INFACE_ENT)
+			cli_inface=$(get_config_value INFACE_CLI)
+			if [ -n "${inface_entware}" ] && [ -n "${cli_inface}" ]; then
+				switch_vpn_on "${inface_entware}" "${cli_inface}"
+				break
+			fi
 			continue
-		elif [[ "$num_vpn_inface" =~ ^[Ss]$ ]]; then
+		elif [ "$num_vpn_inface" = "U" ] || [ "$num_vpn_inface" = "u" ]; then
+			print_line
+			update_interface_name_list
+			print_line
+			show_vpn_list
+			total=$(cat < "${INFACE_NAMES_FILE}" | wc -l)
+			continue
+		elif [ "$num_vpn_inface" = "S" ] || [ "$num_vpn_inface" = "s" ]; then
 			print_line
 			echo -e "${YELLOW}Выбор интерфейса пропущен. Настройка позже: kvas vless new / kvas hysteria new${NOCL}"
 			print_line
 			break
-		elif [[ "$num_vpn_inface" =~ ^[Qq]$ ]]; then
+		elif [ "$num_vpn_inface" = "Q" ] || [ "$num_vpn_inface" = "q" ]; then
 			print_line
 #			Если нажали на q
 			echo -e "${RED}Процедура настройки прервана пользователем!${NOCL}"
@@ -2500,11 +2717,11 @@ select_vpn_interface() {
 				exit 1
 			fi
 			exit
-		elif [[ "$num_vpn_inface" =~ ^[Ss]$ ]]; then
+		elif [ "$num_vpn_inface" = "S" ] || [ "$num_vpn_inface" = "s" ]; then
 			print_line
 			cmd_interface_change "yes" "${is_install_stage}"
 		else
-			error "Введите цифру 1-${total}, H-Hysteria, S-пропустить, Q-выход."
+			error "Введите цифру 1-${total}, H-Hysteria, R-Restore, U-Update, S-пропустить, Q-выход."
 			continue
 		fi
 		break
@@ -2713,7 +2930,7 @@ cmd_dns_crypt_on() {
 				dns_crypt_port_change "${dns_crypt_port}" restart
 
 				# множество конфигов должно обновиться и службы перезапуститься
-				cmd_kvas_init 'no'
+				cmd_kvas_init "no_reset"
 			} 1> /dev/null 2> "${ERROR_LOG_FILE}"
 			ready_status "${?}" "Произошла непредвиденная ошибка." "ПОДКЛЮЧЕНО"
 		fi
@@ -2744,7 +2961,7 @@ cmd_dns_crypt_off() {
 			set_config_value DNS_DEFAULT "${static_dns}#53"
 
 			# множество конфигов должно обновиться и службы перезапуститься
-			cmd_kvas_init 'no'
+			cmd_kvas_init "no_reset"
 		} 1> /dev/null 2> "${ERROR_LOG_FILE}"
 		ready_status "${?}" "Произошла непредвиденная ошибка." "ОТКЛЮЧЕНО"
 	}
@@ -2872,7 +3089,7 @@ host_add() {
 		ads_list_hosts_update &> /dev/null
 	fi
 
-	[ "${reset}" = 'yes' ] && cmd_kvas_init  &> /dev/null
+	[ "${reset}" = 'yes' ] && cmd_kvas_init >/dev/null 2>&1
 
 	[ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && cmd_adguardhome_status | grep -q ВКЛЮЧЕН && add_host_to_adguard "${clear_host}" &> /dev/null
 
@@ -2916,7 +3133,7 @@ cmd_add_one_host() {
 	}
 
 	# Проверяем есть ли в введенной строке имя метки -tag или нет
-	has_tag=$([ -n "$(echo "${*}" | sed -n 's/.*-tag \([^ ]*\).*/\1/p')" ])
+	has_tag=$([ -n "$(echo "${*}" | grep -oP '(?<=-tag )\S+')" ])
 
 	if [ "${has_tag}" ] ; then
 		tag_name=$(echo "${*}" | sed 's/.*\-tag \(.*\)/\1/')
@@ -3025,7 +3242,7 @@ cmd_del_one_host() {
 		sed -i "/${host_////\\/}/d" "${KVAS_LIST_FILE}"
 
 		cmd_adguardhome_status | grep -q ВКЛЮЧЕН && sed -i "/${host_////\\/}/d" "${ADGUARD_IPSET_FILE}"
-		cmd_kvas_init  &> /dev/null
+		cmd_kvas_init >/dev/null 2>&1
 		[ $? = 0 ] && when_ok "УДАЛЕН" || when_bad "НЕ УДАЛЕН"
 
 		# если включен блокировщик рекламы
@@ -3075,14 +3292,12 @@ del_multy_hosts() {
 		for host_ in ${list_to_del}; do
 			ready "Удаляем ${YELLOW}${host_}${NOCL} из списка защищенных..."
 			if cat < "${KVAS_LIST_FILE}" | grep -qe "${host_}$" ; then
-				
-				if cmd_adguardhome_status | grep -q ВКЛЮЧЕН ; then 
+				sed -i "/${host_////\\/}/d" "${KVAS_LIST_FILE}"
+				if cmd_adguardhome_status | grep -q ВКЛЮЧЕН ; then
 					sed -i "/${host_////\\/}/d" "${ADGUARD_IPSET_FILE}"
-				else 
-					sed -i "/${host_////\\/}/d" "${KVAS_LIST_FILE}"
 				fi
-				[ $? = 0 ] && when_ok "УДАЛЕН" || when_bad "НЕ УДАЛЕН"
-			else 
+				when_ok "УДАЛЕН"
+			else
 				when_alert "НЕТ В СПИСКЕ"
 			fi
 		done
@@ -3094,8 +3309,8 @@ del_multy_hosts() {
 		fi
 		print_line
 		ready "Перегружаем все правила конфигурации iptables и ipset"
-		cmd_kvas_init  &> /dev/null
-		[ $? = 0 ] && when_ok "ГОТОВО" || when_bad "ОШИБКА"
+	cmd_kvas_init >/dev/null 2>&1
+	[ $? = 0 ] && when_ok "ГОТОВО" || when_bad "ОШИБКА"
 	fi
 
 }
@@ -3213,7 +3428,7 @@ cmd_clear_list() {
 		rm -f "${ADGUARD_IPSET_FILE}"
 		touch "${KVAS_LIST_FILE}"
 
-		cmd_kvas_init 'update' &> /dev/null
+		cmd_kvas_init 'update' >/dev/null 2>&1
 		[ $? = 0 ] && when_ok 'ОЧИЩЕН' || when_bad 'ОШИБКА'
 
 		print_line
@@ -3358,10 +3573,12 @@ cmd_import_hosts() {
 	[ -n "${_hosts_to_add_ubl}" ] && echo -e "${_hosts_to_add_ubl}" >> "${KVAS_LIST_FILE}"
 	clear_file_content "${KVAS_LIST_FILE}"
 
-	cmd_ads_status | grep -q ВКЛЮЧЕН && ads_list_hosts_update &> /dev/null
+	cmd_ads_status | grep -q ВКЛЮЧЕН && ads_list_hosts_update >/dev/null 2>&1
 
-	cmd_kvas_init "update" &> /dev/null
-	[ $? = 0 ] && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	# Быстрое обновление: dnsmasq ipset-таблица + HUP (вместо cmd_kvas_init "update" = 30с)
+	/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+	kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+	when_ok "УСПЕШНО"
 
 	num_not_added=$(rec_in_var "${hosts_not_added}")
 	num_repeated_ubl=$(rec_in_var "${hosts_repeated_ubl}")
@@ -3488,27 +3705,91 @@ del_tag_section_to_protect_list() {
 	print_line
 	if [ "${tag_selected}" = ALL ] ; then
 		domains=$(cat < "${TAGS_FILE}" | sed 's/\(^.*\)#. *$/\1/g' | grep -Ev '#|\[' | tr -s '\n')
-	else 
+	else
 		domains=$(get_tag_domain_list "${tag_selected}")
 	fi
-	grep_list_to_del=$(echo -e "${domains}" | sed '/^$/d' | sort -u | sed -e 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed 's/\(.*\)/^\1$/g' )
-	exist_into_list=$(grep -oE "${grep_list_to_del}" "${KVAS_LIST_FILE}" | sed = | sed 'N;s/\n/. /g')
-	
+	local tmp_pat=$(mktemp)
+	echo "${domains}" | sed '/^$/d' | sort -u | sed -e 's/^[[:space:]]*//; s/[[:space:]]*$//' > "$tmp_pat"
+	exist_into_list=$(grep -Ff "$tmp_pat" "${KVAS_LIST_FILE}" | sed = | sed 'N;s/\n/. /g')
+	rm -f "$tmp_pat"
+
 	if [ -n "${exist_into_list}" ] ; then
 		echo -e "${exist_into_list}"
 		print_line
 		read_ynq "Удаляем?" answer
 		if [[ "$answer" =~ [qQ] ]] ; then
-			return 0 
+			return 0
 		elif [ "${answer}" = y ]; then
 			print_line
-			del_multy_hosts "$(echo -e "${exist_into_list}" | sed 's/^[0-9]\{1,3\}\.\().*\)//g')"
+			del_multy_hosts "$(echo -e "${exist_into_list}" | sed 's/^[0-9]\{1,3\}\. //g')"
 		fi
     else
 		echo -e "Домены для удаления не обнаружены в списке защиты."
 	fi
 }
 
+# -------------------------------------------------------------------------------------------
+#
+#   Функция для добавления доменов из тега в список защиты (неинтерактивная)
+#
+# ------------------------------------------------------------------------------------------
+cmd_add_tag_section_to_protect_list_noninteractive() {
+    local tag_selected="$1"
+    [ -z "$tag_selected" ] && return 1
+    grep -q "\[$tag_selected\]" "$TAGS_FILE" || return 1
+
+    local domains
+    if [ "$tag_selected" = "ALL" ] ; then
+        domains=$(cat < "$TAGS_FILE" | sed 's/\(^.*\)#. *$/\1/g' | grep -Ev '#|\[' | tr -s '\n')
+    else
+        domains=$(get_tag_domain_list "$tag_selected")
+    fi
+
+    local grep_list_to_add
+    grep_list_to_add=$(echo -e "$domains" | sed '/^$/d' | sort -u | sed -e 's/^[[:space:]]*//; s/[[:space:]]*$//' | sed 's/\(.*\)/^\1$/g' )
+    local exist_into_list=""
+
+    while IFS= read -r domain; do
+        grep -q "$domain" "${KVAS_LIST_FILE}" || exist_into_list="${exist_into_list}$(echo "${domain}\n" | sed 's/[\^]//; s/[\$]//')"
+    done <<EOF
+$grep_list_to_add
+EOF
+
+    if [ -n "$exist_into_list" ] ; then
+        local TMPFILE=$(mktemp)
+        echo -e "$exist_into_list" | sed '/^$/d' > "${TMPFILE}"
+        cmd_import_hosts "${TMPFILE}"
+        rm "${TMPFILE}"
+    fi
+}
+
+# -------------------------------------------------------------------------------------------
+#
+#   Функция для удаления доменов из тега из списка защиты (неинтерактивная)
+#
+# ------------------------------------------------------------------------------------------
+cmd_del_tag_section_from_protect_list_noninteractive() {
+    local tag_selected="$1"
+    [ -z "$tag_selected" ] && return 1
+    grep -q "\[$tag_selected\]" "$TAGS_FILE" || return 1
+
+    local domains
+    if [ "$tag_selected" = "ALL" ] ; then
+        domains=$(cat < "$TAGS_FILE" | sed 's/\(^.*\)#. *$/\1/g' | grep -Ev '#|\[' | tr -s '\n')
+    else
+        domains=$(get_tag_domain_list "$tag_selected")
+    fi
+
+    local tmp_pat=$(mktemp)
+    echo "$domains" | sed '/^$/d' | sort -u | sed -e 's/^[[:space:]]*//; s/[[:space:]]*$//' > "$tmp_pat"
+    local exist_into_list
+    exist_into_list=$(grep -Ff "$tmp_pat" "${KVAS_LIST_FILE}")
+    rm -f "$tmp_pat"
+
+    if [ -n "$exist_into_list" ] ; then
+        del_multy_hosts "$exist_into_list"
+    fi
+}
 
 
 # ------------------------------------------------------------------------------------------

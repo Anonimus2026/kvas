@@ -31,7 +31,7 @@ PROXY_VLESS_DESC="Kvas-proxy-vless"
 PROXY_LOCAL_IP="127.0.0.1"
 PROXY_VLESS_PORT=1097
 PROXY_VLESS_PROTO=socks5
-DOMAIN_FOR_CHECK="ifconfig.me"
+DOMAIN_FOR_CHECK="myip.addr.tools"
 
 
 has_package_installed() {
@@ -126,7 +126,7 @@ vless_link_parse() {
     local vless_port=$(echo "${tag}" | sed 's/.*@.*:\(.*\)?.*/\1/')
     # Используем [?&] для корректного поиска параметров в query string
     # BusyBox sed не поддерживает \? как GNU sed, поэтому [?&] надёжнее
-    local vless_network=$(echo "${tag}" | sed 's/.*[?&]type=\([^&]*\).*/\1/')
+    local vless_network=$(echo "${tag}" | grep -oE '[?&]type=[^&]*' | head -1 | cut -d= -f2-)
     local vless_sni=$(echo "${tag}" | sed 's/.*[?&]sni=\([^&]*\).*/\1/')
     local vless_short_id=$(echo "${tag}" | sed 's/.*[?&]sid=\([^&]*\).*/\1/')
     local vless_browser_fp=$(echo "${tag}" | sed 's/.*[?&]fp=\([^&]*\).*/\1/')
@@ -588,16 +588,17 @@ test_vless_proxy() {
     local _inface=${1}
     # iface=$(ip a | grep global | grep t2s_br${PROXY_INFACE_NUMEBER} | sed 's/.*\(t2s_br'${PROXY_INFACE_NUMEBER}'\)/\1/g')
     ready "Проверка соединения \"${PROXY_VLESS_DESC}\" к ${DOMAIN_FOR_CHECK}"
-    local _out=$(curl -s --interface ${_inface} ${DOMAIN_FOR_CHECK} 2>&1)
+    local _out=$(curl -4 -s --max-time 10 --interface ${_inface} ${DOMAIN_FOR_CHECK} 2>&1)
     if echo "${_out}" | tail -n 1 | grep -qE "${IP_FILTER}" ; then
         when_ok "УСПЕШНО"
     else
         when_bad "ОШИБКА"
-        [ -n "${_out}" ] && {
-            print_line
-            echo "${_out}" && echo
-        }
-        
+        # Verbose диагностика
+        local _verbose=$(curl -v --max-time 5 --interface ${_inface} ${DOMAIN_FOR_CHECK} 2>&1)
+        print_line
+        echo -e "${YELLOW}Диагностика соединения:${NOCL}"
+        echo "${_verbose}" | grep -E "< HTTP|Connected to|Trying|SSL|TLS|SOCKS|error|fail|refused|timeout" | head -10
+        echo
     fi
 }
 
@@ -611,7 +612,7 @@ _cmd_install_vless_proxy(){
     cmd_install_proxy_package
 
     vless_ln=''
-    has_xray_installed || opkg install xray &> /dev/null
+    has_xray_installed || opkg install xray >/dev/null 2>&1
     #read_value "Введите vless ссылку: " vless_ln string
 
     # DEBUG - восстановить после отладки
@@ -670,8 +671,273 @@ _cmd_remove_vless_proxy(){
 }
 
 
+# ------------------------------------------------------------------------------------------
+#
+#   Управление ядром Xray
+#
+# ------------------------------------------------------------------------------------------
+
+XRAY_BIN=/opt/sbin/xray
+XRAY_GITHUB_API="https://api.github.com/repos/XTLS/Xray-core/releases"
+XRAY_GITHUB_DL="https://github.com/XTLS/Xray-core/releases/download"
+
+# Определение архитектуры для xray
+_xray_detect_arch() {
+    local ARCH=$(uname -m)
+    case "$ARCH" in
+        *aarch64*|*arm64*)  echo "arm64-v8a" ;;
+        *armv7*|*armv6*)   echo "arm32-v7a" ;;
+        *arm*)              echo "arm32-v6" ;;
+        *mips*)             echo "mips32" ;;
+        *mipsle*)           echo "mips32le" ;;
+        *x86_64*|*amd64*)   echo "linux-64" ;;
+        *i?86*|*x86*)      echo "linux-32" ;;
+        *)                  echo "" ;;
+    esac
+}
+
+# Показать статус xray
+cmd_xray_status() {
+    echo "=== Xray ==="
+    if [ -x "$XRAY_BIN" ]; then
+        echo "  Бинарник: $XRAY_BIN"
+        local _ver=$("$XRAY_BIN" version 2>/dev/null | head -1)
+        echo "  Версия: ${_ver:-неизвестна}"
+
+        if [ -f "$XRAY_INIT" ]; then
+            if [ "$("${XRAY_INIT}" status 2>/dev/null)" = "alive" ] || pidof xray >/dev/null 2>&1; then
+                echo -e "  Статус: ${GREEN}запущен${NC}"
+            else
+                echo -e "  Статус: ${RED}остановлен${NC}"
+            fi
+        else
+            echo -e "  Статус: ${YELLOW}init-скрипт не найден${NC}"
+        fi
+
+        local _arch=$(_xray_detect_arch)
+        [ -n "$_arch" ] && echo "  Архитектура: $_arch"
+    else
+        echo -e "  ${RED}Xray не установлен${NC}"
+        echo "  Установите: kvas vless new"
+    fi
+}
+
+# Скачать список версий с GitHub
+_xray_get_versions() {
+    local _max="${1:-10}"
+    curl -4 -s --max-time 15 "$XRAY_GITHUB_API" 2>/dev/null | \
+        jq -r ".[0:${_max}] | .[] | .tag_name" 2>/dev/null
+}
+
+# Установить конкретную версию xray
+# $1 = версия (например v25.2.6), пусто = последняя
+cmd_xray_core() {
+    local _version="${1}"
+
+    # Определение архитектуры
+    local _arch=$(_xray_detect_arch)
+    if [ -z "$_arch" ]; then
+        echo -e "${RED}Неподдерживаемая архитектура: $(uname -m)${NC}"
+        exit 1
+    fi
+    echo -e "Архитектура: ${BLUE}$_arch${NC}"
+
+    # Если версия не указана — показать список
+    if [ -z "$_version" ]; then
+        echo "Доступные версии Xray-core:"
+        print_line
+        local _n=1
+        _xray_get_versions 15 | while read -r _v; do
+            [ -n "$_v" ] && echo "  $_n. $_v"
+            _n=$((_n + 1))
+        done
+        print_line
+        echo "Установка: kvas xray core <номер или версия>"
+        echo "Например:  kvas xray core v25.2.6"
+        echo "           kvas xray core 3      (третья из списка)"
+        return
+    fi
+
+    # Если передан номер — получаем версию по номеру
+    case "$_version" in
+        [0-9]*)
+            local _n=1
+            _xray_get_versions 15 | while read -r _v; do
+                if [ "$_n" = "$_version" ]; then
+                    echo "$_v"
+                    break
+                fi
+                _n=$((_n + 1))
+            done | head -1 | while read -r _realver; do
+                _version="$_realver"
+                # Рекурсивный вызов с реальной версией
+                _version="$_realver"
+            done
+            # Если номер — получаем версию
+            local _realver=$(_xray_get_versions 15 | sed -n "${_version}p")
+            [ -n "$_realver" ] && _version="$_realver"
+            ;;
+    esac
+
+    # Проверка формата версии
+    case "$_version" in
+        v[0-9]*) : ;;
+        *)
+            echo -e "${RED}Неверный формат версии: $_version${NC}"
+            echo "Формат: v25.2.6 (с префиксом v)"
+            echo "Или номер из списка: kvas xray core"
+            exit 1
+            ;;
+    esac
+
+    echo -e "Версия: ${BLUE}$_version${NC}"
+
+    # Проверка свободного места
+    if [ -f "$CHECK_SPACE_SCRIPT" ]; then
+        "$CHECK_SPACE_SCRIPT" || exit 1
+    fi
+
+    # Формируем URL и имя файла
+    local _file="Xray-linux-${_arch}.zip"
+    # Для некоторых версий формат имени другой
+    local _url="${XRAY_GITHUB_DL}/${_version}/${_file}"
+
+    local _tmp="/tmp/xray_${_version}.zip"
+    rm -f "$_tmp"
+
+    echo -e "Скачиваем ${BLUE}$_url${NC}..."
+    curl -fSL --max-time 120 "$_url" -o "$_tmp" 2>&1
+    if [ $? -ne 0 ] || [ ! -s "$_tmp" ]; then
+        # Пробуем альтернативный формат имени файла
+        _file="xray-linux-${_arch}.zip"
+        _url="${XRAY_GITHUB_DL}/${_version}/${_file}"
+        echo -e "${YELLOW}Пробуем альтернативный URL: $_url${NC}"
+        curl -fSL --max-time 120 "$_url" -o "$_tmp" 2>&1
+    fi
+
+    if [ $? -ne 0 ] || [ ! -s "$_tmp" ]; then
+        echo -e "${RED}Ошибка: не удалось скачать бинарник${NC}"
+        echo -e "${YELLOW}Проверьте версию и архитектуру${NC}"
+        echo -e "${YELLOW}URL: $_url${NC}"
+        rm -f "$_tmp"
+        exit 1
+    fi
+
+    echo -e "${GREEN}Бинарник скачан ($(wc -c < "$_tmp") байт)${NC}"
+
+    # Распаковка
+    local _tmpdir="/tmp/xray_extract_$$"
+    rm -rf "$_tmpdir"
+    mkdir -p "$_tmpdir"
+
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -o "$_tmp" -d "$_tmpdir" >/dev/null 2>&1
+    elif command -v bsdtar >/dev/null 2>&1; then
+        bsdtar -xf "$_tmp" -C "$_tmpdir" >/dev/null 2>&1
+    else
+        # BusyBox tar не умеет zip — пробуем через python
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -c "
+import zipfile
+with zipfile.ZipFile('$_tmp') as z:
+    z.extractall('$_tmpdir')
+" 2>/dev/null
+        elif command -v python >/dev/null 2>&1; then
+            python -c "
+import zipfile
+with zipfile.ZipFile('$_tmp') as z:
+    z.extractall('$_tmpdir')
+" 2>/dev/null
+        else
+            echo -e "${RED}Нет unzip для распаковки zip${NC}"
+            echo -e "${YELLOW}Установите: opkg install unzip${NC}"
+            rm -rf "$_tmpdir" "$_tmp"
+            exit 1
+        fi
+    fi
+
+    # Ищем бинарник xray в распакованном
+    local _newbin=""
+    for _f in "$_tmpdir/xray" "$_tmpdir/Xray" "$_tmpdir"/*/xray "$_tmpdir"/*/Xray; do
+        if [ -f "$_f" ]; then
+            _newbin="$_f"
+            break
+        fi
+    done
+
+    if [ -z "$_newbin" ] || [ ! -f "$_newbin" ]; then
+        echo -e "${RED}Бинарник xray не найден в архиве${NC}"
+        rm -rf "$_tmpdir" "$_tmp"
+        exit 1
+    fi
+
+    # Валидация — проверяем что это ELF
+    if ! head -c4 "$_newbin" | grep -q $'\x7fELF'; then
+        echo -e "${RED}Файл не является ELF-бинарником (возможно HTML-страница ошибки)${NC}"
+        rm -rf "$_tmpdir" "$_tmp"
+        exit 1
+    fi
+
+    # Останавливаем xray
+    echo "Останавливаем xray..."
+    if [ -f "$XRAY_INIT" ]; then
+        "$XRAY_INIT" stop 2>/dev/null
+    else
+        killall xray 2>/dev/null
+    fi
+    sleep 1
+
+    # Бэкап старого бинарника
+    if [ -f "$XRAY_BIN" ]; then
+        cp -f "$XRAY_BIN" "${XRAY_BIN}.bak"
+        echo -e "  Бэкап: ${XRAY_BIN}.bak"
+    fi
+
+    # Копируем новый
+    cp -f "$_newbin" "$XRAY_BIN"
+    chmod +x "$XRAY_BIN"
+
+    # Проверка версии
+    local _newver=$("$XRAY_BIN" version 2>/dev/null | head -1)
+    echo -e "Установлена версия: ${GREEN}$_newver${NC}"
+
+    # Запускаем xray
+    echo "Запускаем xray..."
+    if [ -f "$XRAY_INIT" ]; then
+        "$XRAY_INIT" start 2>/dev/null
+    else
+        "$XRAY_BIN" run -config "$VLESS_CONFIG_FILE" &
+    fi
+    sleep 2
+
+    # Проверка
+    if pidof xray >/dev/null 2>&1; then
+        echo -e "${GREEN}Xray запущен${NC}"
+    else
+        echo -e "${RED}Xray не запустился!${NC}"
+        echo -e "${YELLOW}Восстанавливаем предыдущий бинарник...${NC}"
+        if [ -f "${XRAY_BIN}.bak" ]; then
+            cp -f "${XRAY_BIN}.bak" "$XRAY_BIN"
+            chmod +x "$XRAY_BIN"
+            [ -f "$XRAY_INIT" ] && "$XRAY_INIT" start 2>/dev/null
+            echo -e "${YELLOW}Восстановлено из бэкапа${NC}"
+        fi
+    fi
+
+    # Очистка
+    rm -rf "$_tmpdir" "$_tmp"
+
+    # Если xray запущен и VLESS активный — применяем правила
+    if pidof xray >/dev/null 2>&1 && [ -f /opt/etc/kvas.conf ]; then
+        echo "Обновляем правила iptables..."
+        cmd_kvas_init "no_reset" >/dev/null 2>&1
+    fi
+
+    echo -e "${GREEN}Готово!${NC}"
+}
+
 #system_packages_action remove proxy opkg-kmod-netfilter opkg-kmod-netfilter-addons
 # system_packages_action install proxy opkg-kmod-netfilter opkg-kmod-netfilter-addons
 # cmd_install_vless_proxy
 # ifs=$(ip a | grep global | grep t2s_ | sed 's/.*\(t2s_.*\)/\1/g')
-# curl -v -i ${ifs} ifconfig.me && echo
+# curl -v -i ${ifs} myip.addr.tools && echo

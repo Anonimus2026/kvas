@@ -65,6 +65,24 @@ kvas hysteria start          - запуск службы
 kvas hysteria stop           - остановка службы
 kvas hysteria restart        - перезапуск службы
 
+== AMNEZIAWG ==
+
+kvas awg                     - статус AmneziaWG
+kvas awg new                 - настройка (скачает бинарник если не установлен, запрос ссылки vpn://)
+kvas awg install             - скачивание/обновление бинарника wireproxy-awg
+kvas awg test                - тест проксирования через SOCKS5
+kvas awg start               - запуск службы
+kvas awg stop                - остановка службы
+kvas awg restart             - перезапуск службы
+kvas awg uninstall           - полное удаление
+
+== XRAY ==
+
+kvas xray                    - статус бинарника xray
+kvas xray core               - показать список версий ядра
+kvas xray core <версия>      - установить версию (например v25.2.6)
+kvas xray core <номер>       - установить по номеру из списка
+
 == FAILOVER (автопереключение) ==
 
 kvas failover                - статус автопереключения
@@ -73,11 +91,14 @@ kvas failover off            - выключить
 kvas failover start          - запустить демон
 kvas failover stop           - остановить демон
 kvas failover status         - статус и логи
-kvas failover primary <proto>- основной протокол (vless|hysteria)
+kvas failover primary <name> - основной канал (vless|hysteria|<интерфейс>)
+kvas failover secondary <name> - резервный канал (vless|hysteria|<интерфейс>)
+kvas failover set primary <name>    - установить основной
+kvas failover set secondary <name>  - установить резервный
 kvas failover set interval <N>    - интервал проверки (сек, по умолч. 15)
 kvas failover set threshold <N>   - порог ошибок (по умолч. 2)
 kvas failover log [N]        - последние N записей лога
-kvas failover test           - тест обоих каналов
+kvas failover test           - тест каналов
 
 == DNS ==
 
@@ -99,6 +120,7 @@ kvas adblock on|off          - включить/выключить блокир�
 kvas adblock edit            - редактировать источники блокировки
 kvas adguard on              - AdGuard Home как DNS сервер
 kvas adguard off             - отключить AdGuard Home
+kvas adguard uninstall       - полное удаление AdGuard Home
 kvas adguard test            - тест ipset для AdGuard
 kvas adguard update          - обновить AdGuard
 
@@ -128,8 +150,6 @@ kvas route refresh           - применить изменения
 kvas log [N]                 - последние события пакета
 kvas log info [N]            - информационные сообщения
 kvas log error [N]           - ошибки пакета
-kvas log error detail        - полные ошибки из лог-файла
-kvas log error clear         - очистить лог ошибок
 kvas syslog [N]              - события системы
 kvas syslog info|error [N]   - сообщения/ошибки системы
 kvas ipset                   - IP для попадания в тоннель
@@ -167,6 +187,10 @@ kvas add ya.ru test.ru       - добавить несколько домено�
 kvas add ya.ru              - добавить ya.ru в список
 kvas vpn set vless          - переключиться на VLESS
 kvas hysteria new           - настроить Hysteria 2
+kvas xray core              - список версий ядра Xray
+kvas xray core v25.2.6      - установить конкретную версию
+kvas monitor web            - запустить веб-инфейс (http://keenetic:8085)
+kvas monitor web stop       - остановить веб-интерфейс
 kvas failover on            - включить автопереключение
 kvas route add full 1.2.3.4 - всё от 1.2.3.4 в тоннель
 kvas route exclude 5.6.7.8  - исключить 5.6.7.8

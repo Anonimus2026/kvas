@@ -60,7 +60,7 @@ cat <<EOF > "${TMP_ADS_FILE}"
 0.0.0.0 ads.vk.com
 EOF
 # Добавляем домены из пользовательского списка блокировки
-[ -f /opt/etc/adblock/block.list ] && sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list >> "${TMP_ADS_FILE}"
+[ -f /opt/etc/adblock/block.list ] && { mkdir -p /opt/etc/adblock/parental.d; sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list > /opt/etc/adblock/parental.d/parental.list; }
 }
 
 

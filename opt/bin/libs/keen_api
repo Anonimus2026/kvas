@@ -36,9 +36,9 @@ post_api_query(){
 	local _result=1
 
 	if [ -z "${_data}" ]; then 
-		curl -s "localhost:79/rci/${_query}" && _result=0 || _result=1
+		curl -s --max-time 5 "localhost:79/rci/${_query}" && _result=0 || _result=1
 	else
-		curl -s -d "${_data}" "localhost:79/rci/${_query}" && _result=0 || _result=1
+		curl -s --max-time 5 -d "${_data}" "localhost:79/rci/${_query}" && _result=0 || _result=1
 	fi
 	return ${_result}
 # set +xeu

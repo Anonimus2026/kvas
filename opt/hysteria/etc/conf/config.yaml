@@ -1,0 +1,7 @@
+socks5:
+  listen: @PROXY_LOCAL_IP:@PROXY_LOCAL_PORT_SOCKS
+http:
+  listen: @PROXY_LOCAL_IP:@PROXY_LOCAL_PORT_HTTP
+bandwidth:
+  up: 50 mbps
+  down: 100 mbps

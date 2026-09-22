@@ -2,6 +2,9 @@
 # Management API for KVAS Web UI v2
 # Actions: auth, hosts, vpn, failover, upgrade, backup, restore, update, kvas_list
 
+PATH=/opt/sbin:/opt/bin:/opt/usr/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 PASS_FILE=/opt/kvas_web_pass
 TOKEN_DIR=/tmp/kvas_web_tokens
 KVAS_BIN=/opt/apps/kvas/bin/kvas
@@ -12,9 +15,11 @@ KVAS_CONF_FILE=/opt/etc/kvas.conf
 PARENTAL_LIST=/opt/etc/adblock/block.list
 PARENTAL_PAGE=/opt/apps/kvas/bin/monitor/www/blocked.html
 
-json_str() { printf '%s' "$1" | jq -Rs '.' 2>/dev/null || printf '"%s"' "$1" | sed 's/"/\\"/g'; }
-json_error() { printf '{"error":%s}\n' "$(json_str "$1")"; exit 0; }
-json_ok()    { printf '{"ok":true,"msg":%s}\n' "$(json_str "$1")"; exit 0; }
+json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+json_error() { printf '{"error":"%s"}\n' "$(json_str "$1")"; exit 0; }
+json_ok()    { printf '{"ok":true,"msg":"%s"}\n' "$(json_str "$1")"; exit 0; }
+
+urldecode() { echo "$1" | sed 's/+/ /g; s/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g' | xargs -0 printf; }
 
 # Brute-force protection (global)
 FAIL_COUNT=/tmp/kvas_fail_count
@@ -73,14 +78,20 @@ mk_token() {
 
 # Detect active VPN — checks which is configured and running
 detect_vpn_mode() {
-	# Check which interface is configured as active VPN
+	# Check INFACE_CLI first (Proxy21/Proxy41) — more reliable than INFACE_ENT (t2s21/t2s41)
+	local inface_cli=$(grep "^INFACE_CLI=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
 	local inface_ent=$(grep "^INFACE_ENT=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
-	if [ -n "$inface_ent" ]; then
-		# Check if it's a vless proxy interface
-		case "$inface_ent" in
+	if [ -n "$inface_cli" ]; then
+		case "$inface_cli" in
 			*Proxy21*|*vless*) echo "vless"; return ;;
 			*Proxy41*|*hysteria*) echo "hysteria"; return ;;
 		esac
+	fi
+	if [ -n "$inface_ent" ]; then
+		# Other interface — return description from inface_equals
+		local desc=$(grep "|${inface_ent}|" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f3 | sed 's/^"//; s/"$//')
+		[ -n "$desc" ] && echo "$desc" || echo "$inface_ent"
+		return
 	fi
 	# Fallback: check which process is running
 	if [ -f /var/run/xray.pid ] && kill -0 $(cat /var/run/xray.pid) 2>/dev/null; then
@@ -164,7 +175,12 @@ check_updates() {
 }
 
 get_tag_domain_list_from_file() {
-	awk -v section="$2" '/\['"$2"'\]/{flag=1; next} /\[.*\]/{flag=0} flag' "$1"
+	# BusyBox-совместимый: awk с index() вместо regex ~
+	awk -v sec="$2" '{
+		if (index($0, "[" sec "]")) { flag=1; next }
+		if (index($0, "[") && index($0, "]")) { flag=0 }
+		if (flag) print
+	}' "$1" 2>/dev/null
 }
 
 
@@ -187,7 +203,7 @@ main() {
 			fi
 			;;
 		set_pass)
-			pass=$(echo "$QUERY_STRING" | sed 's/.*pass=//; s/&.*//' 2>/dev/null)
+			pass=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*pass=//; s/&.*//' 2>/dev/null)")
 			[ "$pass" = "$QUERY_STRING" ] && pass=""
 			[ -z "$pass" ] && json_error "pass required"
 			[ ${#pass} -lt 4 ] && json_error "min 4 symbols"
@@ -195,7 +211,7 @@ main() {
 			json_ok "password set"
 			;;
 		auth)
-			pass=$(echo "$QUERY_STRING" | sed 's/.*pass=//; s/&.*//' 2>/dev/null)
+			pass=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*pass=//; s/&.*//' 2>/dev/null)")
 			[ "$pass" = "$QUERY_STRING" ] && pass=""
 			[ -z "$pass" ] && json_error "pass required"
 			hash=$(echo -n "$pass" | md5sum | awk '{print $1}')
@@ -234,27 +250,22 @@ main() {
 					hysteria_svc="stopped"
 				fi
 			fi
-			printf '{"ok":true,"pkg":%s,"ver":%s,"mode":%s,"failover":%s,"vless":%s,"hysteria":%s,"hosts":%s,"xray_service":%s,"hysteria_service":%s}\n' \
+			# Xray version
+			xray_ver=""
+			[ -x /opt/sbin/xray ] && xray_ver=$(/opt/sbin/xray version 2>/dev/null | head -1 | sed 's/Xray //' | sed 's/ .*//')
+			printf '{"ok":true,"pkg":"%s","ver":"%s","mode":"%s","failover":"%s","vless":"%s","hysteria":"%s","hosts":"%s","xray_service":"%s","hysteria_service":"%s","xray_version":"%s"}\n' \
 				"$(json_str "$kvaspkg_name")" "$(json_str "$kvaspkg_ver")" "$(json_str "$vpn_mode")" "$(json_str "$failover")" \
 				"$vless_running" "$hysteria_running" "$host_count" \
-				"$(json_str "$xray_svc")" "$(json_str "$hysteria_svc")"
+				"$(json_str "$xray_svc")" "$(json_str "$hysteria_svc")" "$(json_str "$xray_ver")"
 			;;
 		hosts)
 			check_token "$token"
 			[ ! -f "$KVAS_LIST" ] && echo '{"ok":true,"hosts":[]}' && return
-			printf '{"ok":true,"hosts":['
-			first=1
-			while IFS= read -r line; do
-				[ -z "$line" ] && continue
-				[ "$first" -eq 0 ] && printf ','
-				first=0
-				printf '%s' "$(json_str "$line")"
-			done < "$KVAS_LIST"
-			echo ']}'
+			sed 's/\\/\\\\/g; s/"/\\"/g' "$KVAS_LIST" | awk 'BEGIN{printf "{\"ok\":true,\"hosts\":["; f=1} {gsub(/\r/,""); if($0=="")next; if(!f)printf ","; f=0; printf "\"%s\"",$0} END{printf "]}"}'
 			;;
 		host_add)
 			check_token "$token"
-			domain=$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)
+			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
 			out=$($KVAS_BIN add "$domain" 2>&1)
@@ -264,7 +275,7 @@ main() {
 			;;
 		host_del)
 			check_token "$token"
-			domain=$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)
+			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
 			out=$($KVAS_BIN del "$domain" 2>&1)
@@ -304,12 +315,12 @@ main() {
 				import_out=$(grep -v ">>>EXIT:" /tmp/kvas_import_out.txt 2>/dev/null)
 				exit_code=$(grep ">>>EXIT:" /tmp/kvas_import_out.txt 2>/dev/null | sed 's/>>>EXIT://')
 				rm -f /tmp/kvas_import_out.txt /tmp/kvas_import_data.txt /tmp/kvas_import_pid.txt
-				[ "$exit_code" != "0" ] && printf '{"ok":false,"error":"import failed","output":%s}\n' "$(json_str "$import_out")" && return
-				printf '{"ok":true,"done":true,"output":%s}\n' "$(json_str "$import_out")"
+				[ "$exit_code" != "0" ] && printf '{"ok":false,"error":"import failed","output":"%s"}\n' "$(json_str "$import_out")" && return
+				printf '{"ok":true,"done":true,"output":"%s"}\n' "$(json_str "$import_out")"
 			else
 				lines=$(wc -l < /tmp/kvas_import_out.txt 2>/dev/null || echo 0)
 				last_line=$(tail -1 /tmp/kvas_import_out.txt 2>/dev/null || echo "")
-				printf '{"ok":true,"done":false,"lines":%s,"last":%s}\n' "$lines" "$(json_str "$last_line")"
+				printf '{"ok":true,"done":false,"lines":"%s","last":"%s"}\n' "$lines" "$(json_str "$last_line")"
 			fi
 			;;
 		host_clear)
@@ -323,52 +334,115 @@ main() {
 			vpn_mode=$(detect_vpn_mode)
 			vless_running=$(check_vpn_running "vless")
 			hysteria_running=$(check_vpn_running "hysteria")
-			printf '{"ok":true,"mode":%s,"vless":%s,"hysteria":%s}\n' \
+			printf '{"ok":true,"mode":"%s","vless":"%s","hysteria":"%s"}\n' \
 				"$(json_str "$vpn_mode")" "$vless_running" "$hysteria_running"
 			;;
 		tunnel_check)
 			check_token "$token"
 			vless_ok="false"
 			hysteria_ok="false"
+			other_ok="false"
+			other_desc=""
 			command -v ss >/dev/null 2>&1 && {
 				ss -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="true"
 				ss -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="true"
 			}
 			[ "$vless_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="true"
 			[ "$hysteria_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="true"
-			printf '{"ok":true,"vless":%s,"hysteria":%s}\n' "$vless_ok" "$hysteria_ok"
+			# Check other VPN interface (OpenConnect, WG, etc.)
+			inface_cli=$(grep "^INFACE_CLI=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
+			inface_ent=$(grep "^INFACE_ENT=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
+			case "$inface_cli" in
+				""|*Proxy21*|*vless*|*Proxy41*|*hysteria*) ;;
+				*)
+					other_desc=$(grep "|${inface_ent}|" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f3 | sed 's/^"//; s/"$//')
+					[ -z "$other_desc" ] && other_desc="$inface_ent"
+					/opt/sbin/ip link show "$inface_ent" 2>/dev/null | grep -q '<.*UP' && other_ok="true"
+					;;
+			esac
+			_other_json="false"
+			[ "$other_ok" = "true" ] && _other_json="true"
+			printf '{"ok":true,"vless":%s,"hysteria":%s,"other":%s,"other_desc":"%s"}\n' "$vless_ok" "$hysteria_ok" "$_other_json" "$other_desc"
+			;;
+		vpn_interfaces)
+			check_token "$token"
+			current=$(grep "^INFACE_ENT=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
+			printf '{"ok":true,"current":"%s","interfaces":[' "$current"
+			_first=1
+			_seen=""
+			while IFS='|' read -r cli ent desc rest; do
+				[ -n "$ent" ] && [ -n "$desc" ] || continue
+				# Skip duplicates (same ent already seen)
+				case "$_seen" in
+					*"|$ent|"*) continue ;;
+				esac
+				_seen="${_seen}|${ent}|"
+				# Skip entries where interface doesn't exist (stale)
+				# SOCKS interfaces (t2s*, ezcfg*) might not exist if proxy is off — keep them
+				case "$ent" in
+					t2s*|ezcfg*) ;;
+					*)
+						ip link show "$ent" 2>/dev/null | grep -q '<' || continue
+						;;
+				esac
+				[ $_first -eq 1 ] || printf ','
+				_active=false; [ "$ent" = "$current" ] && _active=true
+				_esc=$(printf '%s' "$cli" | sed 's/\\/\\\\/g; s/"/\\"/g')
+				_ese=$(printf '%s' "$ent" | sed 's/\\/\\\\/g; s/"/\\"/g')
+				_esd=$(printf '%s' "$desc" | sed 's/\\/\\\\/g; s/^"//; s/"$//')
+				printf '{"cli":"%s","ent":"%s","desc":"%s","active":%s}' \
+					"$_esc" "$_ese" "$_esd" "$_active"
+				_first=0
+			done < /opt/etc/inface_equals 2>/dev/null
+			printf ']}'
 			;;
 		vpn_set)
 			check_token "$token"
-			proto=$(echo "$QUERY_STRING" | sed 's/.*proto=//; s/&.*//' 2>/dev/null)
-			[ "$proto" = "$QUERY_STRING" ] && proto=""
-			case "$proto" in
-				vless|hysteria) ;;
-				*) json_error "proto must be vless or hysteria" ;;
-			esac
-			out=$($KVAS_BIN vpn set "$proto" 2>&1)
+			iface=$(echo "$QUERY_STRING" | sed 's/.*iface=//; s/&.*//')
+			[ "$iface" = "$QUERY_STRING" ] && iface=""
+			if [ -n "$iface" ]; then
+				out=$($KVAS_BIN vpn set "$iface" 2>&1)
+			else
+				proto=$(echo "$QUERY_STRING" | sed 's/.*proto=//; s/&.*//')
+				[ "$proto" = "$QUERY_STRING" ] && proto=""
+				case "$proto" in
+					vless|hysteria) ;;
+					*) json_error "proto must be vless or hysteria" ;;
+				esac
+				out=$($KVAS_BIN vpn set "$proto" 2>&1)
+			fi
 			rc=$?
 			[ $rc -ne 0 ] && json_error "switch failed: $out"
-			json_ok "switched to $proto"
+			json_ok "switched"
 			;;
 		failover_status)
 			check_token "$token"
 			failover_mode=$(get_failover_mode)
 			[ -z "$failover_mode" ] && failover_mode="manual"
-			primary="vless"
+			primary=""
+			secondary=""
 			interval=15
 			threshold=2
 			if [ -f "$FAILOVER_CONF" ]; then
 				primary=$(grep "^PRIMARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
+				secondary=$(grep "^SECONDARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
+				tertiary=$(grep "^TERTIARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
 				interval=$(grep "^CHECK_INTERVAL=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
 				threshold=$(grep "^FAIL_THRESHOLD=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
 			fi
-			[ -z "$primary" ] && primary="vless"
+			[ -z "$primary" ] && primary="-"
+			[ -z "$secondary" ] && secondary="-"
+			[ -z "$tertiary" ] && tertiary=""
 			[ -z "$interval" ] && interval=15
 			[ -z "$threshold" ] && threshold=2
 			daemon_running=$(check_failover_daemon)
-			printf '{"ok":true,"enabled":%s,"primary":%s,"interval":%s,"threshold":%s,"daemon":%s}\n' \
-				"$(json_str "$failover_mode")" "$(json_str "$primary")" "$interval" "$threshold" "$daemon_running"
+			# Получаем доступные каналы из failover lib
+			local _avail=""
+			if [ -f /opt/apps/kvas/bin/libs/failover ]; then
+				_avail=$(. /opt/apps/kvas/bin/libs/failover 2>/dev/null; get_available_channels 2>/dev/null)
+			fi
+			printf '{"ok":true,"enabled":"%s","primary":"%s","secondary":"%s","tertiary":"%s","interval":"%s","threshold":"%s","daemon":"%s","available":"%s"}\n' \
+				"$(json_str "$failover_mode")" "$(json_str "$primary")" "$(json_str "$secondary")" "$(json_str "$tertiary")" "$interval" "$threshold" "$daemon_running" "$(json_str "$_avail")"
 			;;
 		failover)
 			check_token "$token"
@@ -383,12 +457,185 @@ main() {
 					;;
 				status)
 					out=$($KVAS_BIN failover status 2>&1)
-					esc=$(printf '\033')
-					out=$(echo "$out" | tr -d "$esc" | sed 's/\[[0-9;]*[a-zA-Z]//g')
-					printf '{"ok":true,"data":%s}\n' "$(json_str "$out")"
+					out=$(echo "$out" | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+					printf '{"ok":true,"data":"%s"}\n' "$out"
 					;;
-				*) json_error "cmd must be on/off/status" ;;
+				set_primary)
+					_val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
+					_val=$(echo "$_val" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+					out=$($KVAS_BIN failover set primary "$_val" 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
+					json_ok "$out"
+					;;
+				set_secondary)
+					_val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
+					_val=$(echo "$_val" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+					out=$($KVAS_BIN failover set secondary "$_val" 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
+					json_ok "$out"
+					;;
+				set_tertiary)
+					_val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
+					_val=$(echo "$_val" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+					out=$($KVAS_BIN failover set tertiary "$_val" 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
+					json_ok "$out"
+					;;
+				*) json_error "cmd must be on/off/status/set_primary/set_secondary/set_tertiary" ;;
 			esac
+			;;
+		xray_status)
+			check_token "$token"
+			_ver=""
+			_running="false"
+			if [ -x /opt/sbin/xray ]; then
+				_ver=$(/opt/sbin/xray version 2>/dev/null | head -1 | sed 's/Xray //' | sed 's/ .*//')
+				pidof xray >/dev/null 2>&1 && _running="true"
+			fi
+			printf '{"ok":true,"version":"%s","running":"%s"}\n' "$_ver" "$_running"
+			;;
+		xray_versions)
+			check_token "$token"
+			printf '{"ok":true,"versions":['
+			_first=1
+			curl -s --max-time 15 "https://api.github.com/repos/XTLS/Xray-core/releases" 2>/dev/null | \
+				jq -r ".[0:15] | .[] | .tag_name" 2>/dev/null | while IFS= read -r _v; do
+					[ -n "$_v" ] || continue
+					[ $_first -eq 1 ] || printf ','
+					printf '"%s"' "$_v"
+					_first=0
+				done
+			printf ']}'
+			;;
+		xray_install)
+			check_token "$token"
+			_ver=$(echo "$QUERY_STRING" | sed 's/.*version=//; s/&token=.*//')
+			_ver=$(echo "$_ver" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_ver" ] && json_error "version required"
+			out=$($KVAS_BIN xray core "$_ver" 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"output":"%s"}\n' "$out"
+			;;
+		awg_new)
+			check_token "$token"
+			_link=$(echo "$QUERY_STRING" | sed 's/.*link=//')
+			_link=$(echo "$_link" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_link" ] && json_error "link required"
+			_tmpf=/tmp/kvas_awg_link_$$
+			printf '%s' "$_link" > "$_tmpf"
+			out=$($KVAS_BIN awg new "$_tmpf" 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			rm -f "$_tmpf"
+			printf '{"ok":true,"output":"%s"}\n' "$out"
+			;;
+		awg_new_b64)
+			# URL-safe base64 контент файла (через GET)
+			check_token "$token"
+			# Parameter expansion — надёжнее echo|sed для длинных строк
+			_rest="${QUERY_STRING#*data=}"
+			_data="${_rest%%&*}"
+			[ -z "$_data" ] && json_error "data required"
+			# Конвертируем URL-safe base64 → стандартный
+			_data=$(printf '%s' "$_data" | tr '_-' '/+')
+			# Добавляем padding (=)
+			_mod=$((${#_data} % 4))
+			[ "$_mod" -eq 2 ] && _data="${_data}=="
+			[ "$_mod" -eq 3 ] && _data="${_data}="
+			# Декодируем base64 в файл
+			_tmpf=/tmp/kvas_awg_b64_$$
+			_b64f=/tmp/kvas_awg_b64raw_$$
+			printf '%s' "$_data" > "$_b64f"
+			base64 -d "$_b64f" > "$_tmpf" 2>/dev/null
+			rm -f "$_b64f"
+			[ -s "$_tmpf" ] || json_error "base64 decode failed"
+			out=$($KVAS_BIN awg new "$_tmpf" 2>&1 | head -120 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			rm -f "$_tmpf"
+			[ -z "$out" ] && out="AmneziaWG настроен"
+			printf '{"ok":true,"output":"%s"}\n' "$out"
+			;;
+		awg_status)
+			check_token "$token"
+			_running="false"
+			_installed="false"
+			[ -x /opt/apps/kvas/awg/bin/wireproxy ] && _installed="true"
+			[ -f /var/run/wireproxy.pid ] && kill -0 "$(cat /var/run/wireproxy.pid 2>/dev/null)" 2>/dev/null && _running="true"
+			printf '{"ok":true,"installed":"%s","running":"%s"}\n' "$_installed" "$_running"
+			;;
+		awg_config)
+			check_token "$token"
+			if [ -f /opt/etc/awg/awg.conf ]; then
+				_conf=$(cat /opt/etc/awg/awg.conf 2>/dev/null | tr -d '\033\r' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/ /g; s/$/\\n/' | tr -d '\n')
+				printf '{"ok":true,"config":"%s"}\n' "$_conf"
+			else
+				printf '{"ok":true,"config":""}\n'
+			fi
+			;;
+		adguard_status)
+			check_token "$token"
+			_enabled=$(grep "^ADGUARD_ENABLE=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
+			if [ "$_enabled" = "true" ] && [ -f /opt/etc/init.d/S99adguardhome ]; then
+				printf '{"ok":true,"adguard":"on"}\n'
+			else
+				printf '{"ok":true,"adguard":"off"}\n'
+			fi
+			;;
+		adguard_on)
+			check_token "$token"
+			out=$(echo "n" | $KVAS_BIN adguard on 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g')
+			printf '{"ok":true,"msg":"%s"}\n' "$out"
+			;;
+		adguard_off)
+			check_token "$token"
+			out=$($KVAS_BIN adguard off 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g')
+			printf '{"ok":true,"msg":"%s"}\n' "$out"
+			;;
+		vless_new)
+			check_token "$token"
+			# link= идёт последним в QUERY_STRING (token перед ним)
+			_link=$(echo "$QUERY_STRING" | sed 's/.*link=//')
+			# URL-decode
+			_link=$(echo "$_link" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_link" ] && json_error "link required"
+			out=$(printf '%s\nq\n' "$_link" | $KVAS_BIN vless new 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"output":"%s"}\n' "$out"
+			;;
+		hysteria_new)
+			check_token "$token"
+			_link=$(echo "$QUERY_STRING" | sed 's/.*link=//')
+			_link=$(echo "$_link" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_link" ] && json_error "link required"
+			out=$(printf '%s\n' "$_link" | $KVAS_BIN hysteria new 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"output":"%s"}\n' "$out"
+			;;
+		tunnel_start)
+			check_token "$token"
+			_iface=$(echo "$QUERY_STRING" | sed 's/.*iface=//; s/&.*//')
+			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_iface" ] && json_error "iface required"
+			case "$_iface" in
+				Proxy21|vless|t2s21)   out=$($KVAS_BIN failover start >/dev/null 2>&1; service_action S97xray start 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(service_action S99hysteria start 2>&1) ;;
+				Proxy42|awg)           out=$($KVAS_BIN awg start 2>&1) ;;
+				*)
+					# Keenetic VPN — через RCI API
+					curl -s -d '{"up":"true"}' "localhost:79/rci/interface/${_iface}" &>/dev/null
+					out="Interface ${_iface} up"
+					;;
+			esac
+			out=$(echo "$out" | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\\/\\\\/g; s/"/\\"/g')
+			json_ok "$out"
+			;;
+		tunnel_stop)
+			check_token "$token"
+			_iface=$(echo "$QUERY_STRING" | sed 's/.*iface=//; s/&.*//')
+			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_iface" ] && json_error "iface required"
+			case "$_iface" in
+				Proxy21|vless|t2s21)   out=$(service_action S97xray stop 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(service_action S99hysteria stop 2>&1) ;;
+				Proxy42|awg)           out=$($KVAS_BIN awg stop 2>&1) ;;
+				*)
+					curl -s -d '{"down":"true"}' "localhost:79/rci/interface/${_iface}" &>/dev/null
+					out="Interface ${_iface} down"
+					;;
+			esac
+			out=$(echo "$out" | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\\/\\\\/g; s/"/\\"/g')
+			json_ok "$out"
 			;;
 		kvas_list)
 			check_token "$token"
@@ -428,19 +675,34 @@ main() {
 			;;
 		upgrade)
 			check_token "$token"
-			json_error "use CLI: kvas upgrade"
+			out=$(printf '1\n' | $KVAS_BIN upgrade 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			$KVAS_BIN monitor web stop >/dev/null 2>&1
+			sleep 1
+			$KVAS_BIN monitor web start >/dev/null 2>&1 &
+			sleep 2
+			printf '{"ok":true,"output":"%s"}\n' "$out"
+			;;
+		rollback)
+			check_token "$token"
+			# rollback: 1=репозиторий, 2=предыдущая версия из списка
+			out=$(printf '1\n2\n' | $KVAS_BIN upgrade rollback 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			$KVAS_BIN monitor web stop >/dev/null 2>&1
+			sleep 1
+			$KVAS_BIN monitor web start >/dev/null 2>&1 &
+			sleep 2
+			printf '{"ok":true,"output":"%s"}\n' "$out"
 			;;
 		check_update)
 			check_token "$token"
 			update_info=$(check_updates 2>/dev/null)
-			printf '{"ok":true,"update":%s}\n' "$(json_str "$update_info")"
+			printf '{"ok":true,"update":"%s"}\n' "$(json_str "$update_info")"
 			;;
 		backup)
 			check_token "$token"
-			out=$($KVAS_BIN backup 2>&1)
+			out=$($KVAS_BIN backup 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\\/\\\\/g; s/"/\\"/g')
 			rc=$?
-			[ $rc -ne 0 ] && json_error "backup failed: $out"
-			json_ok "backup done: $out"
+			[ $rc -ne 0 ] && json_error "backup failed"
+			json_ok "$out"
 			;;
 		restore)
 			check_token "$token"
@@ -451,49 +713,76 @@ main() {
 			[ $rc -ne 0 ] && json_error "restore failed: $out"
 			json_ok "restore done"
 			;;
+		backup_download)
+			check_token "$token"
+			$KVAS_BIN backup >/dev/null 2>&1
+			_dir=$(ls -dt /opt/kvas_backup_* 2>/dev/null | head -1)
+			[ -z "$_dir" ] && json_error "backup creation failed"
+			_name=$(basename "$_dir")
+			tar -czf /opt/apps/kvas/bin/monitor/www/kvas_backup.tar.gz -C /opt "$_name" 2>/dev/null
+			_files=$(tar -tzf /opt/apps/kvas/bin/monitor/www/kvas_backup.tar.gz 2>/dev/null | head -30)
+			_files=$(echo "$_files" | tr -d '\033\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"url":"/kvas_backup.tar.gz","name":"%s","files":"%s"}\n' "$_name" "$_files"
+			;;
+		backup_cleanup)
+			check_token "$token"
+			rm -f /opt/apps/kvas/bin/monitor/www/kvas_backup.tar.gz 2>/dev/null
+			json_ok "cleaned"
+			;;
+		restore_upload)
+			check_token "$token"
+			_post_file="${KVAS_POST_BODY:-}"
+			[ -z "$_post_file" ] && json_error "no POST body"
+			[ -s "$_post_file" ] || json_error "empty body"
+			tar -xzf "$_post_file" -C /opt 2>/dev/null
+			rm -f "$_post_file"
+			_dir=$(ls -dt /opt/kvas_backup_* 2>/dev/null | head -1)
+			[ -z "$_dir" ] && json_error "extract failed"
+			out=$($KVAS_BIN restore "$_dir" 2>&1 | head -60 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			[ -z "$out" ] && out="Restored"
+			printf '{"ok":true,"output":"%s"}\n' "$out"
+			;;
 		parental_list)
 			check_token "$token"
 			if [ ! -f "$PARENTAL_LIST" ]; then
 				echo '{"ok":true,"sites":[]}'
 				return
 			fi
-			printf '{"ok":true,"sites":['
-			first=1
-			while IFS= read -r line; do
-				[ -z "$line" ] && continue
-				[ "${line:0:1}" = "#" ] && continue
-				[ "$first" -eq 0 ] && printf ','
-				first=0
-				printf '%s' "$(json_str "$line")"
-			done < "$PARENTAL_LIST"
-			echo ']}'
+			awk 'BEGIN{printf "{\"ok\":true,\"sites\":["; f=1}
+			{ gsub(/\r/,""); if ($0=="" || substr($0,1,1)=="#") next; if (!f) printf ","; f=0; gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); printf "\"%s\"", $0 }
+			END{printf "]"}' "$PARENTAL_LIST"
 			;;
-		parental_add)
+parental_add)
 			check_token "$token"
-			domain=$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)
+			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
-			# Автоматически включаем adblock, если выключен
+			# 1. Добавляем в block.list (для отображения в web UI)
+			mkdir -p /opt/etc/adblock
+			[ -f /opt/etc/adblock/block.list ] || touch /opt/etc/adblock/block.list
+			grep -qxF "$domain" /opt/etc/adblock/block.list || echo "$domain" >> /opt/etc/adblock/block.list
+			# 2. Добавляем 0.0.0.0 domain в ads.kvas.list (для блокировки через dnsmasq)
+			[ -f /opt/etc/adblock/ads.kvas.list ] || touch /opt/etc/adblock/ads.kvas.list
+			grep -qF "0.0.0.0 $domain" /opt/etc/adblock/ads.kvas.list || echo "0.0.0.0 $domain" >> /opt/etc/adblock/ads.kvas.list
+			# 3. Гарантируем что addn-hosts есть в dnsmasq.conf
 			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
 				echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
-				[ -f /opt/etc/adblock/ads.kvas.list ] || sh /opt/apps/kvas/bin/main/adblock >/dev/null 2>&1
-				/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
+				/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+			else
+				kill -HUP "$(pidof dnsmasq)" 2>/dev/null
 			fi
-			out=$($KVAS_BIN adblock add "$domain" 2>&1)
-			rc=$?
-			[ $rc -ne 0 ] && json_error "block failed: $out"
-			json_ok "blocked $domain"
-			;;
-		parental_del)
+			json_ok "добавлен $domain"
+		;;
+parental_del)
 			check_token "$token"
-			domain=$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)
+			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
-			out=$($KVAS_BIN adblock del "$domain" 2>&1)
-			rc=$?
-			[ $rc -ne 0 ] && json_error "unblock failed: $out"
+			[ -f /opt/etc/adblock/block.list ] && sed -i "/^${domain}$/d" /opt/etc/adblock/block.list 2>/dev/null
+			pf=/opt/etc/adblock/parental.d/parental.list
+			[ -f "$pf" ] && sed -i "/0.0.0.0 ${domain}$/d" "$pf" 2>/dev/null
 			json_ok "unblocked $domain"
-			;;
+		;;
 		adblock_status)
 			check_token "$token"
 			if grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
@@ -502,21 +791,26 @@ main() {
 				echo '{"ok":true,"adblock":"off"}'
 			fi
 			;;
-		adblock_on)
+adblock_on)
 			check_token "$token"
+			mkdir -p /opt/etc/adblock/parental.d
 			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
 				echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
 			fi
+			if ! grep -q "hostsdir=/opt/etc/adblock/parental.d" /opt/etc/dnsmasq.conf 2>/dev/null; then
+				echo "hostsdir=/opt/etc/adblock/parental.d" >> /opt/etc/dnsmasq.conf
+			fi
 			[ -f /opt/etc/adblock/ads.kvas.list ] || sh /opt/apps/kvas/bin/main/adblock >/dev/null 2>&1
+			[ -f /opt/etc/adblock/block.list ] && sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list > /opt/etc/adblock/parental.d/parental.list
 			/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
-			echo '{"ok":true,"msg":"Adblock включен"}'
-			;;
-		adblock_off)
+			echo '{"ok":true,"msg":"Adblock включен"}' 
+		;;
+adblock_off)
 			check_token "$token"
-			sed -i '/addn-hosts=\/opt\/etc\/adblock\/ads.kvas.list/d' /opt/etc/dnsmasq.conf 2>/dev/null
+			sed -i '/addn-hosts=\/opt\/etc\/adblock\/ads.kvas.list/d; /hostsdir=\/opt\/etc\/adblock\/parental.d/d' /opt/etc/dnsmasq.conf 2>/dev/null
 			/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
-			echo '{"ok":true,"msg":"Adblock выключен"}'
-			;;
+			echo '{"ok":true,"msg":"Adblock выключен"}' 
+		;;
 		route_status)
 			check_token "$token"
 			route_full=$(grep "^route_full_ip=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
@@ -536,7 +830,7 @@ main() {
 			route_full=$(_resolve_names "$route_full")
 			route_list=$(_resolve_names "$route_list")
 			route_exclude=$(_resolve_names "$route_exclude")
-			printf '{"ok":true,"full":%s,"list":%s,"exclude":%s,"guest_nets":%s}\n' \
+			printf '{"ok":true,"full":"%s","list":"%s","exclude":"%s","guest_nets":"%s"}\n' \
 				"$(json_str "$route_full")" "$(json_str "$route_list")" "$(json_str "$route_exclude")" "$(json_str "$route_guest")"
 			;;
 		route_list)
@@ -637,25 +931,26 @@ main() {
 			fi
 			# Активные IP из conntrack — только частные диапазоны (RFC 1918)
 			_priv_re='src=(10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+|192\.168\.[0-9]+\.[0-9]+)'
-			if command -v conntrack >/dev/null 2>&1; then
-				conntrack -L 2>/dev/null | grep -oE "$_priv_re" | cut -d= -f2 | sort -u | \
-					awk '{print $1 "|conntrack"}' >> "$_tmpdev"
-			elif [ -f /proc/net/nf_conntrack ]; then
+			if [ -f /proc/net/nf_conntrack ]; then
 				grep -oE "$_priv_re" /proc/net/nf_conntrack 2>/dev/null | cut -d= -f2 | sort -u | \
+					awk '{print $1 "|conntrack"}' >> "$_tmpdev"
+			elif command -v conntrack >/dev/null 2>&1; then
+				conntrack -L 2>/dev/null | grep -oE "$_priv_re" | cut -d= -f2 | sort -u | \
 					awk '{print $1 "|conntrack"}' >> "$_tmpdev"
 			fi
 			unset _priv_re
 			# Вывод с дедупликацией (оставляем первую запись — у DHCP приоритет)
-			printf '{"ok":true,"devices":['
-			awk -F'|' '!seen[$1]++{if(f++) printf ","; printf "{\"ip\":\"%s\",\"name\":\"%s\"}", $1, $2}' "$_tmpdev" 2>/dev/null
+			awk -F'|' '!seen[$1]++{print $1 "\t" $2}' "$_tmpdev" 2>/dev/null | \
+				jq -csR 'split("\n") | map(select(length>0) | split("\t") | {"ip":.[0],"name":.[1]}) | {ok:true,devices:.}' 2>/dev/null || printf '{"ok":true,"devices":[]}'
 			rm -f "$_tmpdev"
-			echo ']}'
 			;;
 		route_guest_networks)
 			check_token "$token"
 			_tmp="/tmp/kvas_guest_nets.$$"
 			tunnel_iface=$(grep "^INFACE_ENT=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2)
 			internet_iface=$(/opt/sbin/ip route 2>/dev/null | grep default | awk '{print $5}' | head -1)
+			# Если ip route не нашёл — пробуем через Keenetic API
+			[ -z "$internet_iface" ] && internet_iface=$(curl -s "127.0.0.1:79/rci/show/interface" 2>/dev/null | jq -r '.[] | select(.defaultgw==true) | ."interface-name"' 2>/dev/null | head -1)
 			# Get interface list from ip addr
 			/opt/sbin/ip -o -f inet addr show 2>/dev/null | awk '{
 				iface = $2; sub(/@.*/, "", iface)
@@ -719,7 +1014,7 @@ main() {
 					*)          desc="" ;;
 				esac
 				[ -z "$desc" ] && desc="$iface"
-				printf '%s{"id":"%s","name":%s}' "$sep" "$iface" "$(json_str "$desc")"
+				printf '%s{"id":"%s","name":"%s"}' "$sep" "$iface" "$(json_str "$desc")"
 				sep=","
 			done < "$_tmp"
 			rm -f "$_tmp"
@@ -733,14 +1028,28 @@ main() {
 			if echo "$current" | tr ',' '\n' | grep -Fxq "$net"; then
 				json_ok "already added"
 			else
+				# Добавляем в INFACE_GUEST_ENT
 				[ -n "$current" ] && current="${current},${net}" || current="$net"
 				sed -i "/^INFACE_GUEST_ENT=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				echo "INFACE_GUEST_ENT=${current}" >> "$KVAS_CONF_FILE"
-				if $KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1; then
-					json_ok "added $net"
-				else
-					json_error "route refresh failed, see /tmp/kvas-route-refresh.log"
-				fi
+				# Добавляем listen-address в dnsmasq.conf (или AdGuard)
+				_guest_ip=$(/opt/sbin/ip a 2>/dev/null | grep global | grep -E " ${net}\$" | sed 's/inet \([0-9.]*\).*/\1/')
+				[ -n "$_guest_ip" ] && {
+					if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
+						# AdGuard
+						grep -q "\- ${_guest_ip}" /opt/etc/AdGuardHome/AdGuardHome.yaml || \
+							sed -i '/bind_hosts/,/port/ s/.*\(port.*\)/    - '"${_guest_ip}"'\n  \1/' /opt/etc/AdGuardHome/AdGuardHome.yaml
+						/opt/etc/init.d/S99adguardhome restart &>/dev/null
+					else
+						# dnsmasq
+						grep -q "listen-address=${_guest_ip}" /opt/etc/dnsmasq.conf 2>/dev/null || \
+							sed -i "/listen-address 127.0.0.1/a listen-address=${_guest_ip}" /opt/etc/dnsmasq.conf
+						/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+					fi
+				}
+				# Пересоздаём iptables
+				$KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1
+				json_ok "added $net"
 			fi
 			;;
 		route_guest_del)
@@ -751,79 +1060,101 @@ main() {
 			if ! echo "$current" | tr ',' '\n' | grep -Fxq "$net"; then
 				json_ok "not found"
 			else
+				# Удаляем из INFACE_GUEST_ENT
 				new_list=$(echo "$current" | tr ',' '\n' | grep -v "^${net}$" | tr '\n' ',' | sed 's/,$//')
 				sed -i "/^INFACE_GUEST_ENT=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				[ -n "$new_list" ] && echo "INFACE_GUEST_ENT=${new_list}" >> "$KVAS_CONF_FILE"
-				if $KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1; then
-					json_ok "removed $net"
-				else
-					json_error "route refresh failed, see /tmp/kvas-route-refresh.log"
-				fi
+				# Удаляем listen-address из dnsmasq.conf
+				_guest_ip=$(/opt/sbin/ip a 2>/dev/null | grep global | grep -E " ${net}\$" | sed 's/inet \([0-9.]*\).*/\1/')
+				[ -n "$_guest_ip" ] && {
+					if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
+						sed -i -e "/bind_hosts/,/port/{ /- ${_guest_ip}/d }" /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null
+						/opt/etc/init.d/S99adguardhome restart &>/dev/null
+					else
+						sed -i "/listen-address=${_guest_ip}/d" /opt/etc/dnsmasq.conf 2>/dev/null
+						/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+					fi
+				}
+				# Пересоздаём iptables (без удалённой сети)
+				$KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1
+				json_ok "removed $net"
 			fi
 			;;
 		tags_list)
 			check_token "$token"
 			[ ! -f "$TAGS_FILE" ] && echo '{"ok":true,"tags":[]}' && return
-			printf '{"ok":true,"tags":['
-			tag=""
-			while IFS= read -r line; do
-				line_trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-				if [ -z "$line_trimmed" ] || echo "$line_trimmed" | grep -qE '^[[:space:]]*#'; then continue; fi
-			if echo "$line_trimmed" | grep -qE '^\['; then
-					if [ -n "$tag" ]; then
-						printf ']},'
-					fi
-					tag=$(echo "$line_trimmed" | tr -d '[]')
-					printf '{"name":%s,"domains":[' "$(json_str "$tag")"
-					dfirst=1
-				else
-					in_list="false"
-					[ -f "$KVAS_LIST" ] && grep -qxF "$line_trimmed" "$KVAS_LIST" 2>/dev/null && in_list="true"
-					[ "$dfirst" -eq 0 ] && printf ','
-					dfirst=0
-					printf '{"name":%s,"in_list":%s}' "$(json_str "$line_trimmed")" "$in_list"
-				fi
-			done < "$TAGS_FILE"
-		if [ -n "$tag" ]; then
-			printf ']}'
-		fi
-		printf ']}'
-			;;
-		tags_status)
-			check_token "$token"
-			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
-			[ "$tag" = "$QUERY_STRING" ] && tag=""
-			[ -z "$tag" ] && json_error "tag required"
-			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
-			domains=$(get_tag_domain_list_from_file "$TAGS_FILE" "$tag")
-			printf '{"ok":true,"tag":%s,"domains":[' "$(json_str "$tag")"
-			first=1
-			for d in $domains; do
-				[ "$first" -eq 0 ] && printf ','
-				first=0
-				in_list="false"
-				[ -f "$KVAS_LIST" ] && grep -qxF "$d" "$KVAS_LIST" 2>/dev/null && in_list="true"
-				printf '{"name":%s,"in_list":%s}' "$(json_str "$d")" "$in_list"
-			done
-			echo ']}'
+			awk 'BEGIN{printf "{\"ok\":true,\"tags\":["; ft=1}
+			FNR==NR { gsub(/[[:space:]]/,""); if($0!="") hosts[$0]=1; next }
+			{
+				line=$0; sub(/^[[:space:]]*/,"",line); sub(/[[:space:]]*$/,"",line)
+				if (line=="" || line ~ /^#/) next
+				if (line ~ /^\[/) {
+					if (!ft) printf "]},"
+					ft=0
+					gsub(/\[/,"",line); gsub(/\]/,"",line)
+					printf "{\"name\":\"%s\",\"domains\":[", line
+					df=1
+				} else {
+					if (!df) printf ","
+					df=0
+					il = (line in hosts) ? "true" : "false"
+					printf "{\"name\":\"%s\",\"in_list\":%s}", line, il
+				}
+			}
+			END { if (!ft) printf "]}"; printf "]}" }
+			' "${KVAS_LIST}" "${TAGS_FILE}"
 			;;
 		tags_add)
 			check_token "$token"
 			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
 			[ "$tag" = "$QUERY_STRING" ] && tag=""
 			[ -z "$tag" ] && json_error "tag required"
-			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
+			grep -qF "[$tag]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
 			out=$($KVAS_BIN tags add-protect "$tag" 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "add failed: $out"
-			init_out=$($KVAS_BIN init 2>&1)
+			opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
 			json_ok "added $tag"
+			;;
+		tags_del)
+			check_token "$token"
+			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
+			[ "$tag" = "$QUERY_STRING" ] && tag=""
+			[ -z "$tag" ] && json_error "tag required"
+			grep -qF "[$tag]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
+			out=$($KVAS_BIN tags del-protect "$tag" 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "del failed: $out"
+			opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			ipset flush "${IPSET_TABLE_NAME:-KVAS_LIST}" 2>/dev/null
+			opt/apps/kvas/bin/main/ipset &>/dev/null
+			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+			json_ok "removed $tag"
+			;;
+		tags_status)
+			check_token "$token"
+			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
+			[ "$tag" = "$QUERY_STRING" ] && tag=""
+			[ -z "$tag" ] && json_error "tag required"
+			grep -qF "[$tag]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
+			domains=$(get_tag_domain_list_from_file "$TAGS_FILE" "$tag")
+			printf '{"ok":true,"tag":"%s","domains":[' "$(json_str "$tag")"
+			first=1
+			for d in $domains; do
+				[ "$first" -eq 0 ] && printf ','
+				first=0
+				in_list="false"
+				[ -f "$KVAS_LIST" ] && grep -qxF "$d" "$KVAS_LIST" 2>/dev/null && in_list="true"
+				printf '{"name":"%s","in_list":%s}' "$(json_str "$d")" "$in_list"
+			done
+			echo ']}'
 			;;
 		tags_create)
 			check_token "$token"
 			name=$(echo "$QUERY_STRING" | sed 's/.*name=//; s/&.*//' 2>/dev/null)
 			raw_domains=$(echo "$QUERY_STRING" | sed 's/.*domains=//; s/&.*//' 2>/dev/null)
-			raw_domains=$(printf '%s' "$raw_domains" | sed 's/%0D%0A/ /g; s/%0A/ /g; s/%0D/ /g; s/%20/ /g; s/+/ /g')
+			raw_domains=$(printf '%s' "$raw_domains" | sed 's/%0D%0A/ /g; s/%0A/ /g; s/%0D/ /g; s/%20/ /g; s/%2[fF]/\//g; s/+/ /g')
 			domains=$(echo "$raw_domains" | sed 's/  */ /g; s/^ //; s/ $//')
 			[ "$name" = "$QUERY_STRING" ] && name=""
 			[ -z "$name" ] && json_error "name required"
@@ -831,19 +1162,9 @@ main() {
 			out=$($KVAS_BIN tags create "$name" $domains 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "create failed: $out"
+			opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
 			json_ok "created $name"
-			;;
-		tags_del)
-			check_token "$token"
-			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
-			[ "$tag" = "$QUERY_STRING" ] && tag=""
-			[ -z "$tag" ] && json_error "tag required"
-			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
-			out=$($KVAS_BIN tags del-protect "$tag" 2>&1)
-			rc=$?
-			[ $rc -ne 0 ] && json_error "del failed: $out"
-			init_out=$($KVAS_BIN init 2>&1)
-			json_ok "removed $tag"
 			;;
 		tags_delete)
 			check_token "$token"
@@ -854,7 +1175,6 @@ main() {
 			out=$($KVAS_BIN tags delete "$tag" 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "delete failed: $out"
-			init_out=$($KVAS_BIN init 2>&1)
 			json_ok "удалена закваска $tag"
 			;;
 		tags_edit_save)
@@ -864,19 +1184,18 @@ main() {
 			[ -z "$tag" ] && json_error "tag required"
 			grep -q "\[$tag\]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
 			raw_domains=$(echo "$QUERY_STRING" | sed 's/.*domains=//; s/&.*//' 2>/dev/null)
-			raw_domains=$(printf '%s' "$raw_domains" | sed 's/%0D%0A/ /g; s/%0A/ /g; s/%0D/ /g; s/%20/ /g; s/+/ /g')
+			raw_domains=$(printf '%s' "$raw_domains" | sed 's/%0D%0A/ /g; s/%0A/ /g; s/%0D/ /g; s/%20/ /g; s/%2[fF]/\//g; s/+/ /g')
 			domains=$(echo "$raw_domains" | sed 's/  */ /g; s/^ //; s/ $//')
 			out=$($KVAS_BIN tags edit-save "$tag" $domains 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "edit failed: $out"
-			init_out=$($KVAS_BIN init 2>&1)
 			json_ok "закваска $tag обновлена"
 			;;
 		tags_download)
 			check_token "$token"
 			[ ! -f "$TAGS_FILE" ] && json_error "no tags"
-			printf 'Content-Type: text/plain; charset=utf-8\n'
-			printf 'Content-Disposition: attachment; filename="tags.list"\n\n'
+			printf 'Content-Type: text/plain; charset=utf-8\r\n'
+			printf 'Content-Disposition: attachment; filename="tags.list"\r\n\r\n'
 			cat "$TAGS_FILE"
 			exit 0
 			;;
@@ -907,6 +1226,122 @@ main() {
 				rm -f "$upload_tmp"
 				json_ok "tags merged"
 			fi
+			;;
+		kvas_log)
+			check_token "$token"
+			log_type=$(echo "$QUERY_STRING" | sed 's/.*type=//; s/&.*//')
+			[ "$log_type" = "$QUERY_STRING" ] && log_type="error"
+			case "$log_type" in
+				error)
+					_log=$(tail -n 100 /opt/tmp/kvas_errors.log 2>/dev/null)
+					[ -z "$_log" ] && _log="Лог ошибок пуст"
+					;;
+				info)
+					_log=$(logread 2>/dev/null | grep 'КВАС' | tail -50)
+					[ -z "$_log" ] && _log="Сообщений КВАС в системном логе нет"
+					;;
+				syslog)
+					_log=$(logread 2>/dev/null | tail -100)
+					[ -z "$_log" ] && _log="Системный лог недоступен"
+					;;
+				*) _log="Неизвестный тип лога" ;;
+			esac
+			_log=$(printf '%s' "$_log" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"log":"%s"}\n' "$_log"
+			;;
+		kvas_log_clear)
+			check_token "$token"
+			> /opt/tmp/kvas_errors.log 2>/dev/null
+			json_ok "лог ошибок очищен"
+			;;
+		kvas_test)
+			check_token "$token"
+			_out=$(echo | $KVAS_BIN test upgrade 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			;;
+		kvas_debug)
+			check_token "$token"
+			_out=$($KVAS_BIN debug 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			;;
+		kvas_debug_dns)
+			check_token "$token"
+			_out=$($KVAS_BIN debug dns 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			;;
+		kvas_debug_iptables)
+			check_token "$token"
+			_out=$($KVAS_BIN debug iptables 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			;;
+		tunnel_test_site)
+			check_token "$token"
+			_iface=$(echo "$QUERY_STRING" | sed 's/.*iface=//; s/&.*//')
+			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			_site=$(echo "$QUERY_STRING" | sed 's/.*site=//')
+			_site=$(echo "$_site" | sed 's/+/ /g; s/%2[fF]/\//g; s/%3[aA]/:/g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_iface" ] && json_error "iface required"
+			[ -z "$_site" ] && json_error "site required"
+			# Определяем метод: SOCKS5 для Proxy21/41/42, --interface для остальных
+			local _method=""
+			local _socks_port=""
+			local _curl_opt=""
+			case "$_iface" in
+				Proxy21|t2s21|vless)    _method="socks"; _socks_port="1097"; _curl_opt="-x socks5://127.0.0.1:${_socks_port}" ;;
+				Proxy41|t2s41|hysteria) _method="socks"; _socks_port="10808"; _curl_opt="-x socks5://127.0.0.1:${_socks_port}" ;;
+				Proxy42|awg)           _method="socks"; _socks_port="10818"; _curl_opt="-x socks5://127.0.0.1:${_socks_port}" ;;
+				*)
+					_method="interface"
+					_ent=$(grep "$_iface" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f2)
+					[ -z "$_ent" ] && _ent="$_iface"
+					_curl_opt="--interface $_ent"
+					;;
+			esac
+			# 1. IP туннеля — через IP-сервис
+			local _tunnel_ip=$(curl -s --max-time 10 $_curl_opt "https://2ip.io" 2>/dev/null)
+			[ -z "$_tunnel_ip" ] && _tunnel_ip=$(curl -s --max-time 15 $_curl_opt "https://ifconfig.me" 2>/dev/null)
+			# Проверяем что это IP
+			echo "$_tunnel_ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || _tunnel_ip="нет ответа"
+			# 2. HTTP код сайта через туннель
+			local _http=$(curl -s --max-time 10 $_curl_opt -o /dev/null -w '%{http_code}' "https://${_site}" 2>/dev/null)
+			# 3. Время отклика
+			local _time=$(curl -s --max-time 10 $_curl_opt -o /dev/null -w '%{time_total}' "https://${_site}" 2>/dev/null)
+			[ -z "$_http" ] && _http="000"
+			[ -z "$_time" ] && _time="0"
+			# 4. Скорость скачивания (KB/s) — через Cloudflare speed test
+			local _speed="0"
+			_speed=$(curl -s --max-time 15 $_curl_opt -o /dev/null -w '%{speed_download}' "https://speed.cloudflare.com/__down?bytes=1048576" 2>/dev/null)
+			[ -z "$_speed" ] || [ "$_speed" = "0" ] && _speed=$(curl -s --max-time 15 $_curl_opt -o /dev/null -w '%{speed_download}' "https://nbg1-speed.hetzner.com/1MB.bin" 2>/dev/null)
+			[ -z "$_speed" ] && _speed="0"
+			_speed=$(echo "$_speed" | awk '{printf "%.0f", $1/1024}')
+			printf '{"ok":true,"ip":"%s","http":"%s","time":"%s","speed":"%s","method":"%s"}\n' "$_tunnel_ip" "$_http" "$_time" "$_speed" "$_method"
+			;;
+		tunnel_speed_test)
+			check_token "$token"
+			_iface=$(echo "$QUERY_STRING" | sed 's/.*iface=//; s/&.*//')
+			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_iface" ] && json_error "iface required"
+			local _url="https://nbg1-speed.hetzner.com/100MB.bin"
+			local _curl_opt=""
+			case "$_iface" in
+				Proxy21|t2s21|vless)    _curl_opt="-x socks5://127.0.0.1:1097" ;;
+				Proxy41|t2s41|hysteria) _curl_opt="-x socks5://127.0.0.1:10808" ;;
+				Proxy42|awg)           _curl_opt="-x socks5://127.0.0.1:10818" ;;
+				*)
+					_ent=$(grep "$_iface" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f2)
+					[ -z "$_ent" ] && _ent="$_iface"
+					_curl_opt="--interface $_ent"
+					;;
+			esac
+			local _tunnel_ip=$(curl -s --max-time 10 $_curl_opt "https://2ip.io" 2>/dev/null)
+			[ -z "$_tunnel_ip" ] && _tunnel_ip="нет ответа"
+			local _result=$(curl -s --max-time 60 $_curl_opt -o /dev/null -w '%{speed_download} %{time_total}' "$_url" 2>/dev/null)
+			local _speed=$(echo "$_result" | awk '{print $1}')
+			local _time=$(echo "$_result" | awk '{print $2}')
+			[ -z "$_speed" ] && _speed="0"
+			[ -z "$_time" ] && _time="0"
+			_speed=$(echo "$_speed" | awk '{printf "%.0f", $1/1024}')
+			printf '{"ok":true,"ip":"%s","speed":"%s","time":"%s"}\n' "$_tunnel_ip" "$_speed" "$_time"
 			;;
 		*)
 			json_error "unknown action"

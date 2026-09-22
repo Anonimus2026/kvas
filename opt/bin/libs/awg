@@ -1,0 +1,493 @@
+#!/bin/sh
+# ------------------------------------------------------------------------------------------
+#
+#   ПРОЕКТ КВАС
+#
+#   Модуль AmneziaWG (wireproxy-awg) — userspace SOCKS5 прокси
+#   Порты: 10818 (SOCKS5), 10819 (HTTP)
+#   Интерфейс: Proxy42 (Kvas-proxy-awg)
+#
+# ------------------------------------------------------------------------------------------
+
+. /opt/apps/kvas/bin/libs/main
+
+AWG_BASE="/opt/apps/kvas/awg"
+AWG_BIN="${AWG_BASE}/bin/wireproxy"
+AWG_ENV="${AWG_BASE}/etc/conf/env.sh"
+AWG_INIT="${AWG_BASE}/etc/init.d/S99awg"
+AWG_CONFIG_DIR="/opt/etc/awg"
+AWG_CONFIG="${AWG_CONFIG_DIR}/awg.conf"
+AWG_PIDFILE="/var/run/wireproxy.pid"
+AWG_LOGFILE="/var/log/wireproxy.log"
+AWG_CHECK_SPACE="${AWG_BASE}/etc/ndm/check_space.sh"
+AWG_TEST_SCRIPT="${AWG_BASE}/etc/ndm/test_connection.sh"
+
+# Загружаем env
+[ -f "$AWG_ENV" ] && . "$AWG_ENV"
+
+# Бинарник скачан?
+has_awg_installed() {
+    [ -x "$AWG_BIN" ] && "$AWG_BIN" --help >/dev/null 2>&1
+}
+
+# Активен ли AWG?
+is_awg_enabled() {
+    [ "$(get_config_value INFACE_CLI)" = "${KEENETIC_PROXY_NAME}" ]
+}
+
+# Статус
+cmd_awg_status() {
+    echo "=== AmneziaWG (wireproxy-awg) ==="
+    if has_awg_installed; then
+        local _ver=$("$AWG_BIN" --help 2>&1 | head -1)
+        echo "  Бинарник: $AWG_BIN"
+        echo "  Версия: ${_ver:-установлен}"
+    else
+        echo -e "  Статус: ${RED}не установлен${NC}"
+        echo "  Установите: kvas awg install"
+        return
+    fi
+
+    if [ -f "$AWG_PIDFILE" ] && kill -0 "$(cat "$AWG_PIDFILE" 2>/dev/null)" 2>/dev/null; then
+        echo -e "  Служба: ${GREEN}запущена${NC} (PID: $(cat "$AWG_PIDFILE"))"
+    else
+        echo -e "  Служба: ${RED}остановлена${NC}"
+    fi
+
+    if [ -f "$AWG_CONFIG" ]; then
+        echo "  Конфигурация: активна"
+        local _ep=$(grep -i '^[[:space:]]*Endpoint' "$AWG_CONFIG" | head -1 | awk -F'=' '{print $2}' | tr -d ' ')
+        [ -n "$_ep" ] && echo "  Endpoint: $_ep"
+    else
+        echo -e "  Конфигурация: ${YELLOW}не настроена${NC}"
+        echo "  Настройте: kvas awg new"
+    fi
+    echo "  SOCKS5: ${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}"
+    echo "  HTTP:   ${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_HTTP}"
+    echo "  Интерфейс: ${KEENETIC_PROXY_NAME} (${KEENETIC_PROXY_DESC})"
+    echo "----------------------------------------"
+}
+
+# Установка бинарника
+cmd_awg_install() {
+    [ -f "$AWG_CHECK_SPACE" ] && { "$AWG_CHECK_SPACE" || exit 1; }
+
+    echo "Определение архитектуры..."
+    ARCH=$(uname -m)
+    echo "  uname -m: $ARCH"
+
+    case "$ARCH" in
+        *aarch64*|*arm64*)            BINARY_ARCH="arm64" ;;
+        *armv7*|*armv6*|*arm*)        BINARY_ARCH="arm" ;;
+        *mipsle*|*mipsel*)            BINARY_ARCH="mipsle" ;;
+        *mips*)                       BINARY_ARCH="mipsle" ;;
+        *x86_64*|*amd64*)             BINARY_ARCH="amd64" ;;
+        *i?86*|*x86*)                 BINARY_ARCH="386" ;;
+        *)                            BINARY_ARCH="" ;;
+    esac
+
+    if [ -z "$BINARY_ARCH" ]; then
+        echo -e "${RED}Неподдерживаемая архитектура: $ARCH${NC}"
+        exit 1
+    fi
+    echo -e "  Определена: ${BLUE}$BINARY_ARCH${NC}"
+
+    echo "Запрос версии wireproxy-awg с GitHub..."
+    LATEST_VERSION=$(curl -sI --max-time 15 https://github.com/artem-russkikh/wireproxy-awg/releases/latest 2>/dev/null | grep -i 'location:' | sed -E 's/.*\/tag\/([^[:space:]\r\n]+).*/\1/')
+
+    if [ -z "$LATEST_VERSION" ] || echo "$LATEST_VERSION" | grep -q "{"; then
+        echo -e "${YELLOW}Предупреждение: не удалось определить версию, используем v1.0.18${NC}"
+        LATEST_VERSION="v1.0.18"
+    fi
+    echo -e "  Версия: ${BLUE}$LATEST_VERSION${NC}"
+
+    TMP_DIR="/tmp/wireproxy_install_$$"
+    TMP_ARCHIVE="${TMP_DIR}/wireproxy.tar.gz"
+    mkdir -p "$TMP_DIR"
+
+    DOWNLOAD_URL="https://github.com/artem-russkikh/wireproxy-awg/releases/download/${LATEST_VERSION}/wireproxy_linux_${BINARY_ARCH}.tar.gz"
+    echo -e "Скачиваем ${BLUE}wireproxy-awg ${LATEST_VERSION}${NC} для ${YELLOW}${BINARY_ARCH}${NC}..."
+
+    if ! curl -fSL --max-time 120 -o "$TMP_ARCHIVE" "$DOWNLOAD_URL" 2>&1; then
+        echo -e "${RED}Ошибка: не удалось скачать архив${NC}"
+        echo "  URL: $DOWNLOAD_URL"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+
+    echo "Распаковка..."
+    if ! tar -xzf "$TMP_ARCHIVE" -C "$TMP_DIR" 2>/dev/null; then
+        echo -e "${RED}Ошибка: не удалось распаковать архив${NC}"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+
+    TMP_BIN=$(find "$TMP_DIR" -type f -name "wireproxy" | head -1)
+    if [ -z "$TMP_BIN" ] || [ ! -f "$TMP_BIN" ]; then
+        echo -e "${RED}Бинарник wireproxy не найден в архиве${NC}"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+
+    chmod +x "$TMP_BIN"
+
+    # Проверка совместимости
+    if "$TMP_BIN" --help >/dev/null 2>&1 || "$TMP_BIN" -h >/dev/null 2>&1; then
+        echo -e "${GREEN}Бинарник проверен на совместимость${NC}"
+    else
+        echo -e "${RED}Бинарник не запускается на этой архитектуре${NC}"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+
+    # Останавливаем службу если запущена
+    if [ -f "$AWG_PIDFILE" ] && kill -0 "$(cat "$AWG_PIDFILE" 2>/dev/null)" 2>/dev/null; then
+        echo "Останавливаем текущую службу..."
+        [ -f /opt/etc/init.d/S99awg ] && /opt/etc/init.d/S99awg stop 2>/dev/null
+    fi
+
+    # Установка
+    mkdir -p "${AWG_BASE}/bin"
+    mv "$TMP_BIN" "$AWG_BIN"
+    chmod +x "$AWG_BIN"
+    ln -sf "$AWG_BIN" /opt/bin/wireproxy
+    rm -rf "$TMP_DIR"
+
+    echo -e "${GREEN}wireproxy-awg установлен!${NC}"
+    echo "  Для настройки: kvas awg new"
+}
+
+# Декодирование файла: base64/zlib/JSON → INI
+# $1 = путь к файлу с сырыми данными (изменяет файл на месте)
+_decode_awg_file() {
+    local _target="$1"
+    [ -s "$_target" ] || return 1
+
+    # Если уже INI — ничего не делаем
+    grep -qi "\[Interface\]" "$_target" 2>/dev/null && return 0
+
+    # Читаем содержимое (одной строкой для base64)
+    local _content=$(cat "$_target" | tr -d ' \t\r\n')
+
+    # Удаляем префиксы
+    case "$_content" in
+        vpn://*|awg://*|amnezia://*|wireguard://*)
+            _content="${_content#*://}"
+            ;;
+    esac
+
+    # Конвертация URL-safe base64
+    local _b64_std=$(printf '%s' "$_content" | tr '_-' '/+')
+
+    # Декодируем base64 в файл
+    local _b64file="/tmp/awg_b64_$$"
+    local _rawfile="/tmp/awg_raw_$$"
+    printf '%s' "$_b64_std" > "$_b64file"
+    base64 -d "$_b64file" > "$_rawfile" 2>/dev/null
+    rm -f "$_b64file"
+
+    # Проверяем: текст или бинарник?
+    if grep -qi "\[Interface\]" "$_rawfile" 2>/dev/null; then
+        echo "Base64 INI конфигурация."
+        cp "$_rawfile" "$_target"
+        rm -f "$_rawfile"
+        return 0
+    fi
+
+    # Возможно zlib-сжатые данные (формат AmneziaVPN)
+    echo "Формат: сжатый, распаковываем..."
+
+    # Проверяем наличие python3
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "python3 не найден, устанавливаем..."
+        opkg update >/dev/null 2>&1
+        opkg install python3-base >/dev/null 2>&1
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import zlib, json, sys
+data = open('$_rawfile', 'rb').read()
+
+# 1. zlib распаковка (skip 4 байта заголовка, потом без)
+decompressed = None
+for skip in [4, 0]:
+    try:
+        decompressed = zlib.decompress(data[skip:])
+        break
+    except:
+        pass
+if decompressed is None:
+    try:
+        import gzip
+        decompressed = gzip.decompress(data)
+    except:
+        decompressed = data
+
+# 2. Декодируем как текст
+text = decompressed.decode('utf-8', errors='replace')
+
+# 3. JSON (AmneziaVPN 3.x) — извлекаем INI
+if '{' in text[:10] and 'containers' in text:
+    try:
+        j = json.loads(text)
+        last_config = j['containers'][0]['awg']['last_config']
+        if isinstance(last_config, str):
+            last_config = json.loads(last_config)
+        ini = last_config['config']
+        dns1 = j.get('dns1', '1.1.1.1')
+        dns2 = j.get('dns2', '1.0.0.1')
+        ini = ini.replace('\$PRIMARY_DNS', dns1)
+        ini = ini.replace('\$SECONDARY_DNS', dns2)
+        open('$_target', 'w').write(ini)
+        print('JSON: INI извлечён из last_config')
+        sys.exit(0)
+    except Exception as e:
+        print('JSON ошибка: ' + str(e))
+
+# 4. Просто текст с [Interface]
+if '[Interface]' in text:
+    open('$_target', 'w').write(text)
+    print('Текстовый INI')
+    sys.exit(0)
+
+# 5. Не распознано
+print('Формат не распознан')
+sys.exit(1)
+" 2>/dev/null
+        rm -f "$_rawfile"
+        [ -s "$_target" ] && echo "OK" || { echo "Распаковка не удалась."; return 1; }
+    else
+        rm -f "$_rawfile"
+        echo "ОШИБКА: python3 не установлен."
+        echo "Используйте .conf файл вместо vpn:// ссылки."
+        return 1
+    fi
+}
+
+# Парсинг и добавление конфигурации
+# $1 = ссылка vpn://... или путь к файлу (пусто = интерактивный ввод)
+cmd_awg_new() {
+    local INPUT="${1}"
+
+    # Проверка бинарника
+    if ! has_awg_installed; then
+        echo "Бинарник wireproxy-awg не установлен. Устанавливаем..."
+        cmd_awg_install || { echo "ОШИБКА: не удалось установить wireproxy-awg"; exit 1; }
+        # Проверяем ещё раз после установки
+        has_awg_installed || { echo "ОШИБКА: wireproxy не запускается после установки"; exit 1; }
+    fi
+
+    # Интерактивный ввод если аргумент не передан
+    if [ -z "$INPUT" ]; then
+        read_value "Вставьте ссылку vpn://... или путь к файлу .conf:" awg_link
+        INPUT="${awg_link}"
+    fi
+
+    if [ -z "$INPUT" ] || [ "$INPUT" = "q" ]; then
+        echo "Настройка AmneziaWG пропущена."
+        echo "Для настройки позже: kvas awg new"
+        return 0
+    fi
+
+    echo "Обработка конфигурации..."
+
+    local TMP_DECODED="/tmp/awg_decoded_$$"
+    rm -f "$TMP_DECODED"
+
+    # Проверяем: готовый INI-файл?
+    # Если файл — копируем напрямую (без переменной — сохраняет переносы)
+    if [ -f "$INPUT" ]; then
+        echo "Чтение из файла $INPUT..."
+        cp "$INPUT" "$TMP_DECODED"
+        if grep -qi "\[Interface\]" "$TMP_DECODED" 2>/dev/null && grep -qi "\[Peer\]" "$TMP_DECODED" 2>/dev/null; then
+            echo "Готовый текст конфигурации."
+            # Файл уже скопирован — ничего не делаем
+        else
+            # Файл не INI — пробуем декодировать (vpn://, base64, zlib)
+            _decode_awg_file "$TMP_DECODED"
+        fi
+    else
+        # Не файл — текст, URL или ссылка
+        local RAW_CONTENT=""
+        if echo "$INPUT" | grep -q -E '^https?://'; then
+            echo "Загрузка по веб-ссылке..."
+            RAW_CONTENT=$(curl -sL --max-time 30 "$INPUT")
+        else
+            RAW_CONTENT="$INPUT"
+        fi
+
+        if printf '%s' "$RAW_CONTENT" | grep -qi "\[Interface\]" && printf '%s' "$RAW_CONTENT" | grep -qi "\[Peer\]"; then
+            echo "Готовый текст конфигурации."
+            printf '%s\n' "$RAW_CONTENT" > "$TMP_DECODED"
+        else
+            # Записываем в файл и декодируем
+            printf '%s' "$RAW_CONTENT" > "$TMP_DECODED"
+            _decode_awg_file "$TMP_DECODED"
+        fi
+    fi
+
+    # Нормализация: если весь конфиг на одной строке — разбиваем по ключевым словам
+    # wireproxy требует каждый параметр на отдельной строке
+    local _line_count=$(wc -l < "$TMP_DECODED" 2>/dev/null || echo 1)
+    if [ "$_line_count" -le 3 ]; then
+        # Разбиваем: добавляем перенос перед [Peer], и перед каждым ключом =
+        sed -i 's/\[Peer\]/\n[Peer]/g; s/ \([A-Za-z][A-Za-z0-9_]* =\)/\n\1/g; s/\[Interface\]/\n[Interface]/g; s/\[Socks5\]/\n[Socks5]/g; s/\[Http\]/\n[Http]/g' "$TMP_DECODED" 2>/dev/null
+        # Убираем пустые строки в начале
+        sed -i '/^$/d' "$TMP_DECODED" 2>/dev/null
+    fi
+
+    # Валидация
+    if [ ! -s "$TMP_DECODED" ] || ! grep -qi "\[Interface\]" "$TMP_DECODED"; then
+        echo -e "${RED}Ошибка: не удалось извлечь [Interface]${NC}"
+        echo "Проверьте формат ссылки. Поддерживаются: vpn://, awg://, Base64, файл .conf"
+        rm -f "$TMP_DECODED"
+        exit 1
+    fi
+
+    if ! grep -qi "\[Peer\]" "$TMP_DECODED"; then
+        echo -e "${RED}Ошибка: блок [Peer] отсутствует${NC}"
+        rm -f "$TMP_DECODED"
+        exit 1
+    fi
+
+    echo -e "${GREEN}Конфигурация AmneziaWG распознана!${NC}"
+
+    # Сохранение — удаляем старые [Socks5]/[Http], очищаем CRLF
+    mkdir -p "$AWG_CONFIG_DIR"
+    tr -d '\r' < "$TMP_DECODED" | awk '
+        BEGIN { skip=0 }
+        tolower($0) ~ /^\[(socks5|http)\]/ { skip=1 }
+        skip && /^\[/ && tolower($0) !~ /^\[(socks5|http)\]/ { skip=0 }
+        !skip { print }
+    ' > "$AWG_CONFIG"
+    rm -f "$TMP_DECODED"
+
+    # Добавляем секции прокси
+    cat << EOF >> "$AWG_CONFIG"
+
+[Socks5]
+BindAddress = ${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}
+
+[Http]
+BindAddress = ${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_HTTP}
+EOF
+
+    chmod 600 "$AWG_CONFIG"
+    echo -e "${GREEN}Конфиг готов: $AWG_CONFIG${NC}"
+
+    # Активация автозапуска
+    ln -sf "$AWG_INIT" /opt/etc/init.d/S99awg
+    chmod +x "$AWG_INIT" /opt/etc/init.d/S99awg
+
+    # Перезапуск
+    echo "Запуск службы..."
+    /opt/etc/init.d/S99awg restart 2>/dev/null
+    sleep 2
+
+    # Регистрация Proxy42 в KeeneticOS
+    echo "Регистрация интерфейса ${KEENETIC_PROXY_NAME}..."
+    curl -s -d '[{"interface": { "name": "'"${KEENETIC_PROXY_NAME}"'","no": true }}]' "localhost:79/rci/" > /dev/null 2>&1
+
+    API_DATA='[{
+        "interface": {
+            "name": "'"${KEENETIC_PROXY_NAME}"'",
+            "description": "'"${KEENETIC_PROXY_DESC}"'",
+            "proxy": {
+                "protocol": { "proto": "'"${PROXY_PROTO}"'" },
+                "upstream": { "host": "'"${PROXY_LOCAL_IP}"'", "port": "'"${PROXY_LOCAL_PORT_SOCKS}"'" },
+                "socks5-udp": true
+            }
+        },
+        "system": { "configuration": { "save": true } }
+    }]'
+
+    curl -s -d "${API_DATA}" "localhost:79/rci/" > /dev/null 2>&1
+    curl -s -d '[{"interface": {"name": "'"${KEENETIC_PROXY_NAME}"'", "up": true}}]' "localhost:79/rci/" > /dev/null 2>&1
+
+    echo -e "${GREEN}Интерфейс ${KEENETIC_PROXY_DESC} (${KEENETIC_PROXY_NAME}) зарегистрирован!${NC}"
+
+    # Тест
+    print_line
+    cmd_awg_test
+
+    echo -e "${YELLOW}Для переключения: ${BLUE}kvas vpn set${NC}"
+}
+
+# Тест через SOCKS5
+cmd_awg_test() {
+    if ! has_awg_installed; then
+        echo -e "${RED}wireproxy-awg не установлен${NC}"
+        return 1
+    fi
+    if [ ! -f "$AWG_CONFIG" ]; then
+        echo -e "${RED}Конфигурация не настроена. Выполните: kvas awg new${NC}"
+        return 1
+    fi
+    echo "Тест AmneziaWG..."
+    if [ -f "$AWG_TEST_SCRIPT" ]; then
+        "$AWG_TEST_SCRIPT"
+    else
+        local test_ip=$(curl -s --max-time 10 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://myip.addr.tools" 2>/dev/null)
+        if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404|html)"; then
+            test_ip=$(curl -s --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
+        fi
+        if [ -n "$test_ip" ] && echo "$test_ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+            echo -e "${GREEN}РАБОТАЕТ (IP: $test_ip)${NC}"
+        else
+            echo -e "${RED}НЕ РАБОТАЕТ${NC}"
+            return 1
+        fi
+    fi
+}
+
+# Проверка для failover (возвращает 0 = работает)
+check_awg() {
+    [ -x "$AWG_BIN" ] || return 1
+    [ -f "$AWG_CONFIG" ] || return 1
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://myip.addr.tools" 2>/dev/null)
+    if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
+    fi
+    if [ -n "$test_ip" ] && ! echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+        AWG_IP="$test_ip"
+        return 0
+    fi
+    return 1
+}
+
+# Управление службой
+cmd_awg_start() {
+    [ -f /opt/etc/init.d/S99awg ] || { echo "Служба не инициализирована. kvas awg new"; return 1; }
+    /opt/etc/init.d/S99awg start
+    sleep 2
+    cmd_awg_test
+}
+
+cmd_awg_stop() {
+    [ -f /opt/etc/init.d/S99awg ] && /opt/etc/init.d/S99awg stop || echo "Служба не инициализирована."
+}
+
+cmd_awg_restart() {
+    [ -f /opt/etc/init.d/S99awg ] || { echo "Служба не инициализирована. kvas awg new"; return 1; }
+    /opt/etc/init.d/S99awg restart
+    sleep 2
+    cmd_awg_test
+}
+
+# Удаление
+cmd_awg_uninstall() {
+    echo "Останавливаем службу..."
+    [ -f /opt/etc/init.d/S99awg ] && /opt/etc/init.d/S99awg stop 2>/dev/null
+    killall wireproxy 2>/dev/null
+
+    echo "Удаляем интерфейс ${KEENETIC_PROXY_NAME}..."
+    curl -s -d '[{"interface": { "name": "'"${KEENETIC_PROXY_NAME}"'","no": true },"system": {"configuration": {"save": true}}}]' "localhost:79/rci/" > /dev/null 2>&1
+
+    echo "Удаляем файлы..."
+    rm -f /opt/bin/wireproxy /opt/etc/init.d/S99awg /var/run/wireproxy.pid /var/log/wireproxy.log
+    rm -rf /opt/etc/awg
+    rm -rf /opt/apps/kvas/awg
+
+    echo -e "${GREEN}AmneziaWG удалён.${NC}"
+}

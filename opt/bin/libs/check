@@ -13,6 +13,8 @@
 
 . /opt/apps/kvas/bin/libs/main
 . /opt/apps/kvas/bin/libs/vpn
+VPN_IPTABLES_CHAIN="${CHAIN_MARK:-KVAS_MARK}"
+SSR_IPTABLES_CHAIN="${CHAIN_DNAT_TO_PORT:-KVAS_DNAT_TO_PORT}"
 
 NOT_IN_TABLE=false
 IPSET=$(which ipset)
@@ -141,24 +143,43 @@ vpn_check(){
 
 			# Проверяем реальную работу через прокси
 			ready "Проверка работоспособности прокси"
-			local test_ip=$(curl -s --connect-timeout 5 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
-			if [ -n "$test_ip" ] && echo "$test_ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+			local _inface_cli=$(get_config_value 'INFACE_CLI')
+			local _inface_ent=$(get_config_value 'INFACE_ENT')
+			case "${_inface_cli}" in
+				*Proxy21*|*vless*|*Proxy41*|*hysteria*)
+					# SOCKS-прокси (VLESS/Hysteria) — через socks5
+					local _socks_port=1097
+					case "${_inface_cli}" in *Proxy41*|*hysteria*) _socks_port=10808 ;; esac
+					local test_ip=$(curl -4 -s --max-time 10 -x "socks5://127.0.0.1:${_socks_port}" "https://myip.addr.tools" 2>/dev/null)
+					if [ -z "$test_ip" ] || ! echo "$test_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
+						test_ip=$(curl -4 -s --max-time 15 -x "socks5://127.0.0.1:${_socks_port}" "https://myip.addr.tools" 2>/dev/null)
+					fi
+					;;
+				*)
+					# TUN-интерфейс (OpenConnect, WG, AWG) — через --interface
+					local test_ip=$(curl -4 -s --max-time 10 --interface "${_inface_ent}" "https://myip.addr.tools" 2>/dev/null)
+					if [ -z "$test_ip" ] || ! echo "$test_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
+						test_ip=$(curl -4 -s --max-time 15 --interface "${_inface_ent}" "https://myip.addr.tools" 2>/dev/null)
+					fi
+					;;
+			esac
+			if [ -n "$test_ip" ] && echo "$test_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
 				when_ok "РАБОТАЕТ (IP: $test_ip)"
 			else
 				when_bad "НЕ РАБОТАЕТ"
 			fi
 
-			ready "Таблица VPN маршрутов id=1001"
+			ready "Таблица VPN маршрутов id=200"
 			[ -x "/opt/etc/ndm/fs.d/100-vpn" ] && /opt/etc/ndm/fs.d/100-vpn start 2>/dev/null
-			if /opt/sbin/ip route show table 1001 2>/dev/null | grep -qv 'default'; then
+			if /opt/sbin/ip route show table 200 2>/dev/null | grep -qv 'default'; then
 				when_ok "ЗАПОЛНЕНА"
 
-				ready "Таблица VPN маршрутов id=1001 в правилах маркировки "
-				if [ -n "$(/opt/sbin/ip rule show 2>/dev/null | grep 1001)" ]; then
+				ready "Таблица VPN маршрутов id=200 в правилах маркировки "
+				if [ -n "$(/opt/sbin/ip rule show 2>/dev/null | grep 200)" ]; then
 					when_ok "ПРИСУТСТВУЕТ"
 
 					ready "Правила маркировки трафика в iptable"
-					[ -x "/opt/etc/ndm/netfilter.d/100-vpn-mark" ] && /opt/etc/ndm/netfilter.d/100-vpn-mark 2>/dev/null
+					[ -x "/opt/etc/ndm/netfilter.d/100-vpn-mark" ] && type=iptables table=mangle /opt/etc/ndm/netfilter.d/100-vpn-mark 2>/dev/null
 					if [ -n "${VPN_IPTABLES_CHAIN}" ] && [ "$(save_iptables | grep -c "${VPN_IPTABLES_CHAIN}")" -ge 2 ]; then
 						when_ok "ДОБАВЛЕНЫ"
 					else
@@ -247,8 +268,8 @@ dnscrypt_proxy_check() {
 			fi
 		fi
 
-		port=$(cat < "/opt/etc/dnscrypt-proxy.toml" | grep -vE "^#" | grep -E 'listen_addresses.=' | cut -d":" -f4)
-		ready "Отслеживание порта #${port::-2} dnscrypt-proxy2 "
+		port=$(grep -E 'listen_addresses' "/opt/etc/dnscrypt-proxy.toml" 2>/dev/null | grep -oE ':[0-9]+' | head -1 | tr -d ':')
+		ready "Отслеживание порта #${port:-?} dnscrypt-proxy2 "
 		if netstat -ltunp 2> /dev/null | grep 'dnscrypt' &> /dev/null; then when_ok "СЛЕДИМ"; else
 			when_bad "НЕТ ЗАПИСИ"
 			exit 1
@@ -484,15 +505,15 @@ ipset_site_visit_check() {
 	echo -e  "${GREEN}Проверяем заполнения ipset таблицы при посещении сайта.${NOCL}"
 	print_line
 	echo "Сейчас, для проверки заполнения, откройте на компьютере браузер"
-	echo -e "Затем зайдите на сайт ${BLUE}https://ifconfig.me${NOCL} в режиме ${RED}ИНКОГНИТО.${NOCL}"
+	echo -e "Затем зайдите на сайт ${BLUE}https://myip.addr.tools${NOCL} в режиме ${RED}ИНКОГНИТО.${NOCL}"
 	echo -e "На странице должен появиться ${BLUE}IP Вашего VDS/VPN провайдера${NOCL}."
 	echo -n "После чего вновь перейдите сюда и нажмите на любую клавишу."
 	pause
 	
-	#  Проверяем наличие в защищенном списке ifconfig.me
-	grep -q ifconfig.me ${KVAS_LIST_FILE} || {
+	#  Проверяем наличие в защищенном списке myip.addr.tools
+	grep -q myip.addr.tools ${KVAS_LIST_FILE} || {
 		# если домена в списке нет, то добавляем его
-		cmd_add_one_host ifconfig.me no '' &> /dev/null
+		cmd_add_one_host myip.addr.tools no '' &> /dev/null
 	}
 
 
@@ -550,34 +571,95 @@ cmd_state_checker() {
 		adblock_dnsmasq_check
 	fi
 	print_line
-#	Проверяем работу Hysteria 2
-	if [ -f "/opt/apps/kvas/hysteria/bin/hysteria" ]; then
-		ready "Проверка Hysteria 2"
-		if [ -f "/var/run/hysteria.pid" ] && kill -0 $(cat /var/run/hysteria.pid 2>/dev/null) 2>/dev/null; then
-			# Реальная проверка через прокси
-			local env_conf="/opt/apps/kvas/hysteria/etc/conf/env.sh"
-			if [ -f "$env_conf" ]; then
-				. "$env_conf"
-				if [ -n "$PROXY_LOCAL_IP" ] && [ -n "$PROXY_LOCAL_PORT_SOCKS" ]; then
-					local hysteria_ip=$(curl -s --connect-timeout 8 --max-time 12 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
-					if [ -z "$hysteria_ip" ] || echo "$hysteria_ip" | grep -q -E "(Failed|Error|404|html)"; then
-						hysteria_ip=$(curl -s --connect-timeout 8 --max-time 12 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ipinfo.io/ip" 2>/dev/null)
-					fi
-					if [ -n "$hysteria_ip" ] && echo "$hysteria_ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
-						when_ok "РАБОТАЕТ (IP: $hysteria_ip)"
-					else
-						when_bad "РАБОТАЕТ (туннель не отвечает)"
-					fi
-				else
-					when_bad "КОНФИГ НЕ НАСТРОЕН"
-				fi
-			else
-				when_bad "КОНФИГ ОТСУТСТВУЕТ"
-			fi
+#	Проверяем ВСЕ доступные VPN туннели
+	local _test_cli=$(get_config_value 'INFACE_CLI')
+	local _test_ent=$(get_config_value 'INFACE_ENT')
+
+#	VLESS — если xray запущен
+	if pidof xray >/dev/null 2>&1; then
+		ready "VLESS"
+		local _vless_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://127.0.0.1:1097" "https://myip.addr.tools" 2>/dev/null)
+		if [ -z "$_vless_ip" ] || echo "$_vless_ip" | grep -qE "(Failed|Error|404|html)"; then
+			_vless_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://127.0.0.1:1097" "https://myip.addr.tools" 2>/dev/null)
+		fi
+		if [ -n "$_vless_ip" ] && echo "$_vless_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
+			when_ok "РАБОТАЕТ (IP: $_vless_ip)"
 		else
-			when_bad "ОСТАНОВЛЕНА"
+			case "$_test_cli" in *Proxy21*|*vless*) when_bad "НЕ ОТВЕЧАЕТ" ;; *) when_alert "ОЖИДАНИЕ" ;; esac
 		fi
 	fi
+
+#	Hysteria — если бинарник и конфиг есть
+	if [ -f "/opt/apps/kvas/hysteria/bin/hysteria" ] && [ -f "/opt/apps/kvas/hysteria/etc/conf/env.sh" ]; then
+		ready "Hysteria 2"
+		# Проверяем запущен ли процесс (pid файл ИЛИ pidof)
+		local _hyst_running=false
+		if [ -f "/var/run/hysteria.pid" ] && kill -0 $(cat /var/run/hysteria.pid 2>/dev/null) 2>/dev/null; then
+			_hyst_running=true
+		elif pidof hysteria >/dev/null 2>&1; then
+			_hyst_running=true
+		fi
+		if [ "$_hyst_running" = "true" ]; then
+			local env_conf="/opt/apps/kvas/hysteria/etc/conf/env.sh"
+			. "$env_conf"
+			if [ -n "$PROXY_LOCAL_IP" ] && [ -n "$PROXY_LOCAL_PORT_SOCKS" ]; then
+				local _hyst_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://myip.addr.tools" 2>/dev/null)
+				if [ -z "$_hyst_ip" ] || echo "$_hyst_ip" | grep -qE "(Failed|Error|404|html)"; then
+					_hyst_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://myip.addr.tools" 2>/dev/null)
+				fi
+				if [ -n "$_hyst_ip" ] && echo "$_hyst_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
+					when_ok "РАБОТАЕТ (IP: $_hyst_ip)"
+				else
+					case "$_test_cli" in *Proxy41*|*hysteria*) when_bad "НЕ ОТВЕЧАЕТ" ;; *) when_alert "ОЖИДАНИЕ" ;; esac
+				fi
+			else
+				when_bad "КОНФИГ НЕ НАСТРОЕН"
+			fi
+		else
+			case "$_test_cli" in *Proxy41*|*hysteria*) when_bad "ОСТАНОВЛЕНА" ;; *) when_alert "ОСТАНОВЛЕНА" ;; esac
+		fi
+ 	fi
+
+#	AmneziaWG (wireproxy-awg) — если бинарник и конфиг есть
+	if [ -f /opt/apps/kvas/awg/bin/wireproxy ] && [ -f /opt/apps/kvas/awg/etc/conf/env.sh ]; then
+		. /opt/apps/kvas/awg/etc/conf/env.sh 2>/dev/null
+		ready "AmneziaWG"
+		if [ -f /var/run/wireproxy.pid ] && kill -0 "$(cat /var/run/wireproxy.pid 2>/dev/null)" 2>/dev/null; then
+			local _awg_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://127.0.0.1:10818" "https://myip.addr.tools" 2>/dev/null)
+			if [ -z "$_awg_ip" ] || echo "$_awg_ip" | grep -qE "(Failed|Error|404|html)"; then
+				_awg_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://127.0.0.1:10818" "https://myip.addr.tools" 2>/dev/null)
+			fi
+			if [ -n "$_awg_ip" ] && echo "$_awg_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
+				when_ok "РАБОТАЕТ (IP: $_awg_ip)"
+			else
+				case "$_test_cli" in *Proxy42*|*awg*) when_bad "НЕ ОТВЕЧАЕТ" ;; *) when_alert "ОЖИДАНИЕ" ;; esac
+			fi
+		else
+			case "$_test_cli" in *Proxy42*|*awg*) when_bad "ОСТАНОВЛЕН" ;; *) when_alert "ОСТАНОВЛЕН" ;; esac
+		fi
+	fi
+
+#	TUN-интерфейсы (AWG, WG, OpenConnect) — из inface_equals
+	while IFS='|' read -r _tcli _tent _tdesc _trest; do
+		[ -n "$_tent" ] && [ -n "$_tdesc" ] || continue
+		case "$_tent" in t2s*|ezcfg*|br*|eth*|ra*|apcli*) continue ;; esac
+		local _tdesc_clean=$(echo "$_tdesc" | sed 's/^"//; s/"$//')
+		ready "$_tdesc_clean ($_tent)"
+		if /opt/sbin/ip link show "$_tent" 2>/dev/null | grep -q '<.*UP'; then
+			local _tun_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 --interface "$_tent" "https://myip.addr.tools" 2>/dev/null)
+			if [ -z "$_tun_ip" ] || echo "$_tun_ip" | grep -qE "(Failed|Error|404|html)"; then
+				_tun_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 --interface "$_tent" "https://myip.addr.tools" 2>/dev/null)
+			fi
+			if [ -n "$_tun_ip" ] && echo "$_tun_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
+				when_ok "РАБОТАЕТ (IP: $_tun_ip)"
+			else
+				case "$_test_ent" in "$_tent") when_bad "НЕ ОТВЕЧАЕТ" ;; *) when_alert "ПОДКЛЮЧЕН (нет ответа)" ;; esac
+			fi
+		else
+			when_bad "ИНТЕРФЕЙС DOWN"
+		fi
+	done < /opt/etc/inface_equals 2>/dev/null
+
 	print_line
 #	По наличию файла ниже определяем наличие использования shadowsocks
 	if has_ssr_enable; then
@@ -597,7 +679,7 @@ cmd_state_checker() {
 	print_line
 #
 #	Проверка наличия ip адресов хостов в таблице ipset - попытка номер раз
-	kvas_list_ipset_check
+	[ "${1}" = 'upgrade' ] || [ "${1}" = '--no-check' ] || [ "${1}" = '-fast' ] || kvas_list_ipset_check
 	if [ "${NOT_IN_TABLE}" = true ]; then
 		print_line
 #		если хотя бы один из адресов не находится в таблице, то делаем проверку повторно
@@ -612,7 +694,7 @@ cmd_state_checker() {
 	print_line
 	# При активном флаге не будет выполняться функция ipset_site_visit_check 
 	# и тест будет завершаться без участия пользователя
-	[ "${1}" = '--no-check'  ] || [ "${1}" = '-fast' ] || ipset_site_visit_check
+	[ "${1}" = 'upgrade' ] || [ "${1}" = '--no-check'  ] || [ "${1}" = '-fast' ] || ipset_site_visit_check
 #	print_line
 #	check_tunnel
 

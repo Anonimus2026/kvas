@@ -1,34 +1,57 @@
 #!/bin/sh
 
-#------------------------------------------------------------------------------
-#
-#	ПАКЕТ КВАС
-#
-#------------------------------------------------------------------------------
-#
-#	Данный файл служит для начального запуска пакета квас при загрузке системы
-#	https://github.com/ndmsystems/packages/wiki/Opkg-Component с командой start
-#	основными задачами являются:
-#
-#	1. Создание таблицы ipset ip4
-#	2. Загрузка таблицы ipset доменными именами
-#
-# ------------------------------------------------------------------------------
-#	Разработчик: mail@zeleza.ru
-#	Дата создания: 21/05/2022
-#	Лицензия: Apache License 2.0
-# ------------------------------------------------------------------------------
+AUTOSTART_LOG="/opt/var/log/kvas-autostart.log"
+
+log_autostart() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$AUTOSTART_LOG"
+}
+
+wait_for_kvas() {
+    local i=0
+    while [ $i -lt 30 ]; do
+        [ -x /opt/bin/kvas ] && return 0
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
 
 case ${1} in
-	start|restart)
-		. /opt/apps/kvas/bin/libs/vpn
-		cmd_kvas_init no
-		if has_ssr_enable; then
-			while /opt/etc/init.d/S22shadowsocks status | grep -q dead
-			do
-				/opt/etc/init.d/S22shadowsocks restart
-				sleep 2
-			done
-		fi
-	;;
+        start|restart)
+                mkdir -p /opt/var/log
+                log_autostart "=== S96kvas start ==="
+
+                . /opt/apps/kvas/bin/libs/vpn
+                . /opt/apps/kvas/bin/libs/monitor
+                . /opt/apps/kvas/bin/libs/failover
+
+                cmd_kvas_init "no_reset"
+                log_autostart "cmd_kvas_init done"
+
+                wait_for_kvas
+                if [ $? -ne 0 ]; then
+                    log_autostart "ERROR: /opt/bin/kvas not found after 30s, skipping autostart"
+                else
+                    log_autostart "/opt/bin/kvas found"
+
+                    if [ -f /opt/etc/kvas-monitor-web-enabled ]; then
+                        log_autostart "starting web ui (kvas monitor web start)"
+                        /opt/bin/kvas monitor web start >> "$AUTOSTART_LOG" 2>&1 &
+                    fi
+
+                    if [ -f /opt/etc/kvas-failover-enabled ]; then
+                        log_autostart "starting failover daemon (kvas failover on)"
+                        /opt/bin/kvas failover on >> "$AUTOSTART_LOG" 2>&1 &
+                    fi
+
+                    if has_ssr_enable; then
+                        while /opt/etc/init.d/S22shadowsocks status | grep -q dead; do
+                            /opt/etc/init.d/S22shadowsocks restart
+                            sleep 2
+                        done
+                    fi
+                fi
+
+                log_autostart "=== S96kvas done ==="
+        ;;
 esac

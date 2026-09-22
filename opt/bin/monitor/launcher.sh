@@ -25,8 +25,6 @@ kill_port() {
             kill -9 "$pid" 2>/dev/null
         fi
     fi
-
-    # Kill anything listening on our port
     if command -v netstat >/dev/null 2>&1; then
         local pids
         pids=$(netstat -tulnp 2>/dev/null | grep ":${PORT} " | grep -oE '[0-9]+/' | sed 's|/||g')
@@ -37,20 +35,28 @@ kill_port() {
             for pid in $pids; do kill -9 "$pid" 2>/dev/null; done
         fi
     fi
-
     rm -f "$PID_FILE" /tmp/kvas-httpd-handler.sh
     log "cleanup finished"
 }
 
-# Pre-flight checks
 preflight() {
     local ok=1
     if ! command -v socat >/dev/null 2>&1; then
-        log "WARN: socat not found"
-        ok=0
+        log "WARN: socat not found, installing..."
+        echo "Устанавливаю socat..."
+        opkg update >/dev/null 2>&1
+        opkg install socat >/dev/null 2>&1
+        if ! command -v socat >/dev/null 2>&1; then
+            log "ERROR: socat install failed"
+            echo "ОШИБКА: не удалось установить socat"
+            ok=0
+        else
+            log "socat installed successfully"
+            echo "socat установлен"
+        fi
     fi
     if ! command -v conntrack >/dev/null 2>&1 && [ ! -f /proc/net/nf_conntrack ]; then
-        log "WARN: conntrack not found and /proc/net/nf_conntrack missing"
+        log "WARN: conntrack not found"
         ok=0
     fi
     if [ ! -d "$WWW_DIR" ]; then
@@ -78,51 +84,20 @@ start_socat_server() {
     return $rc
 }
 
-start_python_server() {
-    local pybin="$1"
-    command -v "$pybin" >/dev/null 2>&1 || return 1
-    log "starting python backend via $pybin on port $PORT"
-    cd "$WWW_DIR" || return 1
-    "$pybin" -c "
-import http.server, os
-os.chdir('${WWW_DIR}')
-http.server.test(HandlerClass=http.server.CGIHTTPRequestHandler, port=${PORT})
-" >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
-    sleep 1
-    if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        log "python backend started with pid $(cat "$PID_FILE")"
-        echo "OK $pybin $PORT"
-        return 0
-    fi
-    log "python backend failed to stay running"
-    rm -f "$PID_FILE"
-    return 1
-}
-
 if [ "$1" = "stop" ]; then
     log "stop requested"
     kill_port
     exit 0
 fi
 
-# Kill any existing instance
 kill_port
-
-# Pre-flight
 preflight
 
-# Try socat first
 if command -v socat >/dev/null 2>&1 && [ -x "$HTTPD_SCRIPT" ]; then
     start_socat_server
     exit $?
 fi
 
-# Fallback: python
-log "socat unavailable, trying python fallback"
-start_python_server python3 && exit 0
-start_python_server python && exit 0
-
 log "no http server available"
-echo "ERROR: no HTTP server available. Install socat or python3"
+echo "ERROR: no HTTP server available. Install socat"
 exit 1
