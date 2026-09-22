@@ -373,9 +373,9 @@ main() {
 				fi
 				_tr_run=false
 				_tr_r=0; _tr_w=0
+				_tr_src=io
 				if [ -n "$_tr_pid" ]; then
 					_tr_run=true
-					# /proc/PID/io may be unreadable for cgi user — still mark running
 					_tr_io=$(awk '/^rchar:/{r=$2} /^wchar:/{w=$2} END{print r+0, w+0}' "/proc/${_tr_pid}/io" 2>/dev/null)
 					if [ -z "$_tr_io" ]; then
 						_tr_io=$(cat "/proc/${_tr_pid}/io" 2>/dev/null | awk '/^rchar:/{r=$2} /^wchar:/{w=$2} END{print r+0, w+0}')
@@ -385,22 +385,37 @@ main() {
 				fi
 				case "$_tr_r" in ''|*[!0-9]*) _tr_r=0 ;; esac
 				case "$_tr_w" in ''|*[!0-9]*) _tr_w=0 ;; esac
+				# CGI может не читать /proc/PID/io чужого процесса → фоллбэк на WAN-счётчики
+				if [ "$_tr_run" = "true" ] && [ $((_tr_r + _tr_w)) -eq 0 ]; then
+					_tr_wan=$(awk '$1=="0x00000000"{print $2;exit}' /proc/net/route 2>/dev/null)
+					if [ -n "$_tr_wan" ] && [ -r "/proc/net/dev" ]; then
+						_tr_line=$(awk -v i="$_tr_wan" '$1 ~ ("^" i ":"){gsub(/:/,"",$1); print $2, $10}' /proc/net/dev 2>/dev/null)
+						_tr_r=$(echo "$_tr_line" | awk '{print $1}')
+						_tr_w=$(echo "$_tr_line" | awk '{print $2}')
+						_tr_src=wan
+					fi
+				fi
+				case "$_tr_r" in ''|*[!0-9]*) _tr_r=0 ;; esac
+				case "$_tr_w" in ''|*[!0-9]*) _tr_w=0 ;; esac
 				_tr_rbps=0; _tr_tbps=0
-				_tr_old=$(awk -v n="$_c" '$1==n{print $2, $3, $4; exit}' "$_tr_prev_file" 2>/dev/null)
+				_tr_old=$(awk -v n="$_c" '$1==n{print $2, $3, $4, $5; exit}' "$_tr_prev_file" 2>/dev/null)
 				if [ -n "$_tr_old" ] && [ "$_tr_run" = "true" ]; then
 					_tr_opid=$(echo "$_tr_old" | awk '{print $1}')
 					_tr_or=$(echo "$_tr_old" | awk '{print $2}')
 					_tr_ow=$(echo "$_tr_old" | awk '{print $3}')
+					_tr_osrc=$(echo "$_tr_old" | awk '{print $4}')
 					case "$_tr_or" in ''|*[!0-9]*) _tr_or=0 ;; esac
 					case "$_tr_ow" in ''|*[!0-9]*) _tr_ow=0 ;; esac
-					if [ "$_tr_opid" = "$_tr_pid" ] && [ "$_tr_dt" -gt 0 ]; then
-						_tr_dr=$((_tr_r - _tr_or)); [ "$_tr_dr" -lt 0 ] 2>/dev/null && _tr_dr=0
-						_tr_dw=$((_tr_w - _tr_ow)); [ "$_tr_dw" -lt 0 ] 2>/dev/null && _tr_dw=0
-						_tr_rbps=$(( _tr_dr / _tr_dt ))
-						_tr_tbps=$(( _tr_dw / _tr_dt ))
+					if [ "$_tr_dt" -gt 0 ] && [ "${_tr_osrc:-io}" = "${_tr_src:-io}" ]; then
+						if [ "$_tr_src" = "wan" ] || [ "$_tr_opid" = "$_tr_pid" ]; then
+							_tr_dr=$((_tr_r - _tr_or)); [ "$_tr_dr" -lt 0 ] 2>/dev/null && _tr_dr=0
+							_tr_dw=$((_tr_w - _tr_ow)); [ "$_tr_dw" -lt 0 ] 2>/dev/null && _tr_dw=0
+							_tr_rbps=$(( _tr_dr / _tr_dt ))
+							_tr_tbps=$(( _tr_dw / _tr_dt ))
+						fi
 					fi
 				fi
-				_tr_new_state="${_tr_new_state}${_c} ${_tr_pid:-0} ${_tr_r} ${_tr_w}\n"
+				_tr_new_state="${_tr_new_state}${_c} ${_tr_pid:-0} ${_tr_r} ${_tr_w} ${_tr_src:-io}\n"
 				_tr_sum_rx=$(( _tr_sum_rx + _tr_rbps ))
 				_tr_sum_tx=$(( _tr_sum_tx + _tr_tbps ))
 				_tr_role=primary

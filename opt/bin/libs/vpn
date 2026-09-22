@@ -1061,6 +1061,9 @@ cmd_adguardhome_off(){
 	[ -f /opt/etc/init.d/S09dnscrypt-proxy2 ] && /opt/etc/init.d/S09dnscrypt-proxy2 restart &> /dev/null
 	[ -f /opt/etc/init.d/S56dnsmasq ] && /opt/etc/init.d/S56dnsmasq restart &> /dev/null
 
+	# adguardhome_setup ставил ipset на 127.0.0.1#9753 — вернуть на dnscrypt
+	ipset_dns_change "${LOCALHOST_IP}#$(get_config_value DNS_CRYPT_PORT)" &> /dev/null
+
 	#	Обновляем правила ip4tables для доступного соединения
 	ip4__flush 'chain'
 	ip4__dns__add_routing_for_home
