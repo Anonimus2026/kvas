@@ -26,7 +26,7 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 .auth-box .btn { padding: 10px 30px; }
 
 /* Cards */
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; overflow:hidden; box-sizing:border-box; }
 .card h3 { color: #c9d1d9; font-size: 14px; margin-bottom: 10px; }
 .card-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
 .card-row label { color: #8b949e; min-width: 80px; font-size: 12px; }
@@ -230,16 +230,16 @@ window.addEventListener('error', function(e){
   <div class="card">
     <h3>Настройка VPN</h3>
     <div class="card-row" style="gap:6px;flex-direction:column;align-items:stretch;">
-      <div style="display:flex;gap:6px;align-items:center;">
-        <input type="text" id="vlessLink" placeholder="vless://..." style="flex:1;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0;">
+        <input type="text" id="vlessLink" placeholder="vless://..." style="flex:1 1 140px;min-width:0;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;box-sizing:border-box;">
         <button class="btn btn-sm" onclick="vlessNew(this)">VLESS</button>
       </div>
-      <div style="display:flex;gap:6px;align-items:center;">
-        <input type="text" id="hysteriaLink" placeholder="hysteria://..." style="flex:1;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0;">
+        <input type="text" id="hysteriaLink" placeholder="hysteria://..." style="flex:1 1 140px;min-width:0;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;box-sizing:border-box;">
         <button class="btn btn-sm" onclick="hysteriaNew(this)">Hysteria</button>
       </div>
-      <div style="display:flex;gap:6px;align-items:center;">
-        <input type="text" id="awgLink" placeholder="awg://... или /path/to/file.conf" style="flex:1;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0;">
+        <input type="text" id="awgLink" placeholder="awg://... или /path/to/file.conf" style="flex:1 1 140px;min-width:0;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;box-sizing:border-box;">
         <button class="btn btn-sm" onclick="awgNew(this)">AmneziaWG</button>
         <input type="file" id="awgFileInput" style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;" onchange="awgFileSelected(this)">
         <label for="awgFileInput" class="btn btn-sm" style="white-space:nowrap;cursor:pointer;">Обзор</label>
