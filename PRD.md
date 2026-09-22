@@ -144,5 +144,5 @@ kvas xray [core [версия]]
 ## 13. Авторы
 
 - KVAS: mail@zeleza.ru (оригинал qzeleza/kvas)
-- Hysteria: jobgomel
+- Hysteria, kvas-awg: jobgomel
 - Failover / fork: Anonimus2026

@@ -746,41 +746,53 @@ main() {
 			check_token "$token"
 			if [ ! -f "$PARENTAL_LIST" ]; then
 				echo '{"ok":true,"sites":[]}'
-				return
+				exit 0
 			fi
 			awk 'BEGIN{printf "{\"ok\":true,\"sites\":["; f=1}
 			{ gsub(/\r/,""); if ($0=="" || substr($0,1,1)=="#") next; if (!f) printf ","; f=0; gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); printf "\"%s\"", $0 }
-			END{printf "]"}' "$PARENTAL_LIST"
+			END{printf "]}\n"}' "$PARENTAL_LIST"
 			;;
-parental_add)
+		parental_add)
 			check_token "$token"
 			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
-			# 1. Добавляем в block.list (для отображения в web UI)
+			# Нормализация: убрать протокол, пробелы, www, завершающую точку/слэш
+			domain=$(echo "$domain" | sed 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||; s|^www\.||; s|/.*$||; s|[[:space:]]||g; s|\.$||')
+			[ -z "$domain" ] && json_error "domain required"
+			# 1. block.list — источник списка для Web UI
 			mkdir -p /opt/etc/adblock
-			[ -f /opt/etc/adblock/block.list ] || touch /opt/etc/adblock/block.list
-			grep -qxF "$domain" /opt/etc/adblock/block.list || echo "$domain" >> /opt/etc/adblock/block.list
-			# 2. Добавляем 0.0.0.0 domain в ads.kvas.list (для блокировки через dnsmasq)
-			[ -f /opt/etc/adblock/ads.kvas.list ] || touch /opt/etc/adblock/ads.kvas.list
-			grep -qF "0.0.0.0 $domain" /opt/etc/adblock/ads.kvas.list || echo "0.0.0.0 $domain" >> /opt/etc/adblock/ads.kvas.list
-			# 3. Гарантируем что addn-hosts есть в dnsmasq.conf
+			touch "$PARENTAL_LIST"
+			grep -qxF "$domain" "$PARENTAL_LIST" || echo "$domain" >> "$PARENTAL_LIST"
+			# 2. ads.kvas.list — блокировка через dnsmasq addn-hosts
+			touch /opt/etc/adblock/ads.kvas.list
+			grep -qxF "0.0.0.0 $domain" /opt/etc/adblock/ads.kvas.list || echo "0.0.0.0 $domain" >> /opt/etc/adblock/ads.kvas.list
+			# 3. parental.d — hostsdir (если включён)
+			mkdir -p /opt/etc/adblock/parental.d
+			if [ -f /opt/etc/adblock/block.list ]; then
+				sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list > /opt/etc/adblock/parental.d/parental.list 2>/dev/null
+			fi
+			# 4. Гарантируем addn-hosts в dnsmasq.conf
 			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
 				echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
-				/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+				/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
 			else
-				kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+				_dp=$(pidof dnsmasq 2>/dev/null)
+				[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
 			fi
 			json_ok "добавлен $domain"
 		;;
-parental_del)
+		parental_del)
 			check_token "$token"
 			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
-			[ -f /opt/etc/adblock/block.list ] && sed -i "/^${domain}$/d" /opt/etc/adblock/block.list 2>/dev/null
+			[ -f "$PARENTAL_LIST" ] && sed -i "/^${domain}$/d" "$PARENTAL_LIST" 2>/dev/null
+			[ -f /opt/etc/adblock/ads.kvas.list ] && sed -i "/^0\.0\.0\.0 ${domain}$/d" /opt/etc/adblock/ads.kvas.list 2>/dev/null
 			pf=/opt/etc/adblock/parental.d/parental.list
 			[ -f "$pf" ] && sed -i "/0.0.0.0 ${domain}$/d" "$pf" 2>/dev/null
+			_dp=$(pidof dnsmasq 2>/dev/null)
+			[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
 			json_ok "unblocked $domain"
 		;;
 		adblock_status)

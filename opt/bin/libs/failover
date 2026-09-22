@@ -358,6 +358,54 @@ log_failover() {
     mv "${FAILOVER_LOG}.tmp" "$FAILOVER_LOG" 2>/dev/null
 }
 
+# Счётчик неудач текущего канала (для FAIL_THRESHOLD)
+FAILOVER_FAIL_COUNT_FILE="/tmp/kvas-failover-failcount"
+
+_fo_get_fail_count() {
+    cat "$FAILOVER_FAIL_COUNT_FILE" 2>/dev/null || echo 0
+}
+
+_fo_set_fail_count() {
+    echo "$1" > "$FAILOVER_FAIL_COUNT_FILE" 2>/dev/null
+}
+
+_fo_reset_fail_count() {
+    rm -f "$FAILOVER_FAIL_COUNT_FILE" 2>/dev/null
+}
+
+# Проверка: набран ли порог неудач. Возвращает 0 (true) если порог достигнут.
+# При FAIL_THRESHOLD<=1 — всегда true (поведение как раньше).
+_fo_threshold_reached() {
+    local thr="${FAIL_THRESHOLD:-2}"
+    [ "$thr" -le 1 ] 2>/dev/null && return 0
+    local n=$(_fo_get_fail_count)
+    [ "$n" -ge "$thr" ] 2>/dev/null
+}
+
+# Вызывается при УСПЕШНОЙ проверке активного канала — сбрасывает счётчик
+_fo_note_success() {
+    _fo_reset_fail_count
+}
+
+# Вызывается при НЕУДАЧНОЙ проверке — инкрементирует, логирует
+# Возвращает 0 только если порог достигнут (можно переключать)
+_fo_note_failure() {
+    local thr="${FAIL_THRESHOLD:-2}"
+    local n=$(_fo_get_fail_count)
+    n=$((n + 1))
+    _fo_set_fail_count "$n"
+    if [ "$thr" -le 1 ] 2>/dev/null; then
+        log_failover "Порог неудач=1 — переключаемся сразу (неудача #$n)"
+        return 0
+    fi
+    if [ "$n" -ge "$thr" ] 2>/dev/null; then
+        log_failover "Порог неудач достигнут ($n/$thr) — можно переключаться"
+        return 0
+    fi
+    log_failover "Неудача $n/$thr — ждём следующей проверки"
+    return 1
+}
+
 run_failover_check() {
     load_failover_conf
     
@@ -370,15 +418,22 @@ run_failover_check() {
     # Если active == PRIMARY — проверяем PRIMARY
     if [ "$active" = "$PRIMARY" ]; then
         if check_protocol "$PRIMARY"; then
+            _fo_note_success
             return 0
         else
             log_failover "$PRIMARY недоступен."
+            # Считаем неудачу; переключаемся только при достижении порога
+            if ! _fo_note_failure; then
+                return 0
+            fi
             # Пробуем SECONDARY, потом TERTIARY
             if [ "$secondary" != "manual" ] && check_protocol "$secondary"; then
                 log_failover "Переключение на $secondary..."
+                _fo_reset_fail_count
                 switch_to "$secondary"
             elif [ -n "$tertiary" ] && check_protocol "$tertiary"; then
                 log_failover "Переключение на $tertiary (второй резерв)..."
+                _fo_reset_fail_count
                 switch_to "$tertiary"
             else
                 log_failover "Ни один канал не доступен. Ожидаем."
