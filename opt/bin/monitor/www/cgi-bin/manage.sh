@@ -313,6 +313,36 @@ main() {
 			printf '{"ok":true,"vpn_proc":"%s","vpn_port":"%s","ag_conf":"%s","ag_http":"%s","ag_port":"%s","dns_alive":"%s","dns_resolve":"%s","adblock":"%s","fo_mode":"%s","fo_daemon":"%s"}\n' \
 				"$vpn_proc" "$vpn_port" "$ag_conf" "$ag_http" "$ag_port" "$dns_alive" "$dns_resolve" "$adblock_conf" "$fo_mode" "$fo_daemon"
 			;;
+		traffic)
+			check_token "$token"
+			_tr_iface=""
+			# Prefer tunnel iface (wg/awg/tun/utun/hy/xray-like)
+			for _n in $(awk -F: 'NR>2{gsub(/ /,"",$1); print $1}' /proc/net/dev 2>/dev/null); do
+				case "$_n" in
+					wg*|awg*|tun*|utun*|hy*|xray*|gretap*|teql*|ppp*)
+						_tr_iface="$_n"; break ;;
+				esac
+			done
+			# Fallback: WAN from route table
+			if [ -z "$_tr_iface" ]; then
+				_tr_iface=$(awk '$2=="00000000" && $3=="00000000"{print $1; exit}' /proc/net/route 2>/dev/null)
+			fi
+			# Fallback: config
+			if [ -z "$_tr_iface" ]; then
+				_tr_iface=$(grep '^INFACE_CLI=' "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | cut -d, -f1)
+			fi
+			[ -z "$_tr_iface" ] && _tr_iface="eth0"
+			_tr_rx=0; _tr_tx=0
+			_tr_line=$(awk -v ifc="${_tr_iface}:" '$1==ifc{print $2, $10; exit}' /proc/net/dev 2>/dev/null)
+			if [ -n "$_tr_line" ]; then
+				_tr_rx=$(echo "$_tr_line" | awk '{print $1}')
+				_tr_tx=$(echo "$_tr_line" | awk '{print $2}')
+			fi
+			case "$_tr_rx" in ''|*[!0-9]*) _tr_rx=0 ;; esac
+			case "$_tr_tx" in ''|*[!0-9]*) _tr_tx=0 ;; esac
+			printf '{"ok":true,"iface":"%s","rx":"%s","tx":"%s"}\n' \
+				"$(json_str "$_tr_iface")" "$_tr_rx" "$_tr_tx"
+			;;
 		hosts)
 			check_token "$token"
 			[ ! -f "$KVAS_LIST" ] && echo '{"ok":true,"hosts":[]}' && return
