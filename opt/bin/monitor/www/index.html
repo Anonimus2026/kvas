@@ -252,11 +252,13 @@ window.addEventListener('error', function(e){
   <!-- AdGuard -->
   <div class="card">
     <h3>AdGuard Home</h3>
-    <div class="card-row" style="gap:6px;">
+    <div class="card-row" style="gap:6px;flex-wrap:wrap;align-items:center;">
+      <button class="btn btn-sm" id="agInstallBtn" onclick="adguardInstall(this)">Установить</button>
       <button class="btn btn-sm success" id="agOn" onclick="adguardOn(this)">Включить</button>
       <button class="btn btn-sm danger" id="agOff" onclick="adguardOff(this)">Выключить</button>
       <span class="value" id="agStatus" style="margin-left:8px;">-</span>
     </div>
+    <div id="agPortHint" style="font-size:12px;color:#8b949e;margin-top:6px;"></div>
     <div id="agMsg" class="msg" style="font-size:11px;max-height:150px;overflow-y:auto;"></div>
   </div>
 
@@ -1666,12 +1668,70 @@ function loadAdguardStatus() {
   api('/cgi-bin/manage.sh?action=adguard_status', function(d){
     if (!d.ok) return;
     var el = document.getElementById('agStatus');
-    if (d.adguard === 'on') {
+    var hint = document.getElementById('agPortHint');
+    var installBtn = document.getElementById('agInstallBtn');
+    var onBtn = document.getElementById('agOn');
+    var offBtn = document.getElementById('agOff');
+    var port = d.port || '8086';
+    var installed = d.installed === 'true';
+    var running = d.running === 'true';
+    var enabled = d.enabled === 'true' || d.adguard === 'on' || d.adguard === 'degraded';
+    if (!installed) {
+      el.innerHTML = '<span style="color:#8b949e;">не установлен</span>';
+      if (hint) hint.textContent = 'Установите локально — web-интерфейс будет на порту 8086';
+      if (installBtn) { installBtn.textContent = 'Установить'; installBtn.className = 'btn btn-sm success'; installBtn.disabled = false; }
+      if (onBtn) onBtn.disabled = true;
+      if (offBtn) offBtn.disabled = true;
+      return;
+    }
+    if (installBtn) { installBtn.textContent = 'Удалить'; installBtn.className = 'btn btn-sm danger'; installBtn.disabled = false; }
+    if (onBtn) onBtn.disabled = enabled;
+    if (offBtn) offBtn.disabled = !enabled;
+    if (enabled && running) {
       el.innerHTML = '<span style="color:#3fb950;">вкл</span>';
+      if (hint) hint.textContent = 'Доступен по порту ' + port + ' — http://&lt;роутер&gt;:' + port;
+    } else if (enabled) {
+      el.innerHTML = '<span style="color:#d29922;">запускается</span>';
+      if (hint) hint.textContent = 'Порт ' + port + ' — сервис ещё не отвечает';
     } else {
       el.innerHTML = '<span style="color:#f85149;">выкл</span>';
+      if (hint) hint.textContent = 'Установлен, остановлен. После включения — порт ' + port;
     }
   });
+}
+
+function adguardInstall(btn) {
+  var label = (btn.textContent || '').trim();
+  if (label === 'Удалить') {
+    if (!confirm('Полностью удалить AdGuard Home?')) return;
+    var el0 = document.getElementById('agMsg');
+    el0.innerHTML = '<span style="color:#8b949e;">Удаление...</span>';
+    apiBtn('/cgi-bin/manage.sh?action=adguard_uninstall', btn, function(d){
+      if (d.ok) {
+        el0.className = 'msg ok';
+        el0.textContent = d.msg || 'Удалён';
+        loadAdguardStatus();
+        loadSystemStatus();
+      } else {
+        el0.className = 'msg err';
+        el0.textContent = d.error || 'Ошибка';
+      }
+    }, 180000);
+    return;
+  }
+  var el = document.getElementById('agMsg');
+  el.innerHTML = '<span style="color:#8b949e;">Локальная установка... до 120с</span>';
+  apiBtn('/cgi-bin/manage.sh?action=adguard_install', btn, function(d){
+    if (d.ok) {
+      el.className = 'msg ok';
+      el.textContent = d.msg || 'Установлен';
+      loadAdguardStatus();
+      loadSystemStatus();
+    } else {
+      el.className = 'msg err';
+      el.textContent = d.error || 'Ошибка';
+    }
+  }, 180000);
 }
 
 function adguardOn(btn) {
@@ -1687,12 +1747,12 @@ function adguardOn(btn) {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка';
     }
-  });
+  }, 120000);
 }
 
 function adguardOff(btn) {
   var el = document.getElementById('agMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Выполняется...</span>';
+  el.innerHTML = '<span style="color:#8b949e;">Остановка...</span>';
   apiBtn('/cgi-bin/manage.sh?action=adguard_off', btn, function(d){
     if (d.ok) {
       el.className = 'msg ok';
@@ -1703,7 +1763,7 @@ function adguardOff(btn) {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка';
     }
-  });
+  }, 60000);
 }
 
 /* ========== VPN SETUP ========== */
