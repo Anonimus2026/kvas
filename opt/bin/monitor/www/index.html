@@ -654,7 +654,7 @@ function loadHealth() {
   }
   api('/cgi-bin/manage.sh?action=system_status', function(d){
     if (d.ok) {
-      var up = (d.vless === 'running' || d.hysteria === 'running');
+      var up = (d.vless === 'true' || d.hysteria === 'true' || d.awg === 'true');
       setDot('hdVpn', up ? 'ok' : 'bad');
       if (!up) bad++;
     } else { setDot('hdVpn','bad'); bad++; }

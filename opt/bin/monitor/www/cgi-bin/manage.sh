@@ -253,9 +253,11 @@ main() {
 			# Xray version
 			xray_ver=""
 			[ -x /opt/sbin/xray ] && xray_ver=$(/opt/sbin/xray version 2>/dev/null | head -1 | sed 's/Xray //' | sed 's/ .*//')
-			printf '{"ok":true,"pkg":"%s","ver":"%s","mode":"%s","failover":"%s","vless":"%s","hysteria":"%s","hosts":"%s","xray_service":"%s","hysteria_service":"%s","xray_version":"%s"}\n' \
+			awg_running="false"
+			[ -f /var/run/wireproxy.pid ] && kill -0 "$(cat /var/run/wireproxy.pid 2>/dev/null)" 2>/dev/null && awg_running="true"
+			printf '{"ok":true,"pkg":"%s","ver":"%s","mode":"%s","failover":"%s","vless":"%s","hysteria":"%s","awg":"%s","hosts":"%s","xray_service":"%s","hysteria_service":"%s","xray_version":"%s"}\n' \
 				"$(json_str "$kvaspkg_name")" "$(json_str "$kvaspkg_ver")" "$(json_str "$vpn_mode")" "$(json_str "$failover")" \
-				"$vless_running" "$hysteria_running" "$host_count" \
+				"$vless_running" "$hysteria_running" "$awg_running" "$host_count" \
 				"$(json_str "$xray_svc")" "$(json_str "$hysteria_svc")" "$(json_str "$xray_ver")"
 			;;
 		hosts)
