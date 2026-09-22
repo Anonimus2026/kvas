@@ -686,8 +686,10 @@ function renderHealthDetail(which) {
   } else if (which === 'adg') {
     var conf = s.ag_conf === 'true', http = s.ag_http === 'true';
     var aport = s.ag_port || '8086';
-    if (conf && http) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Конфиг включён, HTTP :' + aport + ' отвечает.<br><a href="http://' + location.hostname + ':' + aport + '" target="_blank" rel="noopener" style="color:#58a6ff;">Открыть web AdGuard</a>'; return; }
-    if (conf && !http) { el.innerHTML = '<b style="color:#d29922">AdGuard: конфиг есть, HTTP не отвечает</b><br>Сервис не поднялся или порт :' + aport + ' недоступен.<br>Попробуйте: <code>/opt/etc/init.d/S99adguardhome restart</code>'; return; }
+    var run = false;
+    try { run = (document.getElementById('agStatus') || {}).textContent === 'вкл'; } catch (e) {}
+    if (conf && (http || run)) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Порт :' + aport + ' слушает.<br><a href="http://' + location.hostname + ':' + aport + '" target="_blank" rel="noopener" style="color:#58a6ff;">Открыть web AdGuard</a>'; return; }
+    if (conf && !http && !run) { el.innerHTML = '<b style="color:#d29922">AdGuard: конфиг есть, порт не слушает</b><br>Порт :' + aport + ' не найден в ss/netstat.<br>Попробуйте: <code>/opt/etc/init.d/S99adguardhome restart</code>'; return; }
     el.innerHTML = '<b style="color:#f85149">AdGuard: выключен</b><br>ADGUARD_ENABLE=false или init-скрипт отсутствует.<br>Попробуйте: <code>kvas adguard on</code>';
   } else if (which === 'dns') {
     var alive = s.dns_alive === 'running', res = s.dns_resolve === 'true', blk = s.adblock === 'true';
@@ -1740,18 +1742,19 @@ function adguardInstall(btn) {
 
 function adguardOn(btn) {
   var el = document.getElementById('agMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Выполняется... может занять до 30с</span>';
+  el.innerHTML = '<span style="color:#8b949e;">Выполняется... может занять до 60с</span>';
   apiBtn('/cgi-bin/manage.sh?action=adguard_on', btn, function(d){
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.msg || 'AdGuard включен';
       loadAdguardStatus();
       loadSystemStatus();
+      loadHealth();
     } else {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка';
     }
-  }, 120000);
+  }, 180000);
 }
 
 function adguardOff(btn) {

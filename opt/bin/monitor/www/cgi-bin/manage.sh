@@ -282,11 +282,20 @@ main() {
 			fi
 			case "$ag_port" in ''|*[!0-9]*|9753|6060|53) ag_port=8086 ;; esac
 			ag_http="false"
-			if command -v wget >/dev/null 2>&1; then
-				wget -q -O /dev/null -T 2 "http://127.0.0.1:${ag_port}" 2>/dev/null && ag_http="true"
-			elif command -v curl >/dev/null 2>&1; then
-				curl -s -o /dev/null -m 2 "http://127.0.0.1:${ag_port}" 2>/dev/null && ag_http="true"
+			if command -v ss >/dev/null 2>&1; then
+				ss -tln 2>/dev/null | grep -qE "[:.]${ag_port}[[:space:]]" && ag_http="true"
+			elif command -v netstat >/dev/null 2>&1; then
+				netstat -tln 2>/dev/null | grep -qE "[:.]${ag_port}[[:space:]]" && ag_http="true"
 			fi
+			if [ "$ag_http" = "false" ]; then
+				if command -v curl >/dev/null 2>&1; then
+					curl -s -o /dev/null -m 2 "http://127.0.0.1:${ag_port}/" 2>/dev/null && ag_http="true"
+					[ "$ag_http" = "false" ] && curl -s -o /dev/null -m 2 "http://localhost:${ag_port}/" 2>/dev/null && ag_http="true"
+				elif command -v wget >/dev/null 2>&1; then
+					wget -q -O /dev/null -T 2 "http://127.0.0.1:${ag_port}/" 2>/dev/null && ag_http="true"
+				fi
+			fi
+			[ "$ag_http" = "false" ] && pidof AdGuardHome >/dev/null 2>&1 && ag_http="true"
 			# dnsmasq: init.d alive + something listens on :53 (real, not external resolve)
 			dns_alive=$(check_service S56dnsmasq)
 			dns_resolve="false"
@@ -631,11 +640,19 @@ main() {
 			fi
 			case "$_ag_port" in ''|*[!0-9]*|9753|6060|53) _ag_port=8086 ;; esac
 			_http="false"
-			if command -v wget >/dev/null 2>&1; then
-				wget -q -O /dev/null -T 2 "http://127.0.0.1:${_ag_port}" 2>/dev/null && _http="true"
-			elif command -v curl >/dev/null 2>&1; then
-				curl -s -o /dev/null -m 2 "http://127.0.0.1:${_ag_port}" 2>/dev/null && _http="true"
+			if command -v ss >/dev/null 2>&1; then
+				ss -tln 2>/dev/null | grep -qE "[:.]${_ag_port}[[:space:]]" && _http="true"
+			elif command -v netstat >/dev/null 2>&1; then
+				netstat -tln 2>/dev/null | grep -qE "[:.]${_ag_port}[[:space:]]" && _http="true"
 			fi
+			if [ "$_http" = "false" ]; then
+				if command -v curl >/dev/null 2>&1; then
+					curl -s -o /dev/null -m 2 "http://127.0.0.1:${_ag_port}/" 2>/dev/null && _http="true"
+				elif command -v wget >/dev/null 2>&1; then
+					wget -q -O /dev/null -T 2 "http://127.0.0.1:${_ag_port}/" 2>/dev/null && _http="true"
+				fi
+			fi
+			[ "$_http" = "false" ] && pidof AdGuardHome >/dev/null 2>&1 && _http="true"
 			_running="false"
 			[ "$_http" = "true" ] && _running="true"
 			[ "$_running" = "false" ] && pidof AdGuardHome >/dev/null 2>&1 && _running="true"
@@ -697,9 +714,25 @@ main() {
 			;;
 		adguard_on)
 			check_token "$token"
-			out=$(echo "n" | $KVAS_BIN adguard on 2>&1 | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
 			_ag_yaml=/opt/etc/AdGuardHome/AdGuardHome.yaml
-			[ ! -f "$_ag_yaml" ] && [ -f /opt/etc/.kvas/backup/AdGuardHome.yaml ] && _ag_yaml=/opt/etc/.kvas/backup/AdGuardHome.yaml
+			[ ! -f "$_ag_yaml" ] && [ -f /opt/etc/.kvas/backup/AdGuardHome.yaml ] && {
+				cp /opt/etc/.kvas/backup/AdGuardHome.yaml "$_ag_yaml" 2>/dev/null || true
+			}
+			if [ -f "$_ag_yaml" ]; then
+				. /opt/apps/kvas/bin/libs/main 2>/dev/null || true
+				. /opt/apps/kvas/bin/libs/vpn 2>/dev/null || true
+				if [ -f /opt/apps/kvas/etc/init.d/S99adguard ]; then
+					cp /opt/apps/kvas/etc/init.d/S99adguard /opt/etc/init.d/S99adguardhome 2>/dev/null || true
+					chmod 755 /opt/etc/init.d/S99adguardhome 2>/dev/null || true
+				fi
+				if type adguardhome_setup >/dev/null 2>&1; then
+					out=$(adguardhome_setup 2>&1 | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+				else
+					out=$($KVAS_BIN adguard on 2>&1 </dev/null | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+				fi
+			else
+				out=$(printf 'n\nn\n' | $KVAS_BIN adguard on 2>&1 | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			fi
 			_ag_port=""
 			if [ -f "$_ag_yaml" ]; then
 				_ag_port=$(awk '/^http:/{h=1;next} /^[a-z]/{h=0} h && $1=="address:"{n=split($2,a,":"); print a[n]; exit}' "$_ag_yaml" 2>/dev/null)
