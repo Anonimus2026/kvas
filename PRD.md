@@ -17,13 +17,12 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 ## 2. Структура проекта (SOT)
 
 ```
-C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок v546 (bin, etc, awg, hysteria + ipk)
+C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
 C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-547_all.ipk  ← текущий релиз
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
-C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-547_all.ipk  ← текущий релиз
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
-C:\Users\Pavel\kvas\kvas-original\          ← git clone форка (для пуша, ~90 коммитов)
+C:\Users\Pavel\kvas\kvas-original\          ← git clone форка Anonimus2026 (push target)
 ```
 
 Правило: правки — только в SOT, затем сборка в Docker. Файлы не тянуть через Windows-копирование (ломает кодировку/heredoc).
@@ -39,9 +38,9 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Assets: 512, 534, 546 (upgrade берёт старший через jq sort).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Assets: 512, 534, 546, **547** (upgrade берёт старший через jq sort).
 
-## 4. Текущий статус (v546)
+## 4. Текущий статус (v547)
 
 | Компонент | Статус |
 |-----------|--------|
