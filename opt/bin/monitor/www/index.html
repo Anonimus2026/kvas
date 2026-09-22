@@ -685,8 +685,8 @@ function renderHealthDetail(which) {
     el.innerHTML = '<b style="color:#f85149">VPN: не запущен</b><br>Ни один VPN-процесс не работает.<br>Попробуйте: <code>kvas vless on</code> / <code>kvas hysteria on</code>';
   } else if (which === 'adg') {
     var conf = s.ag_conf === 'true', http = s.ag_http === 'true';
-    var aport = s.ag_port || '3000';
-    if (conf && http) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Конфиг включён, HTTP :' + aport + ' отвечает.'; return; }
+    var aport = s.ag_port || '8086';
+    if (conf && http) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Конфиг включён, HTTP :' + aport + ' отвечает.<br><a href="http://' + location.hostname + ':' + aport + '" target="_blank" rel="noopener" style="color:#58a6ff;">Открыть web AdGuard</a>'; return; }
     if (conf && !http) { el.innerHTML = '<b style="color:#d29922">AdGuard: конфиг есть, HTTP не отвечает</b><br>Сервис не поднялся или порт :' + aport + ' недоступен.<br>Попробуйте: <code>/opt/etc/init.d/S99adguardhome restart</code>'; return; }
     el.innerHTML = '<b style="color:#f85149">AdGuard: выключен</b><br>ADGUARD_ENABLE=false или init-скрипт отсутствует.<br>Попробуйте: <code>kvas adguard on</code>';
   } else if (which === 'dns') {
@@ -1678,7 +1678,7 @@ function loadAdguardStatus() {
     var enabled = d.enabled === 'true' || d.adguard === 'on' || d.adguard === 'degraded';
     if (!installed) {
       el.innerHTML = '<span style="color:#8b949e;">не установлен</span>';
-      if (hint) hint.textContent = 'Установите локально — web-интерфейс будет на порту 8086';
+      if (hint) hint.textContent = 'Установка локально — после неё откроется настройка в новой вкладке';
       if (installBtn) { installBtn.textContent = 'Установить'; installBtn.className = 'btn btn-sm success'; installBtn.disabled = false; }
       if (onBtn) onBtn.disabled = true;
       if (offBtn) offBtn.disabled = true;
@@ -1689,7 +1689,7 @@ function loadAdguardStatus() {
     if (offBtn) offBtn.disabled = !enabled;
     if (enabled && running) {
       el.innerHTML = '<span style="color:#3fb950;">вкл</span>';
-      if (hint) hint.textContent = 'Доступен по порту ' + port + ' — http://&lt;роутер&gt;:' + port;
+      if (hint) hint.innerHTML = 'Web: <a href="http://' + location.hostname + ':' + port + '" target="_blank" rel="noopener" style="color:#58a6ff;">http://' + location.hostname + ':' + port + '</a>';
     } else if (enabled) {
       el.innerHTML = '<span style="color:#d29922;">запускается</span>';
       if (hint) hint.textContent = 'Порт ' + port + ' — сервис ещё не отвечает';
@@ -1727,6 +1727,10 @@ function adguardInstall(btn) {
       el.textContent = d.msg || 'Установлен';
       loadAdguardStatus();
       loadSystemStatus();
+      if (d.need_setup && d.setup_url) {
+        el.innerHTML = (d.msg || 'Установлен') + ' — <a href="' + d.setup_url + '" target="_blank" rel="noopener" style="color:#58a6ff;">открыть настройку AdGuard</a>';
+        try { window.open(d.setup_url, '_blank', 'noopener'); } catch (e) {}
+      }
     } else {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка';
