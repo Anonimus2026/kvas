@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-548
+**Версия:** 1.1.9_beta-10-549
 **Дата:** 22.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-548_all.ipk  ← текущий релиз
+C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-549_all.ipk  ← текущий релиз
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,9 +38,9 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Assets: 512, 534, 546, **548** (upgrade берёт старший через jq sort).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Assets: 512, 534, 546, **549** (upgrade берёт старший через jq sort).
 
-## 4. Текущий статус (v548)
+## 4. Текущий статус (v549)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -134,7 +134,7 @@ kvas xray [core [версия]]
 | `set_pass` без токена | SKIP by design (LAN) |
 | `rm_tmp_cache` (upgrade:119) | `find / \| grep '/tmp' \| grep kvas \| xargs rm -rf` — грубо, но фильтруется по kvas; чистит tmp перед установкой |
 | `/tmp/build.sh` | устарел, не использовать (§3) |
-| tags.list в опубликованном ipk v546 | тестовые записи; **v548 собран чистым** (CLEAN) — больше не актуально |
+| tags.list в опубликованном ipk v546 | тестовые записи; **v549 собран чистым** (CLEAN) — больше не актуально |
 | `kvas-original` vs upstream | diverged; git push — только через kvas-original |
 
 ## 12. Идея (не реализовано): Per-domain routing
