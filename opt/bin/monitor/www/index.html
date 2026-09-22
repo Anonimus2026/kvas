@@ -43,7 +43,8 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 .btn.danger:hover { background: #f8514922; }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn-sm { padding: 3px 10px; font-size: 11px; }
-.hchip { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:6px; background:#0d1117; border:1px solid #30363d; font-size:12px; }
+.hchip { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:6px; background:#0d1117; border:1px solid #30363d; font-size:12px; cursor:pointer; user-select:none; }
+.hchip:active { background:#161b22; }
 .hdot { width:8px; height:8px; border-radius:50%; background:#8b949e; flex:none; }
 .hdot.ok { background:#3fb950; }
 .hdot.warn { background:#d29922; }
@@ -53,6 +54,7 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
   .btn { min-height:44px; padding:10px 14px; }
   .btn-sm { min-height:40px; padding:8px 12px; }
   .tab { padding:12px 14px; min-height:44px; }
+  .hchip { min-height:44px; padding:10px 14px; }
 }
 
 /* Messages */
@@ -165,14 +167,15 @@ window.addEventListener('error', function(e){
   <!-- Health -->
   <div class="card">
     <h3>Состояние сервисов</h3>
-    <div class="card-row" style="gap:8px;">
-      <span class="hchip"><span class="hdot" id="hdVpn"></span>VPN</span>
-      <span class="hchip"><span class="hdot" id="hdAdg"></span>AdGuard</span>
-      <span class="hchip"><span class="hdot" id="hdDns"></span>DNS/Adblock</span>
-      <span class="hchip"><span class="hdot" id="hdFo"></span>Failover</span>
+    <div class="card-row" style="gap:8px;flex-wrap:wrap;">
+      <span class="hchip" id="chipVpn" onclick="toggleHealth('vpn')"><span class="hdot" id="hdVpn"></span>VPN</span>
+      <span class="hchip" id="chipAdg" onclick="toggleHealth('adg')"><span class="hdot" id="hdAdg"></span>AdGuard</span>
+      <span class="hchip" id="chipDns" onclick="toggleHealth('dns')"><span class="hdot" id="hdDns"></span>dnsmasq</span>
+      <span class="hchip" id="chipFo" onclick="toggleHealth('fo')"><span class="hdot" id="hdFo"></span>Failover</span>
       <button class="btn btn-sm" onclick="loadHealth()" style="margin-left:4px;">Обновить</button>
     </div>
     <div id="healthHint" style="font-size:11px;color:#8b949e;margin-top:6px;"></div>
+    <div id="healthDetails" style="display:none;margin-top:8px;padding:8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;font-size:12px;"></div>
   </div>
 
   <!-- Hosts -->
@@ -640,48 +643,85 @@ function setDot(id, cls) {
   if (el) { el.className = 'hdot ' + (cls || ''); }
 }
 
+var _healthState = {};
+var _healthOpen = '';
+
+function toggleHealth(which) {
+  var el = document.getElementById('healthDetails');
+  if (!el) return;
+  if (_healthOpen === which) { _healthOpen = ''; el.style.display = 'none'; return; }
+  _healthOpen = which;
+  el.style.display = 'block';
+  renderHealthDetail(which);
+}
+
+function renderHealthDetail(which) {
+  var el = document.getElementById('healthDetails');
+  if (!el) return;
+  var s = _healthState;
+  if (which === 'vpn') {
+    var proc = s.vpn_proc === 'true', port = s.vpn_port === 'true';
+    if (proc && port) { el.innerHTML = '<b style="color:#3fb950">VPN: OK</b><br>Процесс запущен, SOCKS-порт отвечает.'; return; }
+    if (proc && !port) { el.innerHTML = '<b style="color:#d29922">VPN: порт не слушает</b><br>Процесс есть, но порт :1097/:10808 не отвечает.<br>Попробуйте: <code>kvas restart</code>'; return; }
+    el.innerHTML = '<b style="color:#f85149">VPN: не запущен</b><br>Ни один VPN-процесс не работает.<br>Попробуйте: <code>kvas vless on</code> / <code>kvas hysteria on</code>';
+  } else if (which === 'adg') {
+    var conf = s.ag_conf === 'true', http = s.ag_http === 'true';
+    if (conf && http) { el.innerHTML = '<b style="color:#3fb950">AdGuard: OK</b><br>Конфиг включён, HTTP :3000 отвечает.'; return; }
+    if (conf && !http) { el.innerHTML = '<b style="color:#d29922">AdGuard: конфиг есть, HTTP не отвечает</b><br>Сервис не поднялся или порт :3000 заблокирован.<br>Попробуйте: <code>/opt/etc/init.d/S99adguardhome restart</code>'; return; }
+    el.innerHTML = '<b style="color:#f85149">AdGuard: выключен</b><br>ADGUARD_ENABLE=false или init-скрипт отсутствует.<br>Попробуйте: <code>kvas adguard on</code>';
+  } else if (which === 'dns') {
+    var alive = s.dns_alive === 'running', res = s.dns_resolve === 'true', blk = s.adblock === 'true';
+    if (alive && res) {
+      var extra = blk ? '<br>Adblock: включён (addn-hosts).' : '<br>Adblock: выключен.';
+      el.innerHTML = '<b style="color:#3fb950">dnsmasq: OK</b><br>Сервис жив, DNS-резолв работает.' + extra;
+      return;
+    }
+    if (alive && !res) { el.innerHTML = '<b style="color:#d29922">dnsmasq: жив, но не резолвит</b><br>S56dnsmasq запущен, но nslookup/dig через 127.0.0.1 не проходит.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq restart</code>'; return; }
+    el.innerHTML = '<b style="color:#f85149">dnsmasq: не запущен</b><br>S56dnsmasq не отвечает.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq start</code>';
+  } else if (which === 'fo') {
+    var mode = s.fo_mode, run = s.fo_daemon === 'true';
+    if (mode !== 'failover') { el.innerHTML = '<b style="color:#8b949e">Failover: выключен</b><br>Режим: ' + mode + '.<br>Попробуйте: <code>kvas failover on</code>'; return; }
+    if (run) { el.innerHTML = '<b style="color:#3fb950">Failover: OK</b><br>Режим failover, демон запущен (PID жив).'; return; }
+    el.innerHTML = '<b style="color:#d29922">Failover: режим включён, демон не запущен</b><br>PID-файл мёртв или процесс упал.<br>Попробуйте: <code>kvas failover off && kvas failover on</code>';
+  }
+}
+
 function loadHealth() {
   setDot('hdVpn',''); setDot('hdAdg',''); setDot('hdDns',''); setDot('hdFo','');
+  _healthState = {};
   var hint = document.getElementById('healthHint');
   if (hint) hint.textContent = 'Проверка…';
-  var left = 4, bad = 0, warn = 0;
-  function step() {
-    left--;
-    if (left > 0) return;
-    if (hint) {
-      hint.textContent = bad ? ('Проблемы: ' + bad) : (warn ? 'Частично OK' : 'Все сервисы OK');
+  api('/cgi-bin/manage.sh?action=health_details', function(d){
+    if (!d.ok) {
+      setDot('hdVpn','bad'); setDot('hdAdg','bad'); setDot('hdDns','bad'); setDot('hdFo','bad');
+      if (hint) hint.textContent = 'Ошибка проверки';
+      return;
     }
-  }
-  api('/cgi-bin/manage.sh?action=system_status', function(d){
-    if (d.ok) {
-      var up = (d.vless === 'true' || d.hysteria === 'true' || d.awg === 'true');
-      setDot('hdVpn', up ? 'ok' : 'bad');
-      if (!up) bad++;
-    } else { setDot('hdVpn','bad'); bad++; }
-    step();
-  });
-  api('/cgi-bin/manage.sh?action=adguard_status', function(d){
-    if (d.ok) {
-      setDot('hdAdg', d.adguard === 'on' ? 'ok' : 'warn');
-      if (d.adguard !== 'on') warn++;
-    } else { setDot('hdAdg','bad'); bad++; }
-    step();
-  });
-  api('/cgi-bin/manage.sh?action=adblock_status', function(d){
-    if (d.ok) {
-      setDot('hdDns', d.adblock === 'on' ? 'ok' : 'warn');
-      if (d.adblock !== 'on') warn++;
-    } else { setDot('hdDns','bad'); bad++; }
-    step();
-  });
-  api('/cgi-bin/manage.sh?action=failover_status', function(d){
-    if (d.ok) {
-      var foOn = d.enabled === 'failover';
-      var run = d.daemon === 'true';
-      setDot('hdFo', foOn ? (run ? 'ok' : 'warn') : 'warn');
-      if (foOn && !run) warn++;
-    } else { setDot('hdFo','bad'); bad++; }
-    step();
+    _healthState = d;
+    var bad = 0, warn = 0;
+    var vpnOk = (d.vpn_proc === 'true' && d.vpn_port === 'true');
+    var vpnWarn = (d.vpn_proc === 'true' || d.vpn_port === 'true');
+    setDot('hdVpn', vpnOk ? 'ok' : (vpnWarn ? 'warn' : 'bad'));
+    if (vpnOk) {} else if (vpnWarn) warn++; else bad++;
+
+    var agOk = (d.ag_conf === 'true' && d.ag_http === 'true');
+    var agWarn = (d.ag_conf === 'true');
+    setDot('hdAdg', agOk ? 'ok' : (agWarn ? 'warn' : 'bad'));
+    if (agOk) {} else if (agWarn) warn++; else bad++;
+
+    var dnsOk = (d.dns_alive === 'running' && d.dns_resolve === 'true');
+    var dnsWarn = (d.dns_alive === 'running');
+    setDot('hdDns', dnsOk ? 'ok' : (dnsWarn ? 'warn' : 'bad'));
+    if (dnsOk) {} else if (dnsWarn) warn++; else bad++;
+
+    if (d.fo_mode !== 'failover') { setDot('hdFo','warn'); warn++; }
+    else if (d.fo_daemon === 'true') { setDot('hdFo','ok'); }
+    else { setDot('hdFo','warn'); warn++; }
+
+    if (hint) {
+      hint.textContent = bad ? ('Проблемы: ' + bad + ' — нажмите на чип для деталей') : (warn ? 'Частично OK — нажмите на чип для деталей' : 'Все сервисы OK');
+    }
+    if (_healthOpen) renderHealthDetail(_healthOpen);
   });
 }
 
