@@ -858,7 +858,9 @@ function trTick() {
     var rx = parseInt(d.rx, 10) || 0;
     var tx = parseInt(d.tx, 10) || 0;
     var ifaceEl = document.getElementById('trIface');
+    var changed = _trPrev && _trPrev.iface && d.iface && _trPrev.iface !== d.iface;
     if (ifaceEl && d.iface) ifaceEl.textContent = d.iface;
+    if (changed) { _trPrev = null; _trHist = []; }
     if (_trPrev) {
       var now = Date.now();
       var dt = (now - _trPrev.t) / 1000;
@@ -878,10 +880,9 @@ function trTick() {
         trDraw();
       }
     } else {
-      _trHist = [];
       trDraw();
     }
-    _trPrev = { rx: rx, tx: tx, t: Date.now() };
+    _trPrev = { rx: rx, tx: tx, t: Date.now(), iface: d.iface || '' };
   }, 8000);
 }
 

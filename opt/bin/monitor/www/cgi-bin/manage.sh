@@ -316,18 +316,23 @@ main() {
 		traffic)
 			check_token "$token"
 			_tr_iface=""
-			# Prefer tunnel iface (wg/awg/tun/utun/hy/xray-like)
+			# 1) Real VPN kernel ifaces only (not tunl0/sit/gre/teql/dummy)
 			for _n in $(awk -F: 'NR>2{gsub(/ /,"",$1); print $1}' /proc/net/dev 2>/dev/null); do
 				case "$_n" in
-					wg*|awg*|tun*|utun*|hy*|xray*|gretap*|teql*|ppp*)
+					lo|tunl0|sit0|ip6tnl0|teql0|gre0|gretap0|erspan0|ip_vti0|ip6_vti0|ip6gre0) continue ;;
+					dummy*|ifb*|veth*|br-*|docker*|tailscale*|bond*|vlan*|@*) continue ;;
+					wg[0-9]*|awg[0-9]*|utun[0-9]*|tun[0-9]*|hy[0-9]*|xray[0-9]*|ppp[0-9]*)
+						# must have non-zero counters (actively used)
+						_tr_line=$(awk -v ifc="${_n}:" '$1==ifc{print $2+$10; exit}' /proc/net/dev 2>/dev/null)
+						case "$_tr_line" in ''|0|*[!0-9]*) continue ;; esac
 						_tr_iface="$_n"; break ;;
 				esac
 			done
-			# Fallback: WAN from route table
+			# 2) WAN (default route) — userspace VPN (xray/hy/wireproxy) goes here
 			if [ -z "$_tr_iface" ]; then
 				_tr_iface=$(awk '$2=="00000000" && $3=="00000000"{print $1; exit}' /proc/net/route 2>/dev/null)
 			fi
-			# Fallback: config
+			# 3) Config / hard fallback
 			if [ -z "$_tr_iface" ]; then
 				_tr_iface=$(grep '^INFACE_CLI=' "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | cut -d, -f1)
 			fi
