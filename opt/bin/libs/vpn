@@ -1039,16 +1039,36 @@ cmd_adguardhome_off(){
 		/opt/etc/init.d/S09dnscrypt-proxy2 stop &> /dev/null
 		kill -9 $(pgrep dnscrypt-proxy) &> /dev/null
 	}
+	# adguardhome_setup увёз S56/S09 в KVAS_BACKUP_PATH — вернуть, иначе opkg-фоллбэк не поднимет службы
+	[ ! -f /opt/etc/init.d/S56dnsmasq ] && [ -f "${KVAS_BACKUP_PATH}/S56dnsmasq" ] && \
+		cp -f "${KVAS_BACKUP_PATH}/S56dnsmasq" /opt/etc/init.d/S56dnsmasq
+	[ ! -f /opt/etc/init.d/S09dnscrypt-proxy2 ] && [ -f "${KVAS_BACKUP_PATH}/S09dnscrypt-proxy2" ] && \
+		cp -f "${KVAS_BACKUP_PATH}/S09dnscrypt-proxy2" /opt/etc/init.d/S09dnscrypt-proxy2
+
+	# DNS_DEFAULT всё ещё 127.0.0.1#9753 (AdGuard) → dnsmasq получает мёртвый/петлевой upstream
+	_dns_now=$(get_config_value DNS_DEFAULT)
+	case "${_dns_now}" in
+		"${LOCALHOST_IP}#${MAIN_DNS_PORT}"|"127.0.0.1#${MAIN_DNS_PORT}"|"localhost#${MAIN_DNS_PORT}")
+			set_config_value DNS_DEFAULT "${LOCALHOST_IP}#$(get_config_value DNS_CRYPT_PORT)"
+			;;
+	esac
+
 	cp /opt/apps/kvas/etc/init.d/S96kvas "${KVAS_START_FILE}"
+	dns_crypt_install '' &> /dev/null
+	_crypt_rc=$?
 	dnsmasq_install '' &> /dev/null
+	_dnsmasq_rc=$?
+	[ -f /opt/etc/init.d/S09dnscrypt-proxy2 ] && /opt/etc/init.d/S09dnscrypt-proxy2 restart &> /dev/null
+	[ -f /opt/etc/init.d/S56dnsmasq ] && /opt/etc/init.d/S56dnsmasq restart &> /dev/null
+
 	#	Обновляем правила ip4tables для доступного соединения
 	ip4__flush 'chain'
 	ip4__dns__add_routing_for_home
 	ip4_firewall_set_all_rules
+	_fw_rc=$?
 
-	if [ $? = 0 ]; then
+	if [ "${_dnsmasq_rc}" = 0 ] && [ "${_fw_rc}" = 0 ]; then
 		when_ok "УСПЕШНО"
-		dns_crypt_install ''
 	else
 		when_bad "С ОШИБКОЙ";
 		error "Возникла ошибка при удалении AdGuard Home из системы."
