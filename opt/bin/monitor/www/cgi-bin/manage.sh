@@ -317,92 +317,76 @@ main() {
 			check_token "$token"
 			_tr_state=/tmp/kvas_tr_state
 			_tr_now=$(date +%s 2>/dev/null || echo 0)
-			_tr_wan=$(awk '$2=="00000000" && $3=="00000000"{print $1; exit}' /proc/net/route 2>/dev/null)
-			# Snapshot candidates: real tunnels (activity-capable) + WAN
-			_tr_snap=""
-			while IFS= read -r _n; do
-				[ -z "$_n" ] && continue
-				_tr_line=$(awk -v ifc="${_n}:" '$1==ifc{print $2, $10; exit}' /proc/net/dev 2>/dev/null)
-				[ -z "$_tr_line" ] && continue
-				_tr_r=$(echo "$_tr_line" | awk '{print $1}')
-				_tr_t=$(echo "$_tr_line" | awk '{print $2}')
-				case "$_tr_r" in ''|*[!0-9]*) _tr_r=0 ;; esac
-				case "$_tr_t" in ''|*[!0-9]*) _tr_t=0 ;; esac
-				_tr_snap="${_tr_snap}${_n} ${_tr_r} ${_tr_t}\n"
-			done <<EOF
-$(awk -F: 'NR>2{n=$1; gsub(/ /,"",n); if(n=="lo"||n=="tunl0"||n=="sit0"||n=="ip6tnl0"||n=="teql0"||n=="gre0"||n=="gretap0"||n=="erspan0"||n=="ip_vti0"||n=="ip6_vti0"||n=="ip6gre0") next; if(n ~ /^(dummy|ifb|veth|br-|docker|tailscale|bond)/) next; if(n ~ /^(wg[0-9]|awg[0-9]|utun[0-9]|tun[0-9]|hy[0-9]|xray[0-9]|ppp[0-9])/) print n}' /proc/net/dev 2>/dev/null)
-${_tr_wan}
-EOF
-			# Previous snapshot: "iface rx tx" lines after timestamp
-			_tr_best_iface=""
-			_tr_best_delta=-1
-			_tr_bps_rx=0
-			_tr_bps_tx=0
-			_tr_out_rx=0
-			_tr_out_tx=0
-			if [ -s "$_tr_state" ]; then
-				_tr_old_t=$(head -1 "$_tr_state" 2>/dev/null)
-				_tr_dt=$(( _tr_now - _tr_old_t ))
-				[ "$_tr_dt" -gt 0 ] 2>/dev/null || _tr_dt=0
-				while read -r _n _r _t; do
-					[ -z "$_n" ] && continue
-					_nr=""; _nt=""
-					_nr=$(echo "$_tr_snap" | awk -v i="$_n" '$1==i{print $2; exit}')
-					_nt=$(echo "$_tr_snap" | awk -v i="$_n" '$1==i{print $3; exit}')
-					[ -z "$_nr" ] && continue
-					_d1=$((_nr - _r)); _d2=$((_nt - _t))
-					[ "$_d1" -lt 0 ] 2>/dev/null && _d1=0
-					[ "$_d2" -lt 0 ] 2>/dev/null && _d2=0
-					_da=$((_d1 + _d2))
-					if [ "$_da" -gt "$_tr_best_delta" ]; then
-						_tr_best_delta=$_da
-						_tr_best_iface=$_n
-						_tr_out_rx=$_nr
-						_tr_out_tx=$_nt
-						if [ "$_tr_dt" -gt 0 ]; then
-							_tr_bps_rx=$(( _d1 / _tr_dt ))
-							_tr_bps_tx=$(( _d2 / _tr_dt ))
-						fi
-					fi
-				done <<EOF
-$(tail -n +2 "$_tr_state" 2>/dev/null)
-EOF
+			_tr_primary=$(grep "^PRIMARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+			_tr_secondary=$(grep "^SECONDARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+			_tr_tertiary=$(grep "^TERTIARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+			[ -z "$_tr_primary" ] && _tr_primary=vless
+			_tr_active=""
+			if [ -f /opt/apps/kvas/bin/libs/failover ]; then
+				_tr_active=$(. /opt/apps/kvas/bin/libs/failover 2>/dev/null; get_active_iface 2>/dev/null)
 			fi
-			# Save snapshot for next sample
-			{
-				echo "$_tr_now"
-				printf '%b' "$_tr_snap"
-			} > "$_tr_state" 2>/dev/null || true
-			# First sample or no activity: pick preferred iface (active tunnel or WAN)
-			if [ -z "$_tr_best_iface" ] || [ "$_tr_best_delta" -le 0 ]; then
-				_tr_best_iface=""
-				# prefer tunnel with non-zero counters
-				while read -r _n _r _t; do
-					[ -z "$_n" ] && continue
-					if [ "$_n" != "$_tr_wan" ]; then
-						_tr_s=$((_r + _t))
-						[ "$_tr_s" -gt 0 ] 2>/dev/null && { _tr_best_iface=$_n; _tr_out_rx=$_r; _tr_out_tx=$_t; break; }
-					fi
-				done <<EOF
-$(printf '%b' "$_tr_snap")
-EOF
-				if [ -z "$_tr_best_iface" ]; then
-					_tr_best_iface=${_tr_wan:-eth0}
-					_tr_line=$(awk -v ifc="${_tr_best_iface}:" '$1==ifc{print $2, $10; exit}' /proc/net/dev 2>/dev/null)
-					if [ -n "$_tr_line" ]; then
-						_tr_out_rx=$(echo "$_tr_line" | awk '{print $1}')
-						_tr_out_tx=$(echo "$_tr_line" | awk '{print $2}')
+			# Collect unique channels: primary + secondary + tertiary
+			_tr_chans=""
+			for _c in "$_tr_primary" "$_tr_secondary" "$_tr_tertiary"; do
+				[ -z "$_c" ] || [ "$_c" = "manual" ] || [ "$_c" = "-" ] && continue
+				case " $_tr_chans " in *" $_c "*) continue ;; esac
+				_tr_chans="${_tr_chans}${_tr_chans:+ }${_c}"
+			done
+			[ -z "$_tr_chans" ] && _tr_chans="vless"
+			# Read prev state: "name pid rchar wchar"
+			_tr_prev_file=/tmp/kvas_tr_prev
+			_tr_json=""
+			_tr_sum_rx=0
+			_tr_sum_tx=0
+			_tr_new_state=""
+			for _c in $_tr_chans; do
+				case "$_c" in
+					vless)    _tr_pid=$(pidof xray 2>/dev/null | awk '{print $1}') ;;
+					hysteria)  _tr_pid=$(pidof hysteria 2>/dev/null | awk '{print $1}') ;;
+					awg)       _tr_pid=$(pidof wireproxy 2>/dev/null | awk '{print $1}') ;;
+					*)         _tr_pid="" ;;
+				esac
+				_tr_run=false
+				_tr_r=0; _tr_w=0
+				if [ -n "$_tr_pid" ] && [ -r "/proc/${_tr_pid}/io" ]; then
+					_tr_run=true
+					_tr_io=$(awk '/^rchar:/{r=$2} /^wchar:/{w=$2} END{print r+0, w+0}' "/proc/${_tr_pid}/io" 2>/dev/null)
+					_tr_r=$(echo "$_tr_io" | awk '{print $1}')
+					_tr_w=$(echo "$_tr_io" | awk '{print $2}')
+				fi
+				case "$_tr_r" in ''|*[!0-9]*) _tr_r=0 ;; esac
+				case "$_tr_w" in ''|*[!0-9]*) _tr_w=0 ;; esac
+				_tr_rbps=0; _tr_tbps=0
+				# delta vs previous sample (same name+pid)
+				_tr_old=$(awk -v n="$_c" '$1==n{print $2, $3, $4; exit}' "$_tr_prev_file" 2>/dev/null)
+				if [ -n "$_tr_old" ] && [ "$_tr_run" = "true" ]; then
+					_tr_opid=$(echo "$_tr_old" | awk '{print $1}')
+					_tr_or=$(echo "$_tr_old" | awk '{print $2}')
+					_tr_ow=$(echo "$_tr_old" | awk '{print $3}')
+					_tr_dt=$(( _tr_now - $(head -1 "$_tr_state" 2>/dev/null || echo 0) ))
+					[ "$_tr_dt" -gt 0 ] 2>/dev/null || _tr_dt=0
+					if [ "$_tr_opid" = "$_tr_pid" ] && [ "$_tr_dt" -gt 0 ]; then
+						_tr_dr=$((_tr_r - _tr_or)); [ "$_tr_dr" -lt 0 ] 2>/dev/null && _tr_dr=0
+						_tr_dw=$((_tr_w - _tr_ow)); [ "$_tr_dw" -lt 0 ] 2>/dev/null && _tr_dw=0
+						_tr_rbps=$(( _tr_dr / _tr_dt ))
+						_tr_tbps=$(( _tr_dw / _tr_dt ))
 					fi
 				fi
-				_tr_bps_rx=0
-				_tr_bps_tx=0
-			fi
-			case "$_tr_out_rx" in ''|*[!0-9]*) _tr_out_rx=0 ;; esac
-			case "$_tr_out_tx" in ''|*[!0-9]*) _tr_out_tx=0 ;; esac
-			case "$_tr_bps_rx" in ''|*[!0-9]*) _tr_bps_rx=0 ;; esac
-			case "$_tr_bps_tx" in ''|*[!0-9]*) _tr_bps_tx=0 ;; esac
-			printf '{"ok":true,"iface":"%s","rx":"%s","tx":"%s","rx_bps":"%s","tx_bps":"%s"}\n' \
-				"$(json_str "$_tr_best_iface")" "$_tr_out_rx" "$_tr_out_tx" "$_tr_bps_rx" "$_tr_bps_tx"
+				_tr_new_state="${_tr_new_state}${_c} ${_tr_pid:-0} ${_tr_r} ${_tr_w}\n"
+				_tr_sum_rx=$(( _tr_sum_rx + _tr_rbps ))
+				_tr_sum_tx=$(( _tr_sum_tx + _tr_tbps ))
+				_tr_role=primary
+				[ "$_c" = "$_tr_secondary" ] && _tr_role=secondary
+				[ "$_c" = "$_tr_tertiary" ] && _tr_role=tertiary
+				_tr_isact=false
+				[ "$_c" = "$_tr_active" ] && _tr_isact=true
+				[ -z "$_tr_active" ] && [ "$_c" = "$_tr_primary" ] && [ "$_tr_run" = "true" ] && _tr_isact=true
+				_tr_json="${_tr_json}${_tr_json:+,}{\"name\":\"$(json_str "$_c")\",\"role\":\"$_tr_role\",\"running\":\"$_tr_run\",\"active\":\"$_tr_isact\",\"rx\":\"$_tr_r\",\"tx\":\"$_tr_w\",\"rx_bps\":\"$_tr_rbps\",\"tx_bps\":\"$_tr_tbps\"}"
+			done
+			printf '%b' "$_tr_new_state" > "$_tr_prev_file" 2>/dev/null || true
+			echo "$_tr_now" > "$_tr_state" 2>/dev/null || true
+			printf '{"ok":true,"active":"%s","rx_bps":"%s","tx_bps":"%s","tunnels":[%s]}\n' \
+				"$(json_str "$_tr_active")" "$_tr_sum_rx" "$_tr_sum_tx" "$_tr_json"
 			;;
 		hosts)
 			check_token "$token"

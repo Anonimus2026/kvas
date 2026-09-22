@@ -179,13 +179,14 @@ window.addEventListener('error', function(e){
     <div id="healthDetails" style="display:none;margin-top:8px;padding:8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;font-size:12px;"></div>
     <div id="trafficBox" style="margin-top:8px;padding-top:8px;border-top:1px solid #21262d;">
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#8b949e;margin-bottom:4px;">
-        <span>Тоннель: <b id="trIface" style="color:#c9d1d9;">—</b></span>
+        <span>Активный: <b id="trIface" style="color:#c9d1d9;">—</b></span>
         <span>
           <span style="color:#3fb950;">↓ <b id="trRx">—</b></span>
           &nbsp;
           <span style="color:#a371f7;">↑ <b id="trTx">—</b></span>
         </span>
       </div>
+      <div id="trTunnels" style="font-size:11px;margin-bottom:4px;"></div>
       <canvas id="trCanvas" width="640" height="56" style="width:100%;height:56px;display:block;background:#0d1117;border:1px solid #30363d;border-radius:4px;"></canvas>
     </div>
   </div>
@@ -851,54 +852,49 @@ function trDraw() {
   ctx.fillText(fmtRate(maxV), 4, 10);
 }
 
+function fmtBytes(n) {
+  n = parseInt(n, 10) || 0;
+  if (n < 1024) return n + ' Б';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' КБ';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' МБ';
+  return (n / 1073741824).toFixed(2) + ' ГБ';
+}
+
 function trTick() {
   if (document.hidden) return;
   api('/cgi-bin/manage.sh?action=traffic', function(d){
     if (!d.ok) return;
     var ifaceEl = document.getElementById('trIface');
-    if (ifaceEl && d.iface) ifaceEl.textContent = d.iface;
-    var rxBps, txBps;
-    if (d.rx_bps !== undefined && d.rx_bps !== '') {
-      /* server-side rate from /proc/net/dev delta */
-      rxBps = parseFloat(d.rx_bps) || 0;
-      txBps = parseFloat(d.tx_bps) || 0;
-      _trHist.push({ rx: parseInt(d.rx, 10) || 0, tx: parseInt(d.tx, 10) || 0, rxBps: rxBps, txBps: txBps });
-      if (_trHist.length > _trMax) _trHist.shift();
-      var elR = document.getElementById('trRx');
-      var elT = document.getElementById('trTx');
-      if (elR) elR.textContent = fmtRate(rxBps);
-      if (elT) elT.textContent = fmtRate(txBps);
-      trDraw();
-      _trPrev = { rx: parseInt(d.rx, 10) || 0, tx: parseInt(d.tx, 10) || 0, t: Date.now(), iface: d.iface || '' };
-      return;
-    }
-    /* fallback: client-side delta from raw counters */
-    var rx = parseInt(d.rx, 10) || 0;
-    var tx = parseInt(d.tx, 10) || 0;
-    var changed = _trPrev && _trPrev.iface && d.iface && _trPrev.iface !== d.iface;
-    if (changed) { _trPrev = null; _trHist = []; }
-    if (_trPrev) {
-      var now = Date.now();
-      var dt = (now - _trPrev.t) / 1000;
-      if (dt > 0.3) {
-        var rxD = rx - _trPrev.rx;
-        var txD = tx - _trPrev.tx;
-        if (rxD < 0) rxD = 0;
-        if (txD < 0) txD = 0;
-        rxBps = rxD / dt;
-        txBps = txD / dt;
-        _trHist.push({ rx: rx, tx: tx, rxBps: rxBps, txBps: txBps });
-        if (_trHist.length > _trMax) _trHist.shift();
-        var elR2 = document.getElementById('trRx');
-        var elT2 = document.getElementById('trTx');
-        if (elR2) elR2.textContent = fmtRate(rxBps);
-        if (elT2) elT2.textContent = fmtRate(txBps);
-        trDraw();
+    if (ifaceEl) ifaceEl.textContent = d.active || '—';
+    /* per-tunnel list from failover conf */
+    var box = document.getElementById('trTunnels');
+    if (box && d.tunnels && d.tunnels.length) {
+      var html = '';
+      for (var i = 0; i < d.tunnels.length; i++) {
+        var t = d.tunnels[i];
+        var run = t.running === 'true';
+        var act = t.active === 'true';
+        var dot = run ? (act ? '#3fb950' : '#d29922') : '#484f58';
+        html += '<div style="display:flex;gap:8px;flex-wrap:wrap;padding:1px 0;color:' + (run ? '#c9d1d9' : '#6e7681') + ';">' +
+          '<span style="min-width:70px;"><span style="color:' + dot + ';">●</span> ' + t.name +
+          (act ? ' <b style="color:#3fb950;">*</b>' : '') + '</span>' +
+          '<span style="color:#8b949e;">принято:</span> <b>' + fmtBytes(t.rx) + '</b>' +
+          '<span style="color:#8b949e;">отправлено:</span> <b>' + fmtBytes(t.tx) + '</b>' +
+          (run ? '<span style="color:#3fb950;">↓' + fmtRate(parseFloat(t.rx_bps) || 0) + '</span>' +
+                 '<span style="color:#a371f7;">↑' + fmtRate(parseFloat(t.tx_bps) || 0) + '</span>' : '<span style="color:#484f58;">остановлен</span>') +
+          '</div>';
       }
-    } else {
-      trDraw();
+      box.innerHTML = html;
     }
-    _trPrev = { rx: rx, tx: tx, t: Date.now(), iface: d.iface || '' };
+    var rxBps = parseFloat(d.rx_bps) || 0;
+    var txBps = parseFloat(d.tx_bps) || 0;
+    _trHist.push({ rx: 0, tx: 0, rxBps: rxBps, txBps: txBps });
+    if (_trHist.length > _trMax) _trHist.shift();
+    var elR = document.getElementById('trRx');
+    var elT = document.getElementById('trTx');
+    if (elR) elR.textContent = fmtRate(rxBps);
+    if (elT) elT.textContent = fmtRate(txBps);
+    trDraw();
   }, 8000);
 }
 
