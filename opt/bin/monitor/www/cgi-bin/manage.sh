@@ -21,6 +21,103 @@ json_ok()    { printf '{"ok":true,"msg":"%s"}\n' "$(json_str "$1")"; exit 0; }
 
 urldecode() { echo "$1" | sed 's/+/ /g; s/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g' | xargs -0 printf; }
 
+# ---------------- parental helpers ----------------
+PARENTAL_TMP=/opt/etc/adblock/temporary.list
+PARENTAL_D_DIR=/opt/etc/adblock/parental.d
+PARENTAL_ADDR=/opt/etc/dnsmasq.d/kvas-parental.dnsmasq
+
+parental_re() { printf '%s' "$1" | sed 's/[][.*^$\\]/\\&/g'; }
+
+parental_exp_epoch() {
+	# домен → эпоха срока (пусто = навсегда)
+	[ -f "$PARENTAL_TMP" ] || return 0
+	local _e
+	_e=$(awk -F'|' -v d="$1" '$1==d{print $2; exit}' "$PARENTAL_TMP" 2>/dev/null)
+	[ -z "$_e" ] && return 0
+	case "$_e" in
+		''|*[!0-9]*) date -d "$_e" +%s 2>/dev/null ;;
+		*) echo "$_e" ;;
+	esac
+}
+
+parental_is_active() {
+	local _e
+	_e=$(parental_exp_epoch "$1")
+	[ -z "$_e" ] && return 0
+	[ "$(date +%s)" -lt "$_e" ]
+}
+
+parental_active_list() {
+	[ -f "$PARENTAL_LIST" ] || return 0
+	local _d
+	while IFS= read -r _d; do
+		[ -z "$_d" ] && continue
+		case "$_d" in \#*) continue ;; esac
+		parental_is_active "$_d" && echo "$_d"
+	done < "$PARENTAL_LIST"
+}
+
+parental_regen() {
+	# rebuild parental.d (hosts) + address-file (домен и поддомены) из активных
+	mkdir -p "$PARENTAL_D_DIR" /opt/etc/dnsmasq.d
+	: > "$PARENTAL_D_DIR/parental.list"
+	local _pf="${PARENTAL_ADDR}.$$" _d
+	: > "$_pf"
+	while IFS= read -r _d; do
+		[ -z "$_d" ] && continue
+		echo "0.0.0.0 ${_d}" >> "$PARENTAL_D_DIR/parental.list"
+		echo "address=/${_d}/0.0.0.0" >> "$_pf"
+	done <<PARENTAL_EOF
+$(parental_active_list)
+PARENTAL_EOF
+	mv -f "$_pf" "$PARENTAL_ADDR" 2>/dev/null
+}
+
+parental_block_exact() {
+	touch /opt/etc/adblock/ads.kvas.list
+	grep -qxF "0.0.0.0 $1" /opt/etc/adblock/ads.kvas.list || echo "0.0.0.0 $1" >> /opt/etc/adblock/ads.kvas.list
+}
+
+parental_unblock_exact() {
+	local _re
+	_re=$(parental_re "$1")
+	[ -f /opt/etc/adblock/ads.kvas.list ] && sed -i "/^0\.0\.0\.0 ${_re}\$/d" /opt/etc/adblock/ads.kvas.list 2>/dev/null
+	[ -f /opt/etc/kvas.list ] && sed -i "/^${_re}\$/d" /opt/etc/kvas.list 2>/dev/null
+	[ -f /opt/etc/AdGuardHome/kvas.ipset ] && sed -i "\|^${_re}/|d" /opt/etc/AdGuardHome/kvas.ipset 2>/dev/null
+	[ -f /opt/etc/dnsmasq.d/kvas.dnsmasq ] && sed -i "/ipset=\/${_re}\//d" /opt/etc/dnsmasq.d/kvas.dnsmasq 2>/dev/null
+}
+
+parental_sync_ads() {
+	if parental_is_active "$1"; then
+		parental_block_exact "$1"
+	else
+		parental_unblock_exact "$1"
+	fi
+}
+
+parental_dns_apply() {
+	local _r=false _dp
+	if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
+		echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
+		_r=true
+	fi
+	if ! grep -q "hostsdir=/opt/etc/adblock/parental.d" /opt/etc/dnsmasq.conf 2>/dev/null; then
+		echo "hostsdir=/opt/etc/adblock/parental.d" >> /opt/etc/dnsmasq.conf
+		_r=true
+	fi
+	if ! grep -q "^conf-dir=/opt/etc/dnsmasq.d/" /opt/etc/dnsmasq.conf 2>/dev/null; then
+		echo "conf-dir=/opt/etc/dnsmasq.d/,*.dnsmasq" >> /opt/etc/dnsmasq.conf
+		_r=true
+	fi
+	if [ "$_r" = "true" ]; then
+		/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
+	else
+		_dp=$(pidof dnsmasq 2>/dev/null)
+		[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
+	fi
+}
+# ---------------- /parental helpers ----------------
+
 # Brute-force protection (global)
 FAIL_COUNT=/tmp/kvas_fail_count
 FAIL_TIME=/tmp/kvas_fail_time
@@ -910,13 +1007,25 @@ main() {
 			;;
 		parental_list)
 			check_token "$token"
-			if [ ! -f "$PARENTAL_LIST" ]; then
-				echo '{"ok":true,"sites":[]}'
-				exit 0
+			_out=""
+			_now=$(date +%s)
+			if [ -f "$PARENTAL_LIST" ]; then
+				while IFS= read -r _d; do
+					[ -z "$_d" ] && continue
+					case "$_d" in \#*) continue ;; esac
+					_e=$(parental_exp_epoch "$_d")
+					if [ -z "$_e" ]; then
+						_s="forever"; _t=0
+					elif [ "$_now" -lt "$_e" ]; then
+						_s="on"; _t=$_e
+					else
+						_s="expired"; _t=$_e
+					fi
+					_de=$(printf '%s' "$_d" | sed 's/\\/\\\\/g; s/"/\\"/g')
+					_out="${_out}${_out:+,}{\"d\":\"${_de}\",\"t\":${_t},\"s\":\"${_s}\"}"
+				done < "$PARENTAL_LIST"
 			fi
-			awk 'BEGIN{printf "{\"ok\":true,\"sites\":["; f=1}
-			{ gsub(/\r/,""); if ($0=="" || substr($0,1,1)=="#") next; if (!f) printf ","; f=0; gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); printf "\"%s\"", $0 }
-			END{printf "]}\n"}' "$PARENTAL_LIST"
+			printf '{"ok":true,"sites":[%s]}\n' "$_out"
 			;;
 		parental_add)
 			check_token "$token"
@@ -946,32 +1055,17 @@ main() {
 			fi
 			mkdir -p /opt/etc/adblock
 			touch "$PARENTAL_LIST"
+			_dre=$(parental_re "$domain")
+			# мастер-реестр: домен остаётся навсегда (не удаляется по expiry)
+			grep -qxF "$domain" "$PARENTAL_LIST" || echo "$domain" >> "$PARENTAL_LIST"
+			# upsert срока: пусто = навсегда (запись о сроке удаляем)
+			[ -f /opt/etc/adblock/temporary.list ] && sed -i "/^${_dre}|/d" /opt/etc/adblock/temporary.list 2>/dev/null
 			if [ -n "$_temp_until" ]; then
-				grep -qxF "$domain" "$PARENTAL_LIST" || echo "$domain" >> "$PARENTAL_LIST"
 				echo "$domain|$_temp_until" >> /opt/etc/adblock/temporary.list
-			else
-				grep -qxF "$domain" "$PARENTAL_LIST" || echo "$domain" >> "$PARENTAL_LIST"
 			fi
-			touch /opt/etc/adblock/ads.kvas.list
-			grep -qxF "0.0.0.0 $domain" /opt/etc/adblock/ads.kvas.list || echo "0.0.0.0 $domain" >> /opt/etc/adblock/ads.kvas.list
-			mkdir -p /opt/etc/adblock/parental.d
-			if [ -f /opt/etc/adblock/block.list ]; then
-				sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list > /opt/etc/adblock/parental.d/parental.list 2>/dev/null
-			fi
-			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
-				echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
-				_dns_restart=true
-			fi
-			if ! grep -q "hostsdir=/opt/etc/adblock/parental.d" /opt/etc/dnsmasq.conf 2>/dev/null; then
-				echo "hostsdir=/opt/etc/adblock/parental.d" >> /opt/etc/dnsmasq.conf
-				_dns_restart=true
-			fi
-			if [ "$_dns_restart" = "true" ]; then
-				/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
-			else
-				_dp=$(pidof dnsmasq 2>/dev/null)
-				[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
-			fi
+			parental_sync_ads "$domain"
+			parental_regen
+			parental_dns_apply
 			if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
 				if /opt/etc/init.d/S99adguardhome status 2>/dev/null | grep -qi alive; then
 					if [ -f /opt/apps/kvas/bin/libs/vpn ]; then
@@ -982,9 +1076,9 @@ main() {
 				fi
 			fi
 			if [ -n "$_temp_until" ]; then
-				json_ok "добавлен $domain до $(date -d "@${_temp_until}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$until_hm")"
+				json_ok "$domain — до $(date -d "@${_temp_until}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$until_hm") (блокируется домен и поддомены)"
 			else
-				json_ok "добавлен $domain"
+				json_ok "$domain — навсегда (блокируется домен и поддомены)"
 			fi
 		;;
 		parental_del)
@@ -992,20 +1086,18 @@ main() {
 			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
 			[ -z "$domain" ] && json_error "domain required"
-			[ -f "$PARENTAL_LIST" ] && sed -i "/^${domain}$/d" "$PARENTAL_LIST" 2>/dev/null
-			[ -f /opt/etc/adblock/temporary.list ] && sed -i "/^${domain}|/d" /opt/etc/adblock/temporary.list 2>/dev/null
-			[ -f /opt/etc/adblock/ads.kvas.list ] && sed -i "/^0\.0\.0\.0 ${domain}$/d" /opt/etc/adblock/ads.kvas.list 2>/dev/null
-			pf=/opt/etc/adblock/parental.d/parental.list
-			[ -f "$pf" ] && sed -i "/0.0.0.0 ${domain}$/d" "$pf" 2>/dev/null
-			_dp=$(pidof dnsmasq 2>/dev/null)
-			[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
-			json_ok "unblocked $domain"
+			_re=$(parental_re "$domain")
+			[ -f "$PARENTAL_LIST" ] && sed -i "/^${_re}\$/d" "$PARENTAL_LIST" 2>/dev/null
+			[ -f /opt/etc/adblock/temporary.list ] && sed -i "/^${_re}|/d" /opt/etc/adblock/temporary.list 2>/dev/null
+			parental_unblock_exact "$domain"
+			parental_regen
+			parental_dns_apply
+			json_ok "$domain удалён из реестра"
 		;;
 		parental_expire_tick)
 			check_token "$token"
-			_tf=/opt/etc/adblock/temporary.list
 			_removed=0
-			if [ -f "$_tf" ]; then
+			if [ -f /opt/etc/adblock/temporary.list ]; then
 				_now=$(date +%s)
 				while IFS='|' read -r _d _exp; do
 					[ -z "$_d" ] && continue
@@ -1015,23 +1107,13 @@ main() {
 					esac
 					[ "$_exp_s" -gt 0 ] 2>/dev/null || continue
 					[ "$_now" -ge "$_exp_s" ] || continue
-					[ -f "$PARENTAL_LIST" ] && sed -i "/^${_d}$/d" "$PARENTAL_LIST" 2>/dev/null
-					[ -f /opt/etc/adblock/ads.kvas.list ] && sed -i "/^0\.0\.0\.0 ${_d}$/d" /opt/etc/adblock/ads.kvas.list 2>/dev/null
-					[ -f /opt/etc/adblock/parental.d/parental.list ] && sed -i "/0.0.0.0 ${_d}$/d" /opt/etc/adblock/parental.d/parental.list 2>/dev/null
+					# снимаем блокировку, домен остаётся в реестре (status=expired)
+					parental_unblock_exact "$_d"
 					_removed=$((_removed+1))
-				done < "$_tf"
+				done < /opt/etc/adblock/temporary.list
 				if [ "$_removed" -gt 0 ]; then
-					_now_str=$(date +%s)
-					while IFS='|' read -r _d _exp; do
-						case "$_exp" in
-							''|*[!0-9]*) _exp_s=$(date -d "$_exp" +%s 2>/dev/null || echo 0) ;;
-							*) _exp_s=$_exp ;;
-						esac
-						[ "$_exp_s" -gt 0 ] 2>/dev/null && [ "$_now_str" -lt "$_exp_s" ] && echo "$_d|$_exp"
-					done < "$_tf" > "${_tf}.tmp" 2>/dev/null
-					mv "${_tf}.tmp" "$_tf" 2>/dev/null
-					_dp=$(pidof dnsmasq 2>/dev/null)
-					[ -n "$_dp" ] && kill -HUP $_dp 2>/dev/null
+					parental_regen
+					parental_dns_apply
 				fi
 			fi
 			printf '{"ok":true,"removed":%s}\n' "$_removed"
@@ -1054,7 +1136,7 @@ main() {
 				echo "hostsdir=/opt/etc/adblock/parental.d" >> /opt/etc/dnsmasq.conf
 			fi
 			[ -f /opt/etc/adblock/ads.kvas.list ] || sh /opt/apps/kvas/bin/main/adblock >/dev/null 2>&1
-			[ -f /opt/etc/adblock/block.list ] && sed 's/^/0.0.0.0 /' /opt/etc/adblock/block.list > /opt/etc/adblock/parental.d/parental.list
+			parental_regen
 			/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
 			echo '{"ok":true,"msg":"Adblock включен"}'
 		;;

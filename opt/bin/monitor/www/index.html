@@ -435,7 +435,7 @@ window.addEventListener('error', function(e){
 
   <div class="card">
     <h3>Родительский контроль</h3>
-    <p style="font-size:12px;color:#8b949e;margin-bottom:12px;">Заблокированные сайты добавляются в список блокировки рекламы (kvas adblock). Домены резолвятся в 0.0.0.0 и не открываются.</p>
+    <p style="font-size:12px;color:#8b949e;margin-bottom:12px;">Постоянный реестр блокировки: домен и все его поддомены резолвятся в 0.0.0.0. По истечении времени снимается блокировка, но домен остаётся в реестре (статус «истекло») — можно включить снова или изменить время.</p>
     <div class="card-row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
       <label>Блокировка рекламы (adblock):</label>
       <span class="value" id="adblockStatus" style="color:#8b949e;">-</span>
@@ -444,7 +444,7 @@ window.addEventListener('error', function(e){
     </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;">
       <div style="flex:1;min-width:250px;">
-        <h4 style="font-size:13px;color:#58a6ff;margin-bottom:8px;">Заблокированные сайты</h4>
+        <h4 style="font-size:13px;color:#58a6ff;margin-bottom:8px;">Реестр доменов</h4>
         <div id="parentalList" class="host-list" style="max-height:300px;"><div class="status">Загрузка...</div></div>
       </div>
       <div style="flex:1;min-width:250px;">
@@ -2489,22 +2489,58 @@ function adblockOff(btn) {
 function loadParentalList() {
   api('/cgi-bin/manage.sh?action=parental_expire_tick', function(){ loadParentalList2(); }, 15000);
 }
+function parentalPad(n){ return (n<10?'0':'')+n; }
+function parentalHm(epoch){ var d=new Date(epoch*1000); return parentalPad(d.getHours())+':'+parentalPad(d.getMinutes()); }
+function parentalDmy(epoch){ var d=new Date(epoch*1000); return parentalPad(d.getDate())+'.'+parentalPad(d.getMonth()+1)+' '+parentalPad(d.getHours())+':'+parentalPad(d.getMinutes()); }
 function loadParentalList2() {
   api('/cgi-bin/manage.sh?action=parental_list', function(d){
     var el = document.getElementById('parentalList');
     if (!el) return;
     if (!d.ok || !d.sites || !d.sites.length) {
-      el.innerHTML = '<div style="color:#8b949e;text-align:center;padding:10px;">Нет заблокированных сайтов</div>';
+      el.innerHTML = '<div style="color:#8b949e;text-align:center;padding:10px;">Реестр пуст</div>';
       return;
     }
     el.innerHTML = '';
     d.sites.forEach(function(s){
-      var item = document.createElement('div');
-      item.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:4px 8px;border-bottom:1px solid #30363d;';
-      item.innerHTML = '<span style="color:#ff6b6b;">' + s + '</span><button class="btn btn-sm danger" style="padding:2px 8px;font-size:11px;" onclick="parentalDel(\'' + s + '\')">Удалить</button>';
-      el.appendChild(item);
+      var on = s.s !== 'expired';
+      var status = s.s === 'forever' ? '<span style="color:#3fb950;font-size:11px;">навсегда</span>'
+                : s.s === 'on' ? '<span style="color:#3fb950;font-size:11px;">до ' + parentalDmy(s.t) + '</span>'
+                : '<span style="color:#6e7681;font-size:11px;">истекло ' + parentalDmy(s.t) + '</span>';
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:5px 8px;border-bottom:1px solid #30363d;flex-wrap:wrap;';
+      var html = '<span style="color:' + (on?'#ff6b6b':'#6e7681') + ';flex:1;min-width:100px;word-break:break-all;">' + s.d + '</span>' +
+        status +
+        '<input type="time" value="' + (s.t ? parentalHm(s.t) : '') + '" data-dom="' + s.d + '" onchange="parentalSetTime(this)" title="Изменить время (пусто не применяется, используй «Навсегда»)" style="padding:2px 4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:11px;">';
+      if (s.s === 'expired') {
+        html += '<button class="btn btn-sm success" style="padding:2px 8px;font-size:11px;" onclick="parentalForever(\'' + s.d + '\')">▶ Включить</button>';
+      } else {
+        html += '<button class="btn btn-sm" style="padding:2px 8px;font-size:11px;" onclick="parentalForever(\'' + s.d + '\')">Навсегда</button>';
+      }
+      html += '<button class="btn btn-sm danger" style="padding:2px 8px;font-size:11px;" onclick="parentalDel(\'' + s.d + '\')">✕</button>';
+      row.innerHTML = html;
+      el.appendChild(row);
     });
   });
+}
+function parentalAfterAction(d) {
+  var el = document.getElementById('parentalMsg');
+  if (d.ok) {
+    el.className = 'msg ok';
+    el.textContent = d.msg || d.error || 'OK';
+    loadParentalList();
+  } else {
+    el.className = 'msg err';
+    el.textContent = d.error || 'error';
+  }
+}
+function parentalSetTime(inp) {
+  var dom = inp.getAttribute('data-dom');
+  var v = inp.value;
+  if (!dom || !v) return;
+  apiBtn('/cgi-bin/manage.sh?action=parental_add&domain=' + encodeURIComponent(dom) + '&until=' + encodeURIComponent(v), null, parentalAfterAction, 30000);
+}
+function parentalForever(dom) {
+  apiBtn('/cgi-bin/manage.sh?action=parental_add&domain=' + encodeURIComponent(dom), null, parentalAfterAction, 30000);
 }
 
 function parentalAdd() {
@@ -2523,11 +2559,9 @@ function parentalAdd() {
       document.getElementById('parentalInput').value = '';
       if (untilEl) untilEl.value = '';
       loadParentalList();
-      consoleLog('parental add: ' + domain + (until ? ' until ' + until : ''));
     } else {
       el.className = 'msg err';
       el.textContent = d.error || 'error';
-      consoleLog('parental add ERROR: ' + (d.error || 'unknown'));
     }
   }, 30000);
 }
