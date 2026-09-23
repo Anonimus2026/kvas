@@ -56,3 +56,47 @@ tg_notify(){
 	( sh /opt/apps/kvas/bin/tg_sender.sh >/dev/null 2>&1 & ) 2>/dev/null
 	return 0
 }
+
+# sendMessage: $1=chat $2=text [$3=reply_markup JSON]
+tg_send_msg(){
+	_t_s=$(tg_conf_get TG_BOT_TOKEN)
+	[ -n "${_t_s}" ] || return 0
+	if [ -n "$3" ]; then
+		tg_curl "https://api.telegram.org/bot${_t_s}/sendMessage" \
+			--data-urlencode "chat_id=$1" \
+			--data-urlencode "text=$2" \
+			--data-urlencode "reply_markup=$3" >/dev/null 2>&1
+	else
+		tg_curl "https://api.telegram.org/bot${_t_s}/sendMessage" \
+			--data-urlencode "chat_id=$1" \
+			--data-urlencode "text=$2" >/dev/null 2>&1
+	fi
+}
+
+# длинный текст → чанки ~3500 байт по строкам: $1=chat $2=text [$3=markup только для первого]
+tg_send_long(){
+	_tl_ch="$1"; _tl_txt="$2"; _tl_mk="$3"
+	_tl_f=/tmp/.tglong.$$
+	printf '%s\n' "${_tl_txt}" > "${_tl_f}" 2>/dev/null || return 0
+	_tl_buf=""
+	while IFS= read -r _tl_line || [ -n "${_tl_line}" ]; do
+		_tl_bl=$(printf '%s' "${_tl_buf}" | wc -c)
+		_tl_ll=$(printf '%s' "${_tl_line}" | wc -c)
+		if [ -n "${_tl_buf}" ] && [ $((_tl_bl + _tl_ll + 1)) -gt 3500 ]; then
+			tg_send_msg "${_tl_ch}" "${_tl_buf}" "${_tl_mk}"
+			_tl_mk=""
+			_tl_buf="${_tl_line}"
+			sleep 1
+		else
+			if [ -n "${_tl_buf}" ]; then
+				_tl_buf="${_tl_buf}
+${_tl_line}"
+			else
+				_tl_buf="${_tl_line}"
+			fi
+		fi
+	done < "${_tl_f}"
+	rm -f "${_tl_f}"
+	[ -n "${_tl_buf}" ] && tg_send_msg "${_tl_ch}" "${_tl_buf}" "${_tl_mk}"
+	return 0
+}

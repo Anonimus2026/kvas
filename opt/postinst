@@ -32,7 +32,7 @@ if [ "$1" = "configure" ]; then
     fi
     # APP_RELEASE — из Version установленного пакета (раньше был хардкод 549)
     _rel=$(opkg status kvas 2>/dev/null | sed -n 's/^Version: //p' | head -1 | sed -n 's/.*beta-10-\([0-9][0-9]*\).*/\1/p')
-    [ -z "${_rel}" ] && _rel=586
+    [ -z "${_rel}" ] && _rel=587
     if grep -q "^APP_RELEASE=" "${kvas_conf}" 2>/dev/null; then
         sed -i "s/^APP_RELEASE=.*/APP_RELEASE=${_rel}/" "${kvas_conf}"
     else

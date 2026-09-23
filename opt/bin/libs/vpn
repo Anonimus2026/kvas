@@ -3056,10 +3056,9 @@ test_host() {
 
 add_host_to_adguard(){
 	clear_host="${1}"
-	#   AdGuardHome обработка
-	echo "${_host}" >> "${KVAS_LIST_FILE}"
+	#   AdGuardHome обработка (запись в kvas.list уже сделана в host_add)
 	[ -f "${ADGUARD_IPSET_FILE}" ] && cat < "${ADGUARD_IPSET_FILE}" | grep -q "${clear_host}" \
-	 		|| echo "${clear_host}/${IPSET_TABLE_NAME}" >> "${ADGUARD_IPSET_FILE}"
+ 	 		|| echo "${clear_host}/${IPSET_TABLE_NAME}" >> "${ADGUARD_IPSET_FILE}"
 	if echo "${host}" | grep -q '\*' ; then
   		echo "ipset=/:.*${clear_host}:/${IPSET_TABLE_NAME}" >> "${DNSMASQ_IPSET_HOSTS}"
   	else
