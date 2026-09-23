@@ -254,10 +254,10 @@ check_updates() {
 	local current_ver=$(opkg list-installed 2>/dev/null | grep kvas | awk '{print $3}')
 	local repo="Anonimus2026/kvas"
 	# Get latest ipk build number from release assets
-	local latest_ver=$(curl -s --connect-timeout 5 "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null | \
-		grep 'browser_download_url.*kvas_.*ipk' | \
-		awk -F'kvas_' '{print $2}' | awk -F'_all' '{print $1}' | \
-		sort -t'-' -k3 -rn | head -1 | awk -F'-' '{print $NF}')
+	local latest_ver=$(curl -s --connect-timeout 5 --max-time 10 "https://api.github.com/repos/${repo}/releases" 2>/dev/null | \
+		grep -o 'kvas_[A-Za-z0-9._-]*_all\.ipk' | \
+		sed -n 's/.*beta-10-\([0-9][0-9]*\)_all\.ipk/\1/p' | \
+		sort -n | tail -1)
 	if [ -n "$latest_ver" ]; then
 		# Extract build number from current version (e.g. 1.1.9_beta-10-239 -> 239)
 		local current_num=$(echo "$current_ver" | sed 's/.*beta-10-//')
@@ -938,7 +938,7 @@ main() {
 			;;
 		upgrade)
 			check_token "$token"
-			out=$(printf '1\n' | $KVAS_BIN upgrade 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			out=$(printf '1\n' | $KVAS_BIN upgrade 2>&1 | head -400 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
 			$KVAS_BIN monitor web stop >/dev/null 2>&1
 			sleep 1
 			$KVAS_BIN monitor web start >/dev/null 2>&1 &
@@ -948,7 +948,7 @@ main() {
 		rollback)
 			check_token "$token"
 			# rollback: 1=репозиторий, 2=предыдущая версия из списка
-			out=$(printf '1\n2\n' | $KVAS_BIN upgrade rollback 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			out=$(printf '1\n2\n' | $KVAS_BIN upgrade rollback 2>&1 | head -400 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
 			$KVAS_BIN monitor web stop >/dev/null 2>&1
 			sleep 1
 			$KVAS_BIN monitor web start >/dev/null 2>&1 &

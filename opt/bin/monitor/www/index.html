@@ -682,6 +682,7 @@ function showMain() {
   document.getElementById('logoutBtn').style.display = '';
   document.getElementById('settingsWrap').style.display = '';
   applyMobileView();
+  upgTick();
   loadSystemStatus();
   loadHealth();
   loadFailoverHistory();
@@ -1073,6 +1074,14 @@ function loadSystemStatus() {
     if (d.ok) {
       document.getElementById('sysPkg').textContent = d.pkg || '-';
       document.getElementById('sysVer').textContent = d.ver || '-';
+      try {
+        var _from = sessionStorage.getItem('kvas_upg_from');
+        if (_from && d.ver && d.ver !== '-' && _from !== d.ver) {
+          upgStopWatch();
+          var _sm = document.getElementById('sysMsg');
+          if (_sm) { _sm.className = 'msg ok'; _sm.textContent = 'Готово: обновлено до ' + d.ver; }
+        }
+      } catch(e) {}
       // sysMode removed — duplicated by sysTunnel
       document.getElementById('sysHosts').textContent = d.hosts || '-';
       var xraySvc = d.xray_service || '-';
@@ -1134,6 +1143,40 @@ function doCheckUpdate(btn) {
   });
 }
 
+/* ===== upgrade/rollback auto-reload watch: каждые 15с до 10 раз ===== */
+var _upgTimer = null;
+function upgStartWatch(fromVer) {
+  try {
+    sessionStorage.setItem('kvas_upg_from', fromVer || '');
+    sessionStorage.setItem('kvas_upg_n', '0');
+    sessionStorage.setItem('kvas_upg_next', String(Date.now() + 15000));
+  } catch(e) {}
+  upgTick();
+}
+function upgStopWatch() {
+  if (_upgTimer) { clearTimeout(_upgTimer); _upgTimer = null; }
+  try {
+    sessionStorage.removeItem('kvas_upg_from');
+    sessionStorage.removeItem('kvas_upg_n');
+    sessionStorage.removeItem('kvas_upg_next');
+  } catch(e) {}
+}
+function upgTick() {
+  var n, next;
+  try {
+    n = parseInt(sessionStorage.getItem('kvas_upg_n') || '', 10);
+    if (isNaN(n)) return;
+    if (n >= 10) { upgStopWatch(); return; }
+    next = parseInt(sessionStorage.getItem('kvas_upg_next') || '0', 10);
+  } catch(e) { return; }
+  var wait = Math.max(300, next - Date.now());
+  if (_upgTimer) clearTimeout(_upgTimer);
+  _upgTimer = setTimeout(function() {
+    try { sessionStorage.setItem('kvas_upg_n', String(n + 1)); } catch(e) {}
+    window.location.href = window.location.pathname + '?v=' + Date.now();
+  }, wait);
+}
+
 function doKvasRollback(btn) {
   if (!confirm('Откатить KVAS на предыдущую версию? Это займёт 1-2 минуты.')) return;
   var el = document.getElementById('sysMsg');
@@ -1143,14 +1186,13 @@ function doKvasRollback(btn) {
   btn.className = 'btn btn-sm primary';
   btn.disabled = false;
   btn.onclick = function() { window.location.href = window.location.pathname + '?v=' + Date.now(); };
-  var doReload = function() { window.location.href = window.location.pathname + '?v=' + Date.now(); };
-  var reloadTimer = setTimeout(doReload, 20000);
   var restoreBtn = function() {
-    clearTimeout(reloadTimer);
+    upgStopWatch();
     btn.textContent = 'Откатить';
     btn.className = 'btn btn-sm';
     btn.onclick = function() { doKvasRollback(this); };
   };
+  upgStartWatch(document.getElementById('sysVer').textContent);
   var u = '/cgi-bin/manage.sh?action=rollback&token=' + AUTH_TOKEN;
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, 120000);
@@ -1159,7 +1201,7 @@ function doKvasRollback(btn) {
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
     if (d.ok) {
       el.className = 'msg ok';
-      el.innerHTML = (d.output || 'KVAS откатан.') + '<br><span style="color:#3fb950;">Web UI перезапускается... страница обновится через 20 секунд...</span>';
+      el.innerHTML = (d.output || 'KVAS откатан.') + '<br><span style="color:#3fb950;">Страница будет обновляться каждые 15с (до 2.5 мин)...</span>';
     } else {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка отката';
@@ -1176,7 +1218,7 @@ function doKvasRollback(btn) {
 function doKvasUpgrade(btn) {
   if (!confirm('Обновить KVAS? Это займёт 1-2 минуты.')) return;
   var el = document.getElementById('sysMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Обновление KVAS... может занять до 120с. Страница обновится автоматически.</span>';
+  el.innerHTML = '<span style="color:#8b949e;">Обновление KVAS... может занять до 120с. Страница будет обновляться каждые 15с (до 2.5 мин).</span>';
   // Меняем кнопку сразу на синюю "Обновить страницу"
   btn.textContent = 'Обновить страницу';
   btn.className = 'btn btn-sm primary';
@@ -1187,11 +1229,8 @@ function doKvasUpgrade(btn) {
   var u = '/cgi-bin/manage.sh?action=upgrade&token=' + AUTH_TOKEN;
   fetch(u).catch(function() {});
 
-  // Через 20 секунд проверяем — поднялся ли web UI
-  setTimeout(function() {
-    // Пробуем перезагрузить страницу
-    window.location.href = window.location.pathname + '?v=' + Date.now();
-  }, 20000);
+  // Авто-обновление каждые 15с до 10 раз (install до 120с), останов после смены версии
+  upgStartWatch(document.getElementById('sysVer').textContent);
 }
 
 function tunnelTestSite(btn) {

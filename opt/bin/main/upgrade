@@ -24,6 +24,7 @@ set_escapes(){
 	RED="\033[1;31m";
 	GREEN="\033[1;32m";
 	BLUE="\033[36m";
+	YELLOW="\033[1;33m";
 	NOCL="\033[m";
 	QST="${RED}?${NOCL}"
 }
@@ -181,11 +182,10 @@ remove_nano(){
 #--------------------------------------------------------------------------------------------------------------
 
 # Ссылка на репозиторий на GitHub для получения крайней версии пакета
+# (URL пакета получаем ПОСЛЕ выбора источника — см. ниже)
 release_url=https://api.github.com/repos/Anonimus2026/kvas/releases
-# Получаем ссылку на крайний релиз пакета на GitHub
-package_url=$(curl -s --max-time 20 -H "Accept: application/vnd.github.v3+json" "${release_url}/latest" 2>/dev/null | jq -r '[.assets[].browser_download_url] | sort | .[-1]' 2>/dev/null | tr -d " \n\r")
-# Выделяем имя пакета из ссылки
-package_name=$(get_package_name "${package_url}")
+package_url=""
+package_name=""
 # путь к файлу конфигурации пакета Квас
 kvas_conf=/opt/etc/kvas.conf
 # Вычисляем текущую ширину экрана для печати линий определенной ширины
@@ -216,6 +216,17 @@ case "${_repo_choice}" in
 	*) release_url=https://api.github.com/repos/Anonimus2026/kvas/releases ;;
 esac
 echo -e "Источник: ${BLUE}${release_url}${NOCL}"
+
+# Крайняя версия: числовой сортировкой сборок по списку релизов, фоллбэк — /latest
+package_url=$(curl -s --max-time 20 -H "Accept: application/vnd.github.v3+json" "${release_url}" 2>/dev/null \
+	| jq -r '.[] | .assets[]? | .browser_download_url' 2>/dev/null \
+	| grep '/kvas_.*_all\.ipk$' \
+	| awk -F'beta-10-' '{ split($2, a, "_"); if (a[1] ~ /^[0-9]+$/) print a[1] "\t" $0 }' \
+	| sort -n | tail -1 | cut -f2)
+if [ -z "${package_url}" ]; then
+	package_url=$(curl -s --max-time 20 -H "Accept: application/vnd.github.v3+json" "${release_url}/latest" 2>/dev/null | jq -r '[.assets[]?.browser_download_url] | sort | .[-1]' 2>/dev/null | tr -d " \n\r")
+fi
+package_name=$(get_package_name "${package_url}")
 
 print_line	
 ready "Проверка наличия интернета"
