@@ -11,7 +11,9 @@ while IFS="$(printf '\t')" read -r _ev _txt || [ -n "${_ev}${_txt}" ]; do
 	[ -z "${_ev}" ] && [ -z "${_txt}" ] && continue
 	_esc=$(printf '%s' "[${_ev}] ${_txt}" | sed 's/\\/\\\\/g; s/"/\\"/g')
 	_body=$(printf '{"chat_id":"%s","text":"%s"}' "${_cht}" "${_esc}")
-	if ! curl -fsS --max-time 15 -d "${_body}" "https://api.telegram.org/bot${_tok}/sendMessage" >/dev/null 2>&1; then
+	# Telegram API — через SOCKS тоннеля (tg_curl); пустой ответ = сеть, возвращаем в очередь
+	_resp=$(tg_curl "https://api.telegram.org/bot${_tok}/sendMessage" -d "${_body}")
+	if [ -z "${_resp}" ]; then
 		printf '%s\t%s\n' "${_ev}" "${_txt}" >> "${Q}" 2>/dev/null
 	fi
 done < "${_work}"

@@ -1678,8 +1678,16 @@ adblock_off)
 			_bt=$(echo "$QUERY_STRING" | sed 's/.*btoken=//; s/&.*//'); [ "$_bt" = "$QUERY_STRING" ] && _bt=""; _bt=$(urldecode "$_bt")
 			[ -n "$_bt" ] || _bt=$(sed -n 's/^TG_BOT_TOKEN=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			[ -n "$_bt" ] || json_error "сначала укажите токен бота"
-			_gu=$(curl -s --max-time 12 "https://api.telegram.org/bot${_bt}/getUpdates" 2>/dev/null)
-			echo "$_gu" | grep -q '"ok":true' || json_error "бот не отвечает — проверьте токен"
+			# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl)
+			_gu=$(tg_curl "https://api.telegram.org/bot${_bt}/getUpdates")
+			if [ -z "$_gu" ]; then
+				json_error "нет ответа: Telegram недоступен напрямую и через SOCKS тоннеля (порт/тоннель живы?)"
+			fi
+			if ! echo "$_gu" | grep -q '"ok":true'; then
+				_err=$(echo "$_gu" | jq -r '.description // empty' 2>/dev/null)
+				[ -n "$_err" ] || _err="проверьте токен"
+				json_error "Telegram: ${_err}"
+			fi
 			_cid=$(echo "$_gu" | jq -r '[.result[]? | (.message.chat.id // .my_chat_member.chat.id // .edited_message.chat.id // empty)] | last // empty' 2>/dev/null)
 			[ -n "$_cid" ] && [ "$_cid" != "null" ] || json_error "сообщений нет — напишите боту /start и повторите"
 			_uname=$(echo "$_gu" | jq -r '[.result[]? | (.message.from.username // empty)] | last // empty' 2>/dev/null)
@@ -1693,7 +1701,11 @@ adblock_off)
 			[ -n "$_cg" ] || _cg=$(sed -n 's/^TG_CHAT_ID=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			[ -n "$_bt" ] || json_error "укажите токен бота"
 			[ -n "$_cg" ] || json_error "укажите chat_id"
-			_resp=$(curl -s --max-time 15 -d "{\"chat_id\":\"${_cg}\",\"text\":\"KVAS: тест уведомлений — OK\"}" "https://api.telegram.org/bot${_bt}/sendMessage" 2>/dev/null)
+			# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl)
+			_resp=$(tg_curl "https://api.telegram.org/bot${_bt}/sendMessage" -d "{\"chat_id\":\"${_cg}\",\"text\":\"KVAS: тест уведомлений — OK\"}")
+			if [ -z "$_resp" ]; then
+				json_error "нет ответа: Telegram недоступен напрямую и через SOCKS тоннеля"
+			fi
 			if echo "$_resp" | grep -q '"ok":true'; then
 				json_ok "Тест отправлен — проверьте чат"
 			else

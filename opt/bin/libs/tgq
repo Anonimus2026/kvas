@@ -6,6 +6,32 @@ TG_QUEUE="${TG_QUEUE_DIR}/tg.queue"
 
 tg_conf_get(){ sed -n "s/^$1=//p" "${TG_CONF}" 2>/dev/null | head -1; }
 
+tg_socks_port(){
+	case "$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)" in
+		*Proxy21*|*t2s21*|*vless*) echo 1097 ;;
+		*Proxy41*|*t2s41*|*hysteria*) echo 10808 ;;
+		*Proxy42*|*t2s42*|*awg*) echo 10818 ;;
+		*) echo "" ;;
+	esac
+}
+
+# Запрос в Telegram API: сначала через локальный SOCKS тоннеля (API заблокирован
+# напрямую), затем через запасные socks-порты, затем напрямую.
+# Аргументы: tg_curl URL [доп. аргументы curl...]
+tg_curl(){
+	_tg_url="$1"; shift
+	_p=$(tg_socks_port)
+	[ -n "${_p}" ] || _p=1097
+	_r=$(curl -s --max-time 15 "$@" -x "socks5h://127.0.0.1:${_p}" "${_tg_url}" 2>/dev/null)
+	[ -n "${_r}" ] && { printf '%s\n' "${_r}"; return 0; }
+	for _q in 1097 10808 10818; do
+		[ "${_q}" = "${_p}" ] && continue
+		_r=$(curl -s --max-time 12 "$@" -x "socks5h://127.0.0.1:${_q}" "${_tg_url}" 2>/dev/null)
+		[ -n "${_r}" ] && { printf '%s\n' "${_r}"; return 0; }
+	done
+	curl -s --max-time 12 "$@" "${_tg_url}" 2>/dev/null
+}
+
 tg_notify(){
 	# $1 = код события (failover, parental_add, ...), $2 = текст
 	[ "$(tg_conf_get TG_ENABLED)" = "true" ] || return 0
