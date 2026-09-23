@@ -1617,6 +1617,15 @@ dnsmasq_install(){
 	ready "Настройка файлов конфигурации dnsmasq"
 	sed -i "s/@LOCAL_IP/${local_ip}/g; s/@INFACE/${inface}/g; s/@UPLEVEL_DNS/${uplevel_dns}/g;" /opt/etc/dnsmasq.conf 1> /dev/null 2> "${ERROR_LOG_FILE}"
 	ready_status "${?}" "Проблема при настройке файлов конфигурации dnsmasq"
+	# Шаблон затирает conf — возвращаем блокировки adblock/parental, если списки не пусты
+	if [ -s /opt/etc/adblock/ads.kvas.list ]; then
+		grep -q '^addn-hosts=/opt/etc/adblock/ads.kvas.list' "${DNSMASQ_CONFIG}" 2>/dev/null || \
+			echo 'addn-hosts=/opt/etc/adblock/ads.kvas.list' >> "${DNSMASQ_CONFIG}"
+	fi
+	if [ -s /opt/etc/adblock/parental.d/parental.list ]; then
+		grep -q '^hostsdir=/opt/etc/adblock/parental.d' "${DNSMASQ_CONFIG}" 2>/dev/null || \
+			echo 'hostsdir=/opt/etc/adblock/parental.d' >> "${DNSMASQ_CONFIG}"
+	fi
 	# Если запуск функции был не при установке пакета Квас
 	[ -z "${is_install_stage}" ] && cmd_kvas_init "no_reset"
 

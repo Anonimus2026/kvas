@@ -927,17 +927,22 @@ main() {
 			[ -z "$domain" ] && json_error "domain required"
 			until_hm=$(echo "$QUERY_STRING" | sed 's/.*until=//; s/&.*//' 2>/dev/null)
 			[ "$until_hm" = "$QUERY_STRING" ] && until_hm=""
+			[ -n "$until_hm" ] && until_hm=$(urldecode "$until_hm")
 			_temp_until=""
 			if echo "$until_hm" | grep -qE '^[0-9]{1,2}:[0-9]{2}$'; then
-				_th=$(echo "$until_hm" | cut -d: -f1); _tm=$(echo "$until_hm" | cut -d: -f2)
-				_now_h=$(date +%H); _now_m=$(date +%M)
-				_now_s=$((_now_h*60+_now_m)); _t_s=$((_th*60+_tm))
+				_th=$(echo "$until_hm" | cut -d: -f1 | sed 's/^0*\([0-9]\)/\1/;s/^$/0/')
+				_tm=$(echo "$until_hm" | cut -d: -f2 | sed 's/^0*\([0-9]\)/\1/;s/^$/0/')
+				[ "$_th" -gt 23 ] 2>/dev/null && _th=23
+				[ "$_tm" -gt 59 ] 2>/dev/null && _tm=59
+				# Эпоха — без GNU date (busybox-совместимо)
+				_now=$(date +%s)
+				_now_s=$((_now % 86400))
+				_t_s=$((_th * 3600 + _tm * 60))
 				if [ "$_t_s" -le "$_now_s" ]; then
-					_temp_until=$(date -d "tomorrow $until_hm" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "")
+					_temp_until=$((_now + 86400 - _now_s + _t_s))
 				else
-					_temp_until=$(date "+%Y-%m-%d ")$until_hm
+					_temp_until=$((_now - _now_s + _t_s))
 				fi
-				[ -z "$_temp_until" ] && _temp_until="${until_hm}"
 			fi
 			mkdir -p /opt/etc/adblock
 			touch "$PARENTAL_LIST"
@@ -955,6 +960,13 @@ main() {
 			fi
 			if ! grep -q "addn-hosts=/opt/etc/adblock/ads.kvas.list" /opt/etc/dnsmasq.conf 2>/dev/null; then
 				echo "addn-hosts=/opt/etc/adblock/ads.kvas.list" >> /opt/etc/dnsmasq.conf
+				_dns_restart=true
+			fi
+			if ! grep -q "hostsdir=/opt/etc/adblock/parental.d" /opt/etc/dnsmasq.conf 2>/dev/null; then
+				echo "hostsdir=/opt/etc/adblock/parental.d" >> /opt/etc/dnsmasq.conf
+				_dns_restart=true
+			fi
+			if [ "$_dns_restart" = "true" ]; then
 				/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
 			else
 				_dp=$(pidof dnsmasq 2>/dev/null)
@@ -970,7 +982,7 @@ main() {
 				fi
 			fi
 			if [ -n "$_temp_until" ]; then
-				json_ok "добавлен $domain до $_temp_until"
+				json_ok "добавлен $domain до $(date -d "@${_temp_until}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$until_hm")"
 			else
 				json_ok "добавлен $domain"
 			fi
@@ -997,7 +1009,10 @@ main() {
 				_now=$(date +%s)
 				while IFS='|' read -r _d _exp; do
 					[ -z "$_d" ] && continue
-					_exp_s=$(date -d "$_exp" +%s 2>/dev/null || echo 0)
+					case "$_exp" in
+						''|*[!0-9]*) _exp_s=$(date -d "$_exp" +%s 2>/dev/null || echo 0) ;;
+						*) _exp_s=$_exp ;;
+					esac
 					[ "$_exp_s" -gt 0 ] 2>/dev/null || continue
 					[ "$_now" -ge "$_exp_s" ] || continue
 					[ -f "$PARENTAL_LIST" ] && sed -i "/^${_d}$/d" "$PARENTAL_LIST" 2>/dev/null
@@ -1008,7 +1023,10 @@ main() {
 				if [ "$_removed" -gt 0 ]; then
 					_now_str=$(date +%s)
 					while IFS='|' read -r _d _exp; do
-						_exp_s=$(date -d "$_exp" +%s 2>/dev/null || echo 0)
+						case "$_exp" in
+							''|*[!0-9]*) _exp_s=$(date -d "$_exp" +%s 2>/dev/null || echo 0) ;;
+							*) _exp_s=$_exp ;;
+						esac
 						[ "$_exp_s" -gt 0 ] 2>/dev/null && [ "$_now_str" -lt "$_exp_s" ] && echo "$_d|$_exp"
 					done < "$_tf" > "${_tf}.tmp" 2>/dev/null
 					mv "${_tf}.tmp" "$_tf" 2>/dev/null
