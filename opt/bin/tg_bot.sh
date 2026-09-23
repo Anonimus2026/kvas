@@ -25,18 +25,29 @@ tb_send() { tg_send_msg "$1" "$2" "$3"; }
 tb_state() { cat "${STF}" 2>/dev/null | head -n 1; }
 tb_state_set() { printf '%s\n' "$1" > "${STF}" 2>/dev/null; }
 tb_state_clear() { rm -f "${STF}" 2>/dev/null; }
-# payload после | (для diag_site_url: имя тоннеля)
-tb_payload() { tb_state | sed -n 's/^[^|]*|//p'; }
-tb_st() { tb_state | sed -n 's/|.*//p'; }
+# payload после |; state = всё до первого | (без sed -p: без | он давал пусто)
+tb_payload() { _s=$(tb_state); printf '%s' "${_s#*|}"; }
+tb_st() { _s=$(tb_state); printf '%s' "${_s%%|*}"; }
 
 # reply_markup: {"keyboard":[[...]],"resize_keyboard":true}
 # $1... — кнопки построчно (каждый аргумент = ряд из |)
+# без awk — только POSIX shell (busybox на роутере)
 tb_kb() {
 	_rows=""
 	for _r in "$@"; do
-		_row=$(printf '%s' "${_r}" | awk -F'|' '{printf "["; for(i=1;i<=NF;i++){printf "%s\"%s\"", (i>1?",":""), $i} printf "]"}')
-		_rows="${_rows}${_rows:+,}${_row}"
+		_row=""
+		_rest="${_r}"
+		while [ -n "${_rest}" ]; do
+			case "${_rest}" in
+				*|*) _btn=${_rest%%|*}; _rest=${_rest#*|} ;;
+				*)   _btn="${_rest}";  _rest="" ;;
+			esac
+			_row="${_row}${_row:+,}\"${_btn}\""
+		done
+		[ -n "${_row}" ] || continue
+		_rows="${_rows}${_rows:+,}[${_row}]"
 	done
+	[ -n "${_rows}" ] || _rows="[[]]"
 	printf '{"keyboard":[%s],"resize_keyboard":true}' "${_rows}"
 }
 
@@ -144,12 +155,12 @@ tb_show_diag_menu() {
 	tb_send "$1" "Диагностика" "$(KB_DIAG)"
 }
 
-# полный список с чанкингом ~3500
+# полный список с чанкингом ~3500; после — главное меню
 tb_send_list() {
 	_ch="$1"
 	_f=/opt/etc/kvas.list
 	if [ ! -s "${_f}" ]; then
-		tb_send "${_ch}" "Защищённый список пуст"
+		tb_send "${_ch}" "Защищённый список пуст" "$(KB_MAIN)"
 		return
 	fi
 	_cnt=$(grep -c . "${_f}" 2>/dev/null); [ -n "${_cnt}" ] || _cnt=0
@@ -184,7 +195,7 @@ tb_bulk_add() { # $1=chat $2=текст
 	_msg="Добавлено:${_rep}"
 	[ -n "${_bad}" ] && _msg="${_msg}
 Пропущено (неверный формат):${_bad}"
-	tb_send "${_ch}" "${_msg}"
+	tb_send "${_ch}" "${_msg}" "$(KB_MAIN)"
 }
 
 tb_bulk_del() {
@@ -213,7 +224,7 @@ tb_bulk_del() {
 	_msg="Удалено:${_rep}"
 	[ -n "${_bad}" ] && _msg="${_msg}
 Пропущено (неверный формат):${_bad}"
-	tb_send "${_ch}" "${_msg}"
+	tb_send "${_ch}" "${_msg}" "$(KB_MAIN)"
 }
 
 tb_zk_list() {
@@ -234,7 +245,7 @@ tb_zk_list() {
 $(grep -E '^\[.*\]$' "${_f}" 2>/dev/null | tr -d '[]')
 EOF
 	[ -n "${_full}" ] || _full=" (нет секций)"
-	tb_send "${_ch}" "Закваски:${_full}"
+	tb_send "${_ch}" "Закваски:${_full}" "$(KB_ZK)"
 }
 
 tb_reply_cmd() { # $1=chat $2=cmd $3=arg (полный, не обрезан)
@@ -242,15 +253,20 @@ tb_reply_cmd() { # $1=chat $2=cmd $3=arg (полный, не обрезан)
 	case "${_cmd}" in
 		/menu|/start) tb_show_main "${_ch}" ;;
 		/help)        tb_send "${_ch}" "$(tb_help)" "$(KB_MAIN)" ;;
-		/status)      tb_send "${_ch}" "$(tb_status)" ;;
-		/list)        tb_send_list "${_ch}" ;;
+		/status)      tb_send "${_ch}" "$(tb_status)" "$(KB_MAIN)" ;;
+		/list)
+			tb_send_list "${_ch}"
+			tb_send "${_ch}" "Меню:" "$(KB_MAIN)"
+			;;
 		/add)
-			[ -n "${_arg}" ] || { tb_send "${_ch}" "Использование: /add example.com foo.org"; return; }
+			[ -n "${_arg}" ] || { tb_send "${_ch}" "Использование: /add example.com foo.org" "$(KB_MAIN)"; return; }
 			tb_bulk_add "${_ch}" "${_arg}"
+			tb_send "${_ch}" "Меню:" "$(KB_MAIN)"
 			;;
 		/del)
-			[ -n "${_arg}" ] || { tb_send "${_ch}" "Использование: /del example.com foo.org"; return; }
+			[ -n "${_arg}" ] || { tb_send "${_ch}" "Использование: /del example.com foo.org" "$(KB_MAIN)"; return; }
 			tb_bulk_del "${_ch}" "${_arg}"
+			tb_send "${_ch}" "Меню:" "$(KB_MAIN)"
 			;;
 		/update)   tb_job "${_ch}" update ;;
 		/rollback) tb_job "${_ch}" rollback ;;
@@ -262,17 +278,32 @@ $(tb_help)" "$(KB_MAIN)" ;;
 
 # обработка текста (кнопка или ввод) с учётом state
 tb_on_text() { # $1=chat $2=текст
-	_ch="$1"; _tx="$2"
+	_ch="$1"
+	# нормализация: CR, пробелы по краям (Telegram/клавиатура)
+	_tx=$(printf '%s' "$2" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
 	_st=$(tb_st)
 	_pl=$(tb_payload)
 
+	# глобальные кнопки — до state-машины, чтобы всегда работали
 	case "${_tx}" in
-		Справка|Помощь)
+		Справка|Помощь|/help)
 			tb_send "${_ch}" "$(tb_help)" "$(KB_MAIN)"
 			return
 			;;
-		Отмена)
+		Отмена|/menu|/start|Меню|меню)
 			tb_show_main "${_ch}"
+			return
+			;;
+		"Работа с Kvas.list"*|*Kvas.list*|*"Работа с Kvas"*)
+			tb_show_list_menu "${_ch}"
+			return
+			;;
+		Закваск*|*Закваск*)
+			tb_show_zk_menu "${_ch}"
+			return
+			;;
+		Диагностик*|*Диагностик*)
+			tb_show_diag_menu "${_ch}"
 			return
 			;;
 	esac
@@ -459,17 +490,13 @@ tb_on_text() { # $1=chat $2=текст
 	esac
 
 	case "${_tx}" in
-		"Работа с Kvas.list")
-			tb_show_list_menu "${_ch}"
-			;;
-		Закваски)
-			tb_show_zk_menu "${_ch}"
-			;;
-		Диагностика)
-			tb_show_diag_menu "${_ch}"
-			;;
 		Назад)
-			tb_show_main "${_ch}"
+			case "${_st}" in
+				list|list_add|list_del) tb_show_list_menu "${_ch}" ;;
+				zk|zk_add|zk_del)       tb_show_zk_menu "${_ch}" ;;
+				diag|diag_site|diag_site_url|diag_speed) tb_show_diag_menu "${_ch}" ;;
+				*) tb_show_main "${_ch}" ;;
+			esac
 			;;
 		*)
 			tb_send "${_ch}" "Не понял. Используйте меню или /help:" "$(KB_MAIN)"
@@ -497,7 +524,7 @@ while true; do
 		[ -n "${_ch}" ] && [ -n "${_tx}" ] || continue
 		printf '%s\n@%s\n' "${_ch}" "${_un}" > "${LASTCHAT}" 2>/dev/null
 		[ -n "${_me}" ] && [ "${_ch}" = "${_me}" ] || continue
-		_tx=$(printf '%s' "${_tx}" | head -c 2000)
+		_tx=$(printf '%s' "${_tx}" | head -c 2000 | tr -d '\r')
 		case "${_tx}" in
 			/*)
 				_cmd=${_tx%% *}
