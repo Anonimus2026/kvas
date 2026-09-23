@@ -13,6 +13,8 @@ Q="${TG_QUEUE}"
 [ -s "${Q}" ] || exit 0
 _tok=$(tg_conf_get TG_BOT_TOKEN); _cht=$(tg_conf_get TG_CHAT_ID)
 [ -n "${_tok}" ] && [ -n "${_cht}" ] || exit 0
+# тихие часы: очередь копится, доставка после окна (cron.1min подхватит)
+tg_quiet_active && exit 0
 _work="${Q}.$$"
 mv "${Q}" "${_work}" 2>/dev/null || exit 0
 while IFS="$(printf '\t')" read -r _ev _txt || [ -n "${_ev}${_txt}" ]; do

@@ -1643,10 +1643,12 @@ adblock_off)
 			[ -n "$_e" ] || _e=all
 			_en=$(sed -n 's/^TG_ENABLED=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			[ "$_en" = "true" ] && _en=true || _en=false
+			_qs=$(sed -n 's/^TG_QUIET_START=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			_qe=$(sed -n 's/^TG_QUIET_END=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			_mask=""; _set=false
 			if [ -n "$_t" ]; then _set=true; _mask=$(printf '%s' "$_t" | sed 's/^\([^:]*\):.*/\1:…/'); fi
-			printf '{"ok":true,"enabled":%s,"token_set":%s,"token_hint":"%s","chat":"%s","events":"%s"}\n' \
-				"$_en" "$_set" "$(json_str "$_mask")" "$(json_str "$_c")" "$(json_str "$_e")"
+			printf '{"ok":true,"enabled":%s,"token_set":%s,"token_hint":"%s","chat":"%s","events":"%s","quiet_start":"%s","quiet_end":"%s"}\n' \
+				"$_en" "$_set" "$(json_str "$_mask")" "$(json_str "$_c")" "$(json_str "$_e")" "$(json_str "$_qs")" "$(json_str "$_qe")"
 			;;
 		tg_save)
 			check_token "$token"
@@ -1654,9 +1656,17 @@ adblock_off)
 			_bt=$(echo "$QUERY_STRING" | sed 's/.*btoken=//; s/&.*//'); [ "$_bt" = "$QUERY_STRING" ] && _bt=""; _bt=$(urldecode "$_bt")
 			_cg=$(echo "$QUERY_STRING" | sed 's/.*chat=//; s/&.*//'); [ "$_cg" = "$QUERY_STRING" ] && _cg=""; _cg=$(urldecode "$_cg")
 			_ev=$(echo "$QUERY_STRING" | sed 's/.*events=//; s/&.*//'); [ "$_ev" = "$QUERY_STRING" ] && _ev=""; _ev=$(urldecode "$_ev")
+			_qs=$(echo "$QUERY_STRING" | sed 's/.*quiet_start=//; s/&.*//'); [ "$_qs" = "$QUERY_STRING" ] && _qs=""; _qs=$(urldecode "$_qs")
+			_qe=$(echo "$QUERY_STRING" | sed 's/.*quiet_end=//; s/&.*//'); [ "$_qe" = "$QUERY_STRING" ] && _qe=""; _qe=$(urldecode "$_qe")
 			case "$_en" in true|false) ;; *) _en=false ;; esac
 			[ -n "$_ev" ] || _ev=all
 			case "$_ev" in *[^a-z_,]*) json_error "bad events" ;; esac
+			# quiet hours: HH:MM или пусто
+			_qs=$(printf '%s' "$_qs" | tr -cd '0-9:'); _qe=$(printf '%s' "$_qe" | tr -cd '0-9:')
+			for _tq in "$_qs" "$_qe"; do
+				[ -z "$_tq" ] && continue
+				printf '%s' "$_tq" | grep -qE '^[0-2][0-9]:[0-5][0-9]$' || json_error "bad quiet time"
+			done
 			_have_t=$(sed -n 's/^TG_BOT_TOKEN=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			[ -n "$_bt" ] && _have_t=$_bt
 			[ -n "$_cg" ] || _cg=$(sed -n 's/^TG_CHAT_ID=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
@@ -1668,6 +1678,8 @@ adblock_off)
 			[ -n "$_bt" ] && tg_upsert TG_BOT_TOKEN "$_bt"
 			[ -n "$_cg" ] && tg_upsert TG_CHAT_ID "$_cg"
 			tg_upsert TG_EVENTS "$_ev"
+			tg_upsert TG_QUIET_START "$_qs"
+			tg_upsert TG_QUIET_END "$_qe"
 			mkdir -p /opt/etc/cron.1min /opt/etc/cron.15min 2>/dev/null
 			ln -sf /opt/apps/kvas/bin/tg_sender.sh /opt/etc/cron.1min/tg_sender 2>/dev/null
 			ln -sf /opt/apps/kvas/bin/tg_health.sh /opt/etc/cron.15min/tg_health 2>/dev/null

@@ -6,6 +6,45 @@ TG_QUEUE="${TG_QUEUE_DIR}/tg.queue"
 
 tg_conf_get(){ sed -n "s/^$1=//p" "${TG_CONF}" 2>/dev/null | head -1; }
 
+# Quiet hours: TG_QUIET_START/TG_QUIET_END = HH:MM (пусто = off).
+# true, если сейчас ночное «тихое» окно (в т.ч. через полночь).
+tg_quiet_active(){
+	_qs=$(tg_conf_get TG_QUIET_START)
+	_qe=$(tg_conf_get TG_QUIET_END)
+	[ -n "${_qs}" ] && [ -n "${_qe}" ] || return 1
+	_qs=$(printf '%s' "${_qs}" | tr -cd '0-9:')
+	_qe=$(printf '%s' "${_qe}" | tr -cd '0-9:')
+	case "${_qs}" in *:*) ;; *) return 1 ;; esac
+	case "${_qe}" in *:*) ;; *) return 1 ;; esac
+	_tmin(){ # HH:MM или HHMM → минуты с полуночи; мусор → 0
+		_t=$(printf '%s' "$1" | tr -cd '0-9:')
+		case "${_t}" in
+			*:*) _h=${_t%%:*}; _m=${_t##*:} ;;
+			[0-9][0-9][0-9][0-9]) _h=${_t%??}; _m=${_t#??} ;;
+			[0-9][0-9][0-9]) _h=${_t%??}; _m=${_t#?} ;;
+			[0-9][0-9]) _h=${_t}; _m=0 ;;
+			[0-9]) _h=${_t}; _m=0 ;;
+			*) _h=0; _m=0 ;;
+		esac
+		# strip leading zeros (POSIX $((09)) is invalid)
+		_h=$(printf '%s' "${_h}" | tr -cd '0-9' | sed 's/^0*//'); [ -n "${_h}" ] || _h=0
+		_m=$(printf '%s' "${_m}" | tr -cd '0-9' | sed 's/^0*//'); [ -n "${_m}" ] || _m=0
+		[ "${_h}" -gt 23 ] 2>/dev/null && _h=23
+		[ "${_m}" -gt 59 ] 2>/dev/null && _m=59
+		printf '%s' $(( ${_h} * 60 + ${_m} ))
+	}
+	_sm=$(_tmin "${_qs}")
+	_em=$(_tmin "${_qe}")
+	[ "${_sm}" = "${_em}" ] && return 1
+	_now=$(date +%H%M)
+	_nm=$(_tmin "${_now}")
+	if [ "${_sm}" -lt "${_em}" ]; then
+		[ "${_nm}" -ge "${_sm}" ] && [ "${_nm}" -lt "${_em}" ]
+	else
+		[ "${_nm}" -ge "${_sm}" ] || [ "${_nm}" -lt "${_em}" ]
+	fi
+}
+
 tg_socks_port(){
 	case "$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)" in
 		*Proxy21*|*t2s21*|*vless*) echo 1097 ;;
@@ -49,10 +88,13 @@ tg_notify(){
 		*,all,*|*,"$1",*) ;;
 		*) return 0 ;;
 	esac
+	# тихие часы: событие кладём в очередь, но сразу не шлём (sender ждёт окна)
 	mkdir -p "${TG_QUEUE_DIR}" 2>/dev/null || return 0
 	_tg_txt=$(printf '%s' "$2" | tr '\r\n\t' '   ')
 	printf '%s\t%s\n' "$1" "${_tg_txt}" >> "${TG_QUEUE}" 2>/dev/null
-	# немедленная доставка в фоне; cron-дополнитель заберёт очередь при неудаче
+	if tg_quiet_active; then
+		return 0
+	fi
 	( sh /opt/apps/kvas/bin/tg_sender.sh >/dev/null 2>&1 & ) 2>/dev/null
 	return 0
 }

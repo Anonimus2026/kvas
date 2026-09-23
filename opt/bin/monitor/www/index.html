@@ -155,13 +155,20 @@ window.addEventListener('error', function(e){
             <label style="min-width:auto;"><input type="checkbox" id="tgEnabled"> Включено</label>
           </div>
           <div id="tgEvents" style="display:flex;flex-wrap:wrap;gap:6px 10px;"></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;">
+            <span>Тихие часы:</span>
+            <input type="time" id="tgQuietStart" value="" placeholder="23:00" style="padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
+            <span>—</span>
+            <input type="time" id="tgQuietEnd" value="" placeholder="07:00" style="padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
+            <span style="color:#8b949e;font-size:10px;">(пусто = off)</span>
+          </div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
             <button class="btn btn-sm primary" onclick="tgSave(this)">Сохранить</button>
             <button class="btn btn-sm" onclick="tgTest(this)">Тест</button>
             <span id="tgStatus" style="font-size:11px;color:#8b949e;"></span>
           </div>
         </div>
-        <div style="font-size:10px;color:#8b949e;margin-top:8px;line-height:1.4;">@BotFather → токен; chat_id: напишите боту /start и нажмите «Получить chat_id». Пустой токен = не менять. Бот также принимает: /status /list /add домен /del домен /update /rollback /help</div>
+        <div style="font-size:10px;color:#8b949e;margin-top:8px;line-height:1.4;">@BotFather → токен; chat_id: напишите боту /start и нажмите «Получить chat_id». Пустой токен = не менять. В тихие часы события копятся и доставляются после окна. Бот: /status /list /add домен /del домен /update /rollback /help</div>
       </div>
     </span>
     <span class="settings-wrap" id="settingsWrap" style="display:none;">
@@ -871,15 +878,20 @@ function tgLoad(){
     if(t){ t.value=''; t.placeholder = d.token_set ? (d.token_hint || 'сохранён') : '123456789:ABC-DEF...'; }
     var c=document.getElementById('tgChat'); if(c) c.value = d.chat || '';
     tgRenderEvents(d.events||'all');
+    var qs=document.getElementById('tgQuietStart'); if(qs) qs.value = d.quiet_start || '';
+    var qe=document.getElementById('tgQuietEnd'); if(qe) qe.value = d.quiet_end || '';
     var s=document.getElementById('tgStatus');
     if(s){ s.textContent = d.token_set ? '' : 'не настроено'; s.style.color='#8b949e'; }
   });
 }
 function tgSave(btn){
+  var qs=document.getElementById('tgQuietStart'); var qe=document.getElementById('tgQuietEnd');
   var p='action=tg_save&enabled='+(document.getElementById('tgEnabled').checked?'true':'false')
     +'&btoken='+encodeURIComponent(document.getElementById('tgToken').value.trim())
     +'&chat='+encodeURIComponent(document.getElementById('tgChat').value.trim())
-    +'&events='+encodeURIComponent(tgCollectEvents());
+    +'&events='+encodeURIComponent(tgCollectEvents())
+    +'&quiet_start='+encodeURIComponent(qs?qs.value.trim():'')
+    +'&quiet_end='+encodeURIComponent(qe?qe.value.trim():'');
   apiBtn('/cgi-bin/manage.sh?'+p, btn, function(d){
     var s=document.getElementById('tgStatus');
     if(s){ s.textContent = d.ok ? (d.msg||'Сохранено') : (d.error||'Ошибка'); s.style.color = d.ok?'#3fb950':'#f85149'; }
