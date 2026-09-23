@@ -9,10 +9,10 @@ _work="${Q}.$$"
 mv "${Q}" "${_work}" 2>/dev/null || exit 0
 while IFS="$(printf '\t')" read -r _ev _txt || [ -n "${_ev}${_txt}" ]; do
 	[ -z "${_ev}" ] && [ -z "${_txt}" ] && continue
-	_esc=$(printf '%s' "[${_ev}] ${_txt}" | sed 's/\\/\\\\/g; s/"/\\"/g')
-	_body=$(printf '{"chat_id":"%s","text":"%s"}' "${_cht}" "${_esc}")
-	# Telegram API — через SOCKS тоннеля (tg_curl); пустой ответ = сеть, возвращаем в очередь
-	_resp=$(tg_curl "https://api.telegram.org/bot${_tok}/sendMessage" -d "${_body}")
+	# форма + urlencode (не JSON -d: curl шлёт её как form, Telegram не видит text)
+	_resp=$(tg_curl "https://api.telegram.org/bot${_tok}/sendMessage" \
+		--data-urlencode "chat_id=${_cht}" \
+		--data-urlencode "text=[${_ev}] ${_txt}")
 	if [ -z "${_resp}" ]; then
 		printf '%s\t%s\n' "${_ev}" "${_txt}" >> "${Q}" 2>/dev/null
 	fi

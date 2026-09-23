@@ -1701,8 +1701,11 @@ adblock_off)
 			[ -n "$_cg" ] || _cg=$(sed -n 's/^TG_CHAT_ID=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			[ -n "$_bt" ] || json_error "укажите токен бота"
 			[ -n "$_cg" ] || json_error "укажите chat_id"
-			# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl)
-			_resp=$(tg_curl "https://api.telegram.org/bot${_bt}/sendMessage" -d "{\"chat_id\":\"${_cg}\",\"text\":\"KVAS: тест уведомлений — OK\"}")
+			# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl);
+			# sendMessage — форма с --data-urlencode (JSON -d уходит как form и text теряется)
+			_resp=$(tg_curl "https://api.telegram.org/bot${_bt}/sendMessage" \
+				--data-urlencode "chat_id=${_cg}" \
+				--data-urlencode "text=KVAS: тест уведомлений — OK")
 			if [ -z "$_resp" ]; then
 				json_error "нет ответа: Telegram недоступен напрямую и через SOCKS тоннеля"
 			fi
