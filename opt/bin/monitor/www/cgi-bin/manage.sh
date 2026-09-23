@@ -1678,6 +1678,23 @@ adblock_off)
 			_bt=$(echo "$QUERY_STRING" | sed 's/.*btoken=//; s/&.*//'); [ "$_bt" = "$QUERY_STRING" ] && _bt=""; _bt=$(urldecode "$_bt")
 			[ -n "$_bt" ] || _bt=$(sed -n 's/^TG_BOT_TOKEN=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			[ -n "$_bt" ] || json_error "сначала укажите токен бота"
+			# Бот (tg_bot.sh) потребляет getUpdates по offset и пишет последнего
+			# собеседника в tg_lastchat — UI берём оттуда (свежесть <= 10 мин)
+			_lc=/opt/var/kvas/tg_lastchat
+			_lc_used=false
+			if [ -s "$_lc" ]; then
+				_mt=$(stat -c %Y "$_lc" 2>/dev/null || echo 0)
+				_now=$(date +%s)
+				if [ -n "${_mt}" ] && [ $((_now - _mt)) -le 600 ] 2>/dev/null; then
+					_cid=$(sed -n '1p' "$_lc")
+					_uname=$(sed -n '2p' "$_lc" | sed 's/^@//')
+					if [ -n "${_cid}" ]; then
+						printf '{"ok":true,"chat_id":"%s","username":"%s"}\n' "$(json_str "$_cid")" "$(json_str "$_uname")"
+						_lc_used=true
+					fi
+				fi
+			fi
+			if [ "${_lc_used}" = false ]; then
 			# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl)
 			_gu=$(tg_curl "https://api.telegram.org/bot${_bt}/getUpdates")
 			if [ -z "$_gu" ]; then
@@ -1692,6 +1709,7 @@ adblock_off)
 			[ -n "$_cid" ] && [ "$_cid" != "null" ] || json_error "сообщений нет — напишите боту /start и повторите"
 			_uname=$(echo "$_gu" | jq -r '[.result[]? | (.message.from.username // empty)] | last // empty' 2>/dev/null)
 			printf '{"ok":true,"chat_id":"%s","username":"%s"}\n' "$(json_str "$_cid")" "$(json_str "$_uname")"
+			fi
 			;;
 		tg_test)
 			check_token "$token"

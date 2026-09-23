@@ -1,6 +1,14 @@
 #!/bin/sh
 # Отправка очереди Telegram (P.8): из tg_notify в фоне и по cron.1min
 . /opt/apps/kvas/bin/libs/tgq 2>/dev/null || exit 0
+# keepalive интерактивного бота (P.8+)
+if [ "$(tg_conf_get TG_ENABLED)" = "true" ]; then
+	_bp=/opt/var/kvas/tg_bot.pid
+	_bid=$(cat "${_bp}" 2>/dev/null)
+	if [ -z "${_bid}" ] || ! kill -0 "${_bid}" 2>/dev/null; then
+		( sh /opt/apps/kvas/bin/tg_bot.sh >/dev/null 2>&1 & ) 2>/dev/null
+	fi
+fi
 Q="${TG_QUEUE}"
 [ -s "${Q}" ] || exit 0
 _tok=$(tg_conf_get TG_BOT_TOKEN); _cht=$(tg_conf_get TG_CHAT_ID)

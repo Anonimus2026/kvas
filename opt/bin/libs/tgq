@@ -18,23 +18,29 @@ tg_socks_port(){
 # Запрос в Telegram API: сначала через локальный SOCKS тоннеля (API заблокирован
 # напрямую), затем через запасные socks-порты, затем напрямую.
 # Аргументы: tg_curl URL [доп. аргументы curl...]
+# TG_CURL_MAX — общий лимит времени curl (long-poll getUpdates задаёт 30)
 tg_curl(){
 	_tg_url="$1"; shift
 	_p=$(tg_socks_port)
 	[ -n "${_p}" ] || _p=1097
-	_r=$(curl -s --max-time 15 "$@" -x "socks5h://127.0.0.1:${_p}" "${_tg_url}" 2>/dev/null)
+	_r=$(curl -s --max-time "${TG_CURL_MAX:-15}" "$@" -x "socks5h://127.0.0.1:${_p}" "${_tg_url}" 2>/dev/null)
 	[ -n "${_r}" ] && { printf '%s\n' "${_r}"; return 0; }
 	for _q in 1097 10808 10818; do
 		[ "${_q}" = "${_p}" ] && continue
-		_r=$(curl -s --max-time 12 "$@" -x "socks5h://127.0.0.1:${_q}" "${_tg_url}" 2>/dev/null)
+		_r=$(curl -s --max-time "${TG_CURL_MAX:-12}" "$@" -x "socks5h://127.0.0.1:${_q}" "${_tg_url}" 2>/dev/null)
 		[ -n "${_r}" ] && { printf '%s\n' "${_r}"; return 0; }
 	done
-	curl -s --max-time 12 "$@" "${_tg_url}" 2>/dev/null
+	curl -s --max-time "${TG_CURL_MAX:-12}" "$@" "${_tg_url}" 2>/dev/null
 }
 
 tg_notify(){
-	# $1 = код события (failover, parental_add, ...), $2 = текст
+	# $1 = код события, $2 = текст
 	[ "$(tg_conf_get TG_ENABLED)" = "true" ] || return 0
+	# P.8+: только эти события; остальные хуки в коде гасятся здесь
+	case "$1" in
+		failover|update_found|tunnel|health|parental_expire) ;;
+		*) return 0 ;;
+	esac
 	_tg_t=$(tg_conf_get TG_BOT_TOKEN); _tg_c=$(tg_conf_get TG_CHAT_ID)
 	[ -n "${_tg_t}" ] && [ -n "${_tg_c}" ] || return 0
 	_tg_ev=$(tg_conf_get TG_EVENTS); [ -n "${_tg_ev}" ] || _tg_ev=all
