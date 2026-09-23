@@ -75,6 +75,23 @@ test_ip(){
         }
 }
 
+_tg_probe_state(){
+	if echo "${ENTWARE_INTERFACE}" | grep -q ezcfg ; then
+		_ip=$(sed -n 's/.*"server"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${SHADOWSOCKS_CONF}" 2>/dev/null | head -1)
+		if ping -c1 -W2 "${_ip}" >/dev/null 2>&1 && /opt/etc/init.d/S22shadowsocks status 2>/dev/null | grep -q alive; then
+			echo ok
+		else
+			echo down
+		fi
+	else
+		if [ "$(curl -s --max-time 5 'http://localhost:79/rci/show/interface' 2>/dev/null | jq -r '.[] | select(.id=="'"${CLI_INTERFACE}"'") | .connected' 2>/dev/null | head -1)" = "yes" ]; then
+			echo ok
+		else
+			echo down
+		fi
+	fi
+}
+
 test_connection(){
 
         if echo "${ENTWARE_INTERFACE}" | grep -q ezcfg ; then
@@ -92,7 +109,17 @@ test_connection(){
 
         fi
 
-
+	# Telegram P.8: событие tunnel — только на изменении состояния между проверками (cron.5mins)
+	_sf=/opt/var/kvas/tg.tunnel.state
+	_prev=$(cat "${_sf}" 2>/dev/null)
+	_now=$(_tg_probe_state)
+	case "${_prev}|${_now}" in
+		ok\|down) tg_notify tunnel "${ENTWARE_INTERFACE}: туннель потерян" ;;
+		\|down)   tg_notify tunnel "${ENTWARE_INTERFACE}: туннель недоступен" ;;
+		down\|ok) tg_notify tunnel "${ENTWARE_INTERFACE}: туннель восстановлен" ;;
+	esac
+	mkdir -p /opt/var/kvas 2>/dev/null
+	echo "${_now}" > "${_sf}" 2>/dev/null
 }
 
 test_connection &

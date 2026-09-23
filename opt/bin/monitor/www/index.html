@@ -554,6 +554,30 @@ window.addEventListener('error', function(e){
   <pre id="logOutput" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;max-height:400px;overflow-y:auto;font-size:11px;color:#c9d1d9;font-family:monospace;white-space:pre-wrap;margin-top:8px;"><span style="color:#8b949e;">Выберите тип лога...</span></pre>
 </div>
 
+<div class="card">
+  <h3>Уведомления Telegram</h3>
+  <div class="card-row" style="gap:8px;flex-wrap:wrap;align-items:center;">
+    <label style="min-width:90px;">Токен бота:</label>
+    <input type="password" id="tgToken" autocomplete="off" placeholder="123456789:ABC..." style="flex:1;min-width:180px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:13px;">
+  </div>
+  <div class="card-row" style="gap:8px;flex-wrap:wrap;align-items:center;">
+    <label style="min-width:90px;">Chat ID:</label>
+    <input type="text" id="tgChat" placeholder="-100... или числовой id" style="flex:1;min-width:140px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:13px;">
+    <button class="btn btn-sm" onclick="tgGetChat(this)">Получить chat_id</button>
+  </div>
+  <div class="card-row"><label>Включено:</label><input type="checkbox" id="tgEnabled"></div>
+  <div class="card-row" style="flex-direction:column;align-items:flex-start;gap:6px;">
+    <label>События:</label>
+    <span id="tgEvents" style="display:flex;flex-wrap:wrap;gap:8px;"></span>
+  </div>
+  <div class="card-row" style="gap:8px;flex-wrap:wrap;align-items:center;">
+    <button class="btn" onclick="tgSave(this)">Сохранить</button>
+    <button class="btn btn-sm" onclick="tgTest(this)">Тест</button>
+    <span id="tgStatus" style="font-size:12px;color:#8b949e;"></span>
+  </div>
+  <div style="font-size:11px;color:#8b949e;margin-top:6px;">Создайте бота через @BotFather → получите токен. Чтобы узнать chat_id: напишите боту /start и нажмите «Получить chat_id». Поле токена пустое = уже сохранённый токен не меняется.</div>
+</div>
+
 </div><!-- /tab-diag -->
 
 <!-- Bottom mobile navigation (shown when mobile view is on) -->
@@ -819,10 +843,74 @@ function loadFailoverHistory() {
 }
 
 /* ========== TABS ========== */
+/* ========== TELEGRAM (P.8) ========== */
+var TG_EVENT_DEFS = [
+  ['failover','Каналы VPN'],['parental_add','Контроль: домен добавлен'],['parental_del','Контроль: домен удалён'],
+  ['parental_expire','Контроль: срок истёк'],['adblock','Реклама: списки обновлены'],['adblock_err','Реклама: ошибка'],
+  ['update_found','Найдена новая версия KVAS'],['upgrade','Обновление/откат KVAS'],['list','Защищённый список доменов'],
+  ['tunnel','Состояние туннеля'],['test_err','Ошибка теста подключения'],['health','Здоровье системы']
+];
+function tgRenderEvents(sel){
+  var el=document.getElementById('tgEvents'); if(!el) return;
+  var parts=(sel||'all').split(',');
+  el.innerHTML=TG_EVENT_DEFS.map(function(d){
+    var on = parts.indexOf('all')>=0 || parts.indexOf(d[0])>=0;
+    return '<label style="font-size:12px;display:inline-flex;gap:4px;align-items:center;"><input type="checkbox" class="tgEv" value="'+d[0]+'"'+(on?' checked':'')+'> '+d[1]+'</label>';
+  }).join('');
+}
+function tgCollectEvents(){
+  var boxes=[].slice.call(document.querySelectorAll('.tgEv'));
+  if (!boxes.length) return 'all';
+  var all=boxes.every(function(b){return b.checked;});
+  if(all) return 'all';
+  var sel=boxes.filter(function(b){return b.checked;}).map(function(b){return b.value;});
+  return sel.length ? sel.join(',') : 'none';
+}
+function tgLoad(){
+  api('/cgi-bin/manage.sh?action=tg_get', function(d){
+    if(d.error) return;
+    var en=document.getElementById('tgEnabled'); if(en) en.checked = !!d.enabled;
+    var t=document.getElementById('tgToken');
+    if(t){ t.value=''; t.placeholder = d.token_set ? (d.token_hint || 'сохранён') : '123456789:ABC-DEF...'; }
+    var c=document.getElementById('tgChat'); if(c) c.value = d.chat || '';
+    tgRenderEvents(d.events||'all');
+    var s=document.getElementById('tgStatus');
+    if(s){ s.textContent = d.token_set ? '' : 'не настроено'; s.style.color='#8b949e'; }
+  });
+}
+function tgSave(btn){
+  var p='action=tg_save&enabled='+(document.getElementById('tgEnabled').checked?'true':'false')
+    +'&btoken='+encodeURIComponent(document.getElementById('tgToken').value.trim())
+    +'&chat='+encodeURIComponent(document.getElementById('tgChat').value.trim())
+    +'&events='+encodeURIComponent(tgCollectEvents());
+  apiBtn('/cgi-bin/manage.sh?'+p, btn, function(d){
+    var s=document.getElementById('tgStatus');
+    if(s){ s.textContent = d.ok ? (d.msg||'Сохранено') : (d.error||'Ошибка'); s.style.color = d.ok?'#3fb950':'#f85149'; }
+    if(d.ok) tgLoad();
+  });
+}
+function tgGetChat(btn){
+  var p='action=tg_getchat&btoken='+encodeURIComponent(document.getElementById('tgToken').value.trim());
+  apiBtn('/cgi-bin/manage.sh?'+p, btn, function(d){
+    var s=document.getElementById('tgStatus'); if(!s) return;
+    if(d.ok){ document.getElementById('tgChat').value=d.chat_id; s.textContent='chat_id получен'+(d.username?(' (@'+d.username+')'):''); s.style.color='#3fb950'; }
+    else { s.textContent=d.error||'Ошибка'; s.style.color='#f85149'; }
+  }, 30000);
+}
+function tgTest(btn){
+  var p='action=tg_test&btoken='+encodeURIComponent(document.getElementById('tgToken').value.trim())
+    +'&chat='+encodeURIComponent(document.getElementById('tgChat').value.trim());
+  apiBtn('/cgi-bin/manage.sh?'+p, btn, function(d){
+    var s=document.getElementById('tgStatus'); if(!s) return;
+    s.textContent = d.ok ? (d.msg||'Ок') : (d.error||'Ошибка'); s.style.color = d.ok?'#3fb950':'#f85149';
+  }, 30000);
+}
+
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('active', t.dataset.tab === name)});
   document.querySelectorAll('.tab-content').forEach(function(t){t.classList.toggle('active', t.id === 'tab-' + name)});
   document.querySelectorAll('.mnav').forEach(function(m){m.classList.toggle('active', m.dataset.mtab === name)});
+  if (name === 'diag') { try { tgLoad(); } catch(e) {} }
   window.scrollTo(0, 0);
 }
 

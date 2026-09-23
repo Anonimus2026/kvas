@@ -185,7 +185,7 @@ cmd_add_domain_to_tag_list() {
 
     ready "Домен '$domain' добавлен в закваску '$section'."
     if sed -i "/\[$section\]/a $domain" "${TAGS_FILE}" ;
-    then when_ok "УСПЕШНО";
+    then when_ok "УСПЕШНО"; tg_notify list "Закваска '$section': добавлен $domain";
     else when_bad "ОШИБКА"; fi
 }
 
@@ -204,6 +204,7 @@ cmd_del_domain_from_tag_list() {
         if [[ "$answer" =~ [qn] ]] ; then return 1; fi
         [ "${answer}" = y ] && {
             cmd_del_tag_section_noninteractive "$section"
+            tg_notify list "Закваска '$section': удалена целиком"
         }
         return
     else
@@ -217,6 +218,7 @@ cmd_del_domain_from_tag_list() {
             return 1
         fi
         sed -i "/\[$section\]/,/\[.*\]/ { /^$domain$/d }" "${TAGS_FILE}"
+        tg_notify list "Закваска '$section': удалён $domain"
     fi
 }
 

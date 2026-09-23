@@ -14,6 +14,15 @@ TAGS_FILE=/opt/etc/tags.list
 KVAS_CONF_FILE=/opt/etc/kvas.conf
 PARENTAL_LIST=/opt/etc/adblock/block.list
 PARENTAL_PAGE=/opt/apps/kvas/bin/monitor/www/blocked.html
+# Telegram-уведомления (P.8)
+if ! . /opt/apps/kvas/bin/libs/tgq 2>/dev/null; then tg_notify(){ :; }; fi
+tg_upsert() {
+	if grep -q "^$1=" "$KVAS_CONF_FILE" 2>/dev/null; then
+		sed -i "s|^$1=.*|$1=$2|" "$KVAS_CONF_FILE"
+	else
+		printf '%s=%s\n' "$1" "$2" >> "$KVAS_CONF_FILE"
+	fi
+}
 
 json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 json_error() { printf '{"error":"%s"}\n' "$(json_str "$1")"; exit 0; }
@@ -261,6 +270,13 @@ check_updates() {
 		# Extract build number from current version (e.g. 1.1.9_beta-10-239 -> 239)
 		local current_num=$(echo "$current_ver" | sed 's/.*beta-10-//')
 		if [ -n "$current_num" ] && [ "$latest_ver" -gt "$current_num" ] 2>/dev/null; then
+			# Telegram P.8: update_found — один раз на конкретную версию
+			mkdir -p /opt/var/kvas 2>/dev/null
+			_tg_lu=/opt/var/kvas/tg.lastupd
+			if [ "$(cat "${_tg_lu}" 2>/dev/null)" != "v${latest_ver}" ]; then
+				tg_notify update_found "Доступно обновление KVAS v${latest_ver} (у вас сборка ${current_num})"
+				echo "v${latest_ver}" > "${_tg_lu}" 2>/dev/null
+			fi
 			echo "available:v${latest_ver}"
 		else
 			echo "up_to_date"
@@ -1075,10 +1091,12 @@ main() {
 				fi
 			fi
 			if [ -n "$_temp_until" ]; then
-				json_ok "$domain — до $(date -d "@${_temp_until}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$until_hm") (блокируется домен и поддомены)"
+				_msg="$domain — до $(date -d "@${_temp_until}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$until_hm") (блокируется домен и поддомены)"
 			else
-				json_ok "$domain — навсегда (блокируется домен и поддомены)"
+				_msg="$domain — навсегда (блокируется домен и поддомены)"
 			fi
+			tg_notify parental_add "$_msg"
+			json_ok "$_msg"
 		;;
 		parental_del)
 			check_token "$token"
@@ -1107,11 +1125,13 @@ main() {
 			parental_unblock_exact "$domain"
 			parental_regen
 			parental_dns_apply
+			tg_notify parental_del "$domain удалён из реестра"
 			json_ok "$domain удалён из реестра"
 		;;
 		parental_expire_tick)
 			check_token "$token"
 			_removed=0
+			_names=""
 			if [ -f /opt/etc/adblock/temporary.list ]; then
 				_now=$(date +%s)
 				while IFS='|' read -r _d _exp; do
@@ -1125,10 +1145,12 @@ main() {
 					# снимаем блокировку, домен остаётся в реестре (status=expired)
 					parental_unblock_exact "$_d"
 					_removed=$((_removed+1))
+					_names="${_names}${_names:+, }${_d}"
 				done < /opt/etc/adblock/temporary.list
 				if [ "$_removed" -gt 0 ]; then
 					parental_regen
 					parental_dns_apply
+					tg_notify parental_expire "Истёк срок блокировки (${_removed}): ${_names}"
 				fi
 			fi
 			printf '{"ok":true,"removed":%s}\n' "$_removed"
@@ -1607,7 +1629,78 @@ adblock_off)
 		kvas_test)
 			check_token "$token"
 			_out=$(echo | $KVAS_BIN test upgrade 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			# Telegram P.8: test_err при проблемах в выводе
+			if printf '%s' "$_out" | grep -qE 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ'; then
+				tg_notify test_err "kvas test: $(printf '%s' "$_out" | grep -E 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ' | head -1 | cut -c1-120)"
+			fi
 			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			;;
+		tg_get)
+			check_token "$token"
+			_t=$(sed -n 's/^TG_BOT_TOKEN=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			_c=$(sed -n 's/^TG_CHAT_ID=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			_e=$(sed -n 's/^TG_EVENTS=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			[ -n "$_e" ] || _e=all
+			_en=$(sed -n 's/^TG_ENABLED=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			[ "$_en" = "true" ] && _en=true || _en=false
+			_mask=""; _set=false
+			if [ -n "$_t" ]; then _set=true; _mask=$(printf '%s' "$_t" | sed 's/^\([^:]*\):.*/\1:…/'); fi
+			printf '{"ok":true,"enabled":%s,"token_set":%s,"token_hint":"%s","chat":"%s","events":"%s"}\n' \
+				"$_en" "$_set" "$(json_str "$_mask")" "$(json_str "$_c")" "$(json_str "$_e")"
+			;;
+		tg_save)
+			check_token "$token"
+			_en=$(echo "$QUERY_STRING" | sed 's/.*enabled=//; s/&.*//'); [ "$_en" = "$QUERY_STRING" ] && _en=""
+			_bt=$(echo "$QUERY_STRING" | sed 's/.*btoken=//; s/&.*//'); [ "$_bt" = "$QUERY_STRING" ] && _bt=""; _bt=$(urldecode "$_bt")
+			_cg=$(echo "$QUERY_STRING" | sed 's/.*chat=//; s/&.*//'); [ "$_cg" = "$QUERY_STRING" ] && _cg=""; _cg=$(urldecode "$_cg")
+			_ev=$(echo "$QUERY_STRING" | sed 's/.*events=//; s/&.*//'); [ "$_ev" = "$QUERY_STRING" ] && _ev=""; _ev=$(urldecode "$_ev")
+			case "$_en" in true|false) ;; *) _en=false ;; esac
+			[ -n "$_ev" ] || _ev=all
+			case "$_ev" in *[^a-z_,]*) json_error "bad events" ;; esac
+			_have_t=$(sed -n 's/^TG_BOT_TOKEN=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			[ -n "$_bt" ] && _have_t=$_bt
+			[ -n "$_cg" ] || _cg=$(sed -n 's/^TG_CHAT_ID=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			if [ "$_en" = "true" ]; then
+				[ -n "$_have_t" ] || json_error "укажите токен бота"
+				[ -n "$_cg" ] || json_error "укажите chat_id"
+			fi
+			tg_upsert TG_ENABLED "$_en"
+			[ -n "$_bt" ] && tg_upsert TG_BOT_TOKEN "$_bt"
+			[ -n "$_cg" ] && tg_upsert TG_CHAT_ID "$_cg"
+			tg_upsert TG_EVENTS "$_ev"
+			mkdir -p /opt/etc/cron.1min /opt/etc/cron.15min 2>/dev/null
+			ln -sf /opt/apps/kvas/bin/tg_sender.sh /opt/etc/cron.1min/tg_sender 2>/dev/null
+			ln -sf /opt/apps/kvas/bin/tg_health.sh /opt/etc/cron.15min/tg_health 2>/dev/null
+			json_ok "Настройки уведомлений сохранены"
+			;;
+		tg_getchat)
+			check_token "$token"
+			_bt=$(echo "$QUERY_STRING" | sed 's/.*btoken=//; s/&.*//'); [ "$_bt" = "$QUERY_STRING" ] && _bt=""; _bt=$(urldecode "$_bt")
+			[ -n "$_bt" ] || _bt=$(sed -n 's/^TG_BOT_TOKEN=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			[ -n "$_bt" ] || json_error "сначала укажите токен бота"
+			_gu=$(curl -s --max-time 12 "https://api.telegram.org/bot${_bt}/getUpdates" 2>/dev/null)
+			echo "$_gu" | grep -q '"ok":true' || json_error "бот не отвечает — проверьте токен"
+			_cid=$(echo "$_gu" | jq -r '[.result[]? | (.message.chat.id // .my_chat_member.chat.id // .edited_message.chat.id // empty)] | last // empty' 2>/dev/null)
+			[ -n "$_cid" ] && [ "$_cid" != "null" ] || json_error "сообщений нет — напишите боту /start и повторите"
+			_uname=$(echo "$_gu" | jq -r '[.result[]? | (.message.from.username // empty)] | last // empty' 2>/dev/null)
+			printf '{"ok":true,"chat_id":"%s","username":"%s"}\n' "$(json_str "$_cid")" "$(json_str "$_uname")"
+			;;
+		tg_test)
+			check_token "$token"
+			_bt=$(echo "$QUERY_STRING" | sed 's/.*btoken=//; s/&.*//'); [ "$_bt" = "$QUERY_STRING" ] && _bt=""; _bt=$(urldecode "$_bt")
+			_cg=$(echo "$QUERY_STRING" | sed 's/.*chat=//; s/&.*//'); [ "$_cg" = "$QUERY_STRING" ] && _cg=""; _cg=$(urldecode "$_cg")
+			[ -n "$_bt" ] || _bt=$(sed -n 's/^TG_BOT_TOKEN=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			[ -n "$_cg" ] || _cg=$(sed -n 's/^TG_CHAT_ID=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
+			[ -n "$_bt" ] || json_error "укажите токен бота"
+			[ -n "$_cg" ] || json_error "укажите chat_id"
+			_resp=$(curl -s --max-time 15 -d "{\"chat_id\":\"${_cg}\",\"text\":\"KVAS: тест уведомлений — OK\"}" "https://api.telegram.org/bot${_bt}/sendMessage" 2>/dev/null)
+			if echo "$_resp" | grep -q '"ok":true'; then
+				json_ok "Тест отправлен — проверьте чат"
+			else
+				_err=$(echo "$_resp" | jq -r '.description // "ошибка Telegram"' 2>/dev/null)
+				[ -n "$_err" ] && [ "$_err" != "null" ] || _err="нет ответа от Telegram"
+				json_error "Telegram: ${_err}"
+			fi
 			;;
 		kvas_debug)
 			check_token "$token"

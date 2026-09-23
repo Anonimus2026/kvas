@@ -1,5 +1,7 @@
 #!/bin/sh
 . /opt/apps/kvas/bin/libs/vpn
+# Telegram-уведомления (P.8)
+if ! . /opt/apps/kvas/bin/libs/tgq 2>/dev/null; then tg_notify(){ :; }; fi
 
 #------------------------------------------------------------------------------
 #
@@ -73,7 +75,8 @@ check_files_present(){
 	! [ -f "${ADS_SOURCES_FILE}" ] && {
 		cp -f /opt/apps/kvas/etc/conf/adblock.sources "${ADS_SOURCES_FILE}"
 		 ! [ -f "${ADS_SOURCES_FILE}" ] && {
-			error "Файл с ссылками на списки блокировки рекламы отсутствует.";
+		 error "Файл с ссылками на списки блокировки рекламы отсутствует.";
+			tg_notify adblock_err "Нет файла sources списков рекламы"
 			exit 1
 			}
 	}
@@ -306,4 +309,6 @@ dnsmasq_test
 #print_line
 # Перезапускаем сервис dnsmasq
 restart_dnsmasq
+# Telegram P.8: успешное обновление списков рекламы
+tg_notify adblock "Списки рекламы обновлены${nlines_add_txt:+: +${nlines_add_txt} хостов}"
 

@@ -535,7 +535,13 @@ ipset_site_visit_check() {
 cmd_test_warning() {
 	echo "=== Проверка состояния KVAS ==="
 	print_line
-	cmd_state_checker "${1}"
+	_tg_out=$(mktemp 2>/dev/null || echo "/tmp/kvas_test.$$")
+	cmd_state_checker "${1}" 2>&1 | tee "${_tg_out}"
+	# Telegram P.8: test_err, если в выводе проверки есть проблемы
+	if grep -aqE 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ' "${_tg_out}" 2>/dev/null; then
+		tg_notify test_err "kvas test: $(grep -aE 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ' "${_tg_out}" 2>/dev/null | head -1 | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | cut -c1-120)"
+	fi
+	rm -f "${_tg_out}" 2>/dev/null
 	print_line
 	echo "Проверка завершена."
 	echo "Для подробной отладки: kvas debug"

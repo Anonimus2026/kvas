@@ -5,6 +5,8 @@
 . /opt/apps/kvas/bin/libs/adblock
 . /opt/apps/kvas/bin/libs/tags
 . /opt/apps/kvas/bin/libs/vless
+# Telegram-уведомления (P.8) — vpn грузится и без main (например, main/adblock)
+if ! . /opt/apps/kvas/bin/libs/tgq 2>/dev/null; then tg_notify(){ :; }; fi
 
 MINUS=10
 
@@ -3422,6 +3424,7 @@ cmd_clear_list() {
 			echo -n "${lines_cache}" >>"${tmp_file}"
 		fi
 		echo "${deleted_count}."
+		tg_notify list "Защищённый список: удалено записей — ${deleted_count}"
 
 		echo -n 'Предыдущий защищённый список сохранён в '
 		mv -f "${KVAS_LIST_FILE}" "${KVAS_LIST_FILE_BACKUP}"
@@ -3552,6 +3555,7 @@ cmd_import_hosts() {
 			echo -n "${lines_cache}" >>"${tmp_file}"
 		fi
 		echo "${added_count}."
+		tg_notify list "Защищённый список: добавлено записей — ${added_count}"
 
 		echo -n 'Предыдущий защищённый список сохранён в '
 		mv -f "${KVAS_LIST_FILE}" "${KVAS_LIST_FILE_BACKUP}"

@@ -39,6 +39,8 @@ save_iptables(){ /opt/sbin/iptables-save "$@"; }
 
 KVAS_CONF_FILE=/opt/etc/kvas.conf
 KVAS_LIST_FILE=/opt/etc/kvas.list
+# Telegram-уведомления (P.8): tg_notify всем, кто грузит main
+if ! . /opt/apps/kvas/bin/libs/tgq 2>/dev/null; then tg_notify(){ :; }; fi
 TAGS_LIST_FILE=/opt/etc/tags.list
 ADGUARDHOME_CONFIG=/opt/etc/AdGuardHome/AdGuardHome.yaml
 ADGUARD_IPSET_FILE=/opt/etc/AdGuardHome/kvas.ipset

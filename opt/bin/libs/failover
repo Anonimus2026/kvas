@@ -362,6 +362,7 @@ record_switch() {
     tail -50 "$FAILOVER_HISTORY" > "${FAILOVER_HISTORY}.tmp" 2>/dev/null
     mv "${FAILOVER_HISTORY}.tmp" "$FAILOVER_HISTORY" 2>/dev/null
     log_failover "SWITCH: $from -> $to ($reason)"
+    tg_notify failover "Переключение: ${from} → ${to} (${reason})"
 }
 
 log_failover() {
