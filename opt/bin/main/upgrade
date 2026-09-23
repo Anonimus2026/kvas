@@ -338,7 +338,7 @@ if [ -f /opt/bin/kvas ] && kvas 2>/dev/null | grep -q "Настройка пак
 	ready "Устанавливаем новую версию пакета [${version}]..."
 	{
 		opkg update &> /dev/null
-		opkg install "/opt/packages/${package_name}"
+		opkg install --force-reinstall "/opt/packages/${package_name}"
 	} &>/dev/null && when_ok || when_err
 else
 	ready "Обновляем пакет до версии [${version}] (поверх, без удаления)..."
