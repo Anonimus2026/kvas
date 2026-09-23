@@ -82,7 +82,6 @@ parental_unblock_exact() {
 	local _re
 	_re=$(parental_re "$1")
 	[ -f /opt/etc/adblock/ads.kvas.list ] && sed -i "/^0\.0\.0\.0 ${_re}\$/d" /opt/etc/adblock/ads.kvas.list 2>/dev/null
-	[ -f /opt/etc/kvas.list ] && sed -i "/^${_re}\$/d" /opt/etc/kvas.list 2>/dev/null
 	[ -f /opt/etc/AdGuardHome/kvas.ipset ] && sed -i "\|^${_re}/|d" /opt/etc/AdGuardHome/kvas.ipset 2>/dev/null
 	[ -f /opt/etc/dnsmasq.d/kvas.dnsmasq ] && sed -i "/ipset=\/${_re}\//d" /opt/etc/dnsmasq.d/kvas.dnsmasq 2>/dev/null
 }
@@ -1085,10 +1084,26 @@ main() {
 			check_token "$token"
 			domain=$(urldecode "$(echo "$QUERY_STRING" | sed 's/.*domain=//; s/&.*//' 2>/dev/null)")
 			[ "$domain" = "$QUERY_STRING" ] && domain=""
+			# нормализация — один в один как в parental_add (scheme/www/путь/пробелы/конечная точка)
+			domain=$(echo "$domain" | sed 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||; s|^www\.||; s|/.*$||; s|[[:space:]]||g; s|\.$||')
 			[ -z "$domain" ] && json_error "domain required"
-			_re=$(parental_re "$domain")
-			[ -f "$PARENTAL_LIST" ] && sed -i "/^${_re}\$/d" "$PARENTAL_LIST" 2>/dev/null
-			[ -f /opt/etc/adblock/temporary.list ] && sed -i "/^${_re}|/d" /opt/etc/adblock/temporary.list 2>/dev/null
+			_found=false
+			if [ -f "$PARENTAL_LIST" ] && grep -qxF "$domain" "$PARENTAL_LIST" 2>/dev/null; then
+				_found=true
+				# точное удаление строки без regex-сюрпризов (awk), затем верификация
+				awk -v d="$domain" '$0!=d' "$PARENTAL_LIST" > "${PARENTAL_LIST}.$$" \
+					&& cat "${PARENTAL_LIST}.$$" > "$PARENTAL_LIST"
+				rm -f "${PARENTAL_LIST}.$$"
+			fi
+			if [ -f "$PARENTAL_TMP" ]; then
+				awk -F'|' -v d="$domain" '$1!=d' "$PARENTAL_TMP" > "${PARENTAL_TMP}.$$" \
+					&& cat "${PARENTAL_TMP}.$$" > "$PARENTAL_TMP"
+				rm -f "${PARENTAL_TMP}.$$"
+			fi
+			[ "${_found}" = "false" ] && json_error "$domain не найден в реестре"
+			if grep -qxF "$domain" "$PARENTAL_LIST" 2>/dev/null; then
+				json_error "$domain: не удалось удалить из реестра"
+			fi
 			parental_unblock_exact "$domain"
 			parental_regen
 			parental_dns_apply

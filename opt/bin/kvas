@@ -59,7 +59,8 @@ case "${1}" in
 	setup|uninstall|pause|freeze|unpause|unfreeze) _require setup vpn vless route check monitor hosts ;;
 	show|list|search|find|purge|clear|import|export) _require vpn ;;
 	add|new|del|rm) _require vpn ;;
-	backup|restore) : ;;
+	backup) : ;;
+	restore) _require vpn ;;
 	tags|add_tags|del_tags) _require tags vpn ;;
  	vless) _require vless vpn ;;
  	awg) _require awg ;;
@@ -234,6 +235,19 @@ case "${1}" in
 		[ -f "${BKP}/wireproxy" ] && { mkdir -p /opt/apps/kvas/awg/bin; cp -f "${BKP}/wireproxy" /opt/apps/kvas/awg/bin/wireproxy 2>/dev/null && chmod 755 /opt/apps/kvas/awg/bin/wireproxy && echo "Восстановлен бинарник wireproxy"; }
 		[ -f "${BKP}/kvas.failover.conf" ] && cp -f "${BKP}/kvas.failover.conf" /opt/etc/kvas.failover.conf 2>/dev/null && echo "Восстановлен: kvas.failover.conf"
 		[ -f "${BKP}/inface_equals" ] && cp -f "${BKP}/inface_equals" /opt/etc/inface_equals 2>/dev/null && echo "Восстановлен: inface_equals"
+		# Файлы на месте — пересоздаём NDM-хуки (могли быть удалены при аварии)
+		# и поднимаем службы: hysteria socks5, awg/wireproxy, dnsmasq и т.д.
+		home_dir=/opt/apps/kvas
+		hook_dir=$(get_hook_dir)
+		mkdir -p "/opt/etc/ndm/${hook_dir}" /opt/etc/ndm/iflayerchanged.d /opt/etc/ndm/ifcreated.d /opt/etc/ndm/ifdestroyed.d /opt/etc/ndm/netfilter.d
+		ln -sf "${home_dir}/etc/ndm/${hook_dir}/100-kvas-vpn" "/opt/etc/ndm/${hook_dir}/100-kvas-vpn"
+		ln -sf "${home_dir}/etc/ndm/iflayerchanged.d/kvas-ips-reset" "/opt/etc/ndm/iflayerchanged.d/kvas-ips-reset"
+		ln -sf "${home_dir}/etc/ndm/ifcreated.d/kvas-iface-add" "/opt/etc/ndm/ifcreated.d/kvas-iface-add"
+		ln -sf "${home_dir}/etc/ndm/ifdestroyed.d/kvas-iface-del" "/opt/etc/ndm/ifdestroyed.d/kvas-iface-del"
+		ln -sf "${home_dir}/etc/ndm/netfilter.d/100-vpn-mark" "/opt/etc/ndm/netfilter.d/100-vpn-mark"
+		echo "Хуки NDM пересозданы"
+		cmd_kvas_init "no_reset"
+		echo "Сервисы перезапущены"
 		;;
 
 	tags)
