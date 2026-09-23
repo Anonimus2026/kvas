@@ -1069,23 +1069,40 @@ function doCheckUpdate(btn) {
 function doKvasRollback(btn) {
   if (!confirm('Откатить KVAS на предыдущую версию? Это займёт 1-2 минуты.')) return;
   var el = document.getElementById('sysMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Откат KVAS... может занять до 120с</span>';
-  loadingBtn(btn, true);
+  el.innerHTML = '<span style="color:#8b949e;">Откат KVAS... может занять до 120с. Страница обновится автоматически.</span>';
+  // Как при обновлении: сразу даём кнопку "Обновить страницу" и автообновление
+  btn.textContent = 'Обновить страницу';
+  btn.className = 'btn btn-sm primary';
+  btn.disabled = false;
+  btn.onclick = function() { window.location.href = window.location.pathname + '?v=' + Date.now(); };
+  var doReload = function() { window.location.href = window.location.pathname + '?v=' + Date.now(); };
+  var reloadTimer = setTimeout(doReload, 20000);
+  var restoreBtn = function() {
+    clearTimeout(reloadTimer);
+    btn.textContent = 'Откатить';
+    btn.className = 'btn btn-sm';
+    btn.onclick = function() { doKvasRollback(this); };
+  };
   var u = '/cgi-bin/manage.sh?action=rollback&token=' + AUTH_TOKEN;
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, 120000);
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
+    clearTimeout(timer);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
     if (d.ok) {
       el.className = 'msg ok';
-      el.innerHTML = (d.output || 'KVAS откатан.') + '<br><span style="color:#3fb950;">Web UI перезапускается... страница обновится через 15 секунд...</span>';
-      setTimeout(function() { window.location.href = window.location.pathname + '?v=' + Date.now(); }, 15000);
+      el.innerHTML = (d.output || 'KVAS откатан.') + '<br><span style="color:#3fb950;">Web UI перезапускается... страница обновится через 20 секунд...</span>';
     } else {
       el.className = 'msg err';
       el.textContent = d.error || 'Ошибка отката';
+      restoreBtn();
     }
-  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+  }).catch(function(e) {
+    clearTimeout(timer);
+    // Связь оборвалась — вероятно, web UI перезапускается: кнопка и автообновление уже активны
+    el.className = 'msg ok';
+    el.innerHTML = '<span style="color:#3fb950;">Откат выполняется... Web UI перезапускается, страница обновится автоматически...</span>';
+  });
 }
 
 function doKvasUpgrade(btn) {
