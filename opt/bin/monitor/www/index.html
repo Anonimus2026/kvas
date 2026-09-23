@@ -50,6 +50,28 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 .hdot.warn { background:#d29922; }
 .hdot.bad { background:#f85149; }
 .hdot.off { background:#484f58; }
+
+/* Settings + mobile view */
+.settings-wrap { position: relative; display: inline-block; }
+.settings-btn { background:#21262d; border:1px solid #30363d; border-radius:6px; width:34px; height:34px; padding:5px; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; }
+.settings-btn:hover { background:#30363d; }
+.settings-btn img { width:22px; height:22px; display:block; }
+.settings-pop { display:none; position:absolute; right:0; top:40px; background:#161b22; border:1px solid #30363d; border-radius:6px; padding:12px 14px; z-index:100; min-width:190px; box-shadow:0 8px 24px rgba(0,0,0,.55); }
+.settings-pop.open { display:block; }
+.settings-pop label { display:flex; align-items:center; gap:8px; font-size:12px; color:#c9d1d9; cursor:pointer; user-select:none; }
+.settings-pop input[type=checkbox] { width:16px; height:16px; accent-color:#1f6feb; cursor:pointer; }
+
+.mobilenav { display:none; position:fixed; left:0; right:0; bottom:0; background:#161b22; border-top:1px solid #30363d; z-index:90; padding:4px 2px calc(4px + env(safe-area-inset-bottom,0px)); }
+.mobilenav .mnav { flex:1; min-width:0; min-height:52px; background:none; border:none; cursor:pointer; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; padding:4px 1px; color:#8b949e; font-family:monospace; }
+.mobilenav .mnav img { width:26px; height:26px; display:block; opacity:.7; }
+.mobilenav .mnav span { font-size:8px; line-height:1.1; text-align:center; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mobilenav .mnav.active { color:#58a6ff; }
+.mobilenav .mnav.active img { opacity:1; }
+
+body.mobile-view .tabs { display:none; }
+body.mobile-view .mobilenav { display:flex; }
+body.mobile-view #mainUi { padding-bottom:76px; }
+
 @media (max-width:600px){
   body { padding:10px; }
   .btn { min-height:44px; padding:10px 14px; }
@@ -120,7 +142,15 @@ window.addEventListener('error', function(e){
 <h1>KVAS</h1>
 <div class="subtitle" style="display:flex;justify-content:space-between;align-items:center;">
   <span>Защита ваших подключений</span>
-  <button class="btn btn-sm danger" onclick="doLogout()" id="logoutBtn" style="display:none;">Выход</button>
+  <span style="display:flex;align-items:center;gap:8px;">
+    <span class="settings-wrap" id="settingsWrap" style="display:none;">
+      <button class="settings-btn" id="settingsBtn" onclick="toggleSettingsPop(event)" title="Настройки"><img src="img/settings.png" alt="⚙"></button>
+      <div class="settings-pop" id="settingsPop">
+        <label><input type="checkbox" id="mobileViewChk" onchange="setMobileView(this.checked)"> Мобильный вид</label>
+      </div>
+    </span>
+    <button class="btn btn-sm danger" onclick="doLogout()" id="logoutBtn" style="display:none;">Выход</button>
+  </span>
 </div>
 
 <!-- Auth screen -->
@@ -525,6 +555,16 @@ window.addEventListener('error', function(e){
 </div>
 
 </div><!-- /tab-diag -->
+
+<!-- Bottom mobile navigation (shown when mobile view is on) -->
+<div class="mobilenav" id="mobileNav">
+  <button class="mnav active" data-mtab="manage" onclick="switchTab('manage')"><img src="img/manage.png" alt=""><span>Управление</span></button>
+  <button class="mnav" data-mtab="tags" onclick="switchTab('tags')"><img src="img/tags.png" alt=""><span>Закваски</span></button>
+  <button class="mnav" data-mtab="route" onclick="switchTab('route')"><img src="img/route.png" alt=""><span>Маршруты</span></button>
+  <button class="mnav" data-mtab="parental" onclick="switchTab('parental')"><img src="img/parental.png" alt=""><span>Контроль</span></button>
+  <button class="mnav" data-mtab="monitor" onclick="switchTab('monitor')"><img src="img/monitor.png" alt=""><span>Мониторинг</span></button>
+  <button class="mnav" data-mtab="diag" onclick="switchTab('diag')"><img src="img/diag.png" alt=""><span>Диагностика</span></button>
+</div>
 </div><!-- /mainUi -->
 
 <script>
@@ -640,6 +680,8 @@ function showMain() {
   document.getElementById('authScreen').style.display = 'none';
   document.getElementById('mainUi').style.display = 'block';
   document.getElementById('logoutBtn').style.display = '';
+  document.getElementById('settingsWrap').style.display = '';
+  applyMobileView();
   loadSystemStatus();
   loadHealth();
   loadFailoverHistory();
@@ -779,7 +821,33 @@ function loadFailoverHistory() {
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(function(t){t.classList.toggle('active', t.dataset.tab === name)});
   document.querySelectorAll('.tab-content').forEach(function(t){t.classList.toggle('active', t.id === 'tab-' + name)});
+  document.querySelectorAll('.mnav').forEach(function(m){m.classList.toggle('active', m.dataset.mtab === name)});
+  window.scrollTo(0, 0);
 }
+
+/* ========== SETTINGS / MOBILE VIEW ========== */
+function toggleSettingsPop(e) {
+  if (e) e.stopPropagation();
+  var p = document.getElementById('settingsPop');
+  if (p) p.classList.toggle('open');
+}
+document.addEventListener('click', function(e) {
+  var p = document.getElementById('settingsPop');
+  if (!p) return;
+  if (!p.contains(e.target) && e.target.id !== 'settingsBtn' && !(e.target.closest && e.target.closest('#settingsBtn'))) p.classList.remove('open');
+});
+function setMobileView(on) {
+  try { localStorage.setItem('kvas_mobile_view', on ? '1' : '0'); } catch(e) {}
+  applyMobileView();
+}
+function applyMobileView() {
+  var on = false;
+  try { on = localStorage.getItem('kvas_mobile_view') === '1'; } catch(e) {}
+  document.body.classList.toggle('mobile-view', on);
+  var chk = document.getElementById('mobileViewChk');
+  if (chk) chk.checked = on;
+}
+applyMobileView();
 
 /* ========== TAGS ========== */
 function loadTags() {
@@ -2484,6 +2552,7 @@ function doLogout() {
   AUTH_TOKEN = '';
   sessionStorage.removeItem('kvas_token');
   document.getElementById('logoutBtn').style.display = 'none';
+  document.getElementById('settingsWrap').style.display = 'none';
   document.getElementById('mainUi').style.display = 'none';
   document.getElementById('authPass').value = '';
   document.getElementById('authMsg').className = 'msg';
