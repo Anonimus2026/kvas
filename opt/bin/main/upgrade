@@ -316,15 +316,17 @@ remove_nano
 #--------------------------------------------------------------------------------------------------------------
 ready 'Загружаем пакет...'
 {
-
 	cd /opt/packages
 	rm -f "/opt/packages/${package_name}"
-	curl -sOL "${package_url}"
-
-} &>/dev/null && when_ok || when_err
-# в случае если отсутствует соединение с интернетом
-! [ -f "${package_name}" ] && {
-	print_error "Проверьте свое интернет соединение!"
+	# -f: HTTP-ошибки не создают «файл-мусор»; --retry/--max-time: устойчивость к обрывам
+	curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 120 \
+		-o "/opt/packages/${package_name}" "${package_url}"
+	# целостность архива ДО установки: ipk = tar.gz
+	tar -tzf "/opt/packages/${package_name}" >/dev/null 2>&1
+} &>/dev/null && when_ok || {
+	when_err
+	rm -f "/opt/packages/${package_name}"
+	print_error "Загрузка повреждена или нет интернета — установка ОТМЕНЕНА, текущая версия не тронута!"
 	exit 1
 }
 
@@ -353,6 +355,13 @@ connect_home_nets(){
 	}
 }
 
+if ! [ -f /opt/apps/kvas/bin/monitor/www/index.html ] ; then
+	print_line
+	print_error "Web UI повреждён (отсутствует index.html). Восстановление:"
+	echo -e "${BLUE}opkg install --force-reinstall /opt/packages/${package_name}${NOCL}"
+	print_line
+	exit 1
+fi
 if ! [ -f /opt/bin/kvas ] ; then
 	print_line
 	print_error "Пакет установлен некорректно - отсутствуют исполняемые файлы!"
