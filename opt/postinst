@@ -1,0 +1,71 @@
+#!/bin/sh
+if [ "$1" = "configure" ]; then
+    [ ! -d "/opt/etc/ndm/watch.d" ] && mkdir -p "/opt/etc/ndm/watch.d"
+    chown root:root /opt/etc/ndm/watch.d
+
+    ln -sf /opt/apps/kvas/bin/kvas /opt/bin/kvas
+
+    mkdir -p /opt/etc/dnsmasq.d
+    mkdir -p /opt/etc/adblock
+    mkdir -p /opt/etc/ndm/watch.d
+    mkdir -p /opt/etc/xray
+    mkdir -p /opt/etc/awg
+    mkdir -p /opt/var/log
+    mkdir -p /opt/var/kvas
+
+    chmod -R +x /opt/apps/kvas/bin/* 2>/dev/null
+    chmod -R +x /opt/apps/kvas/etc/init.d/* 2>/dev/null
+    chmod -R +x /opt/apps/kvas/etc/ndm/* 2>/dev/null
+    chmod -R +x /opt/apps/kvas/awg/etc/* 2>/dev/null
+    [ -f /opt/apps/kvas/hysteria/etc/ndm/test_connection.sh ] && chmod +x /opt/apps/kvas/hysteria/etc/ndm/test_connection.sh
+    [ -f /opt/apps/kvas/hysteria/etc/ndm/check_space.sh ] && chmod +x /opt/apps/kvas/hysteria/etc/ndm/check_space.sh
+    [ -f /opt/apps/kvas/awg/etc/ndm/test_connection.sh ] && chmod +x /opt/apps/kvas/awg/etc/ndm/test_connection.sh
+
+    kvas_conf="/opt/etc/kvas.conf"
+    _conf_existed=false
+    [ -f "${kvas_conf}" ] && _conf_existed=true
+    touch "${kvas_conf}"
+    if grep -q "^APP_VERSION=" "${kvas_conf}" 2>/dev/null; then
+        sed -i "s/^APP_VERSION=.*/APP_VERSION=1.1.9_beta-10/" "${kvas_conf}"
+    else
+        echo "APP_VERSION=1.1.9_beta-10" >> "${kvas_conf}"
+    fi
+    # APP_RELEASE — из Version установленного пакета (раньше был хардкод 549)
+    _rel=$(opkg status kvas 2>/dev/null | sed -n 's/^Version: //p' | head -1 | sed -n 's/.*beta-10-\([0-9][0-9]*\).*/\1/p')
+    [ -z "${_rel}" ] && _rel=586
+    if grep -q "^APP_RELEASE=" "${kvas_conf}" 2>/dev/null; then
+        sed -i "s/^APP_RELEASE=.*/APP_RELEASE=${_rel}/" "${kvas_conf}"
+    else
+        echo "APP_RELEASE=${_rel}" >> "${kvas_conf}"
+    fi
+    # SETUP_FINISHED: у существующей конфигурации выставляем true,
+    # иначе при следующем обновлении сработает ветка "kvas uninstall" (полная зачистка)
+    if [ "${_conf_existed}" = "true" ]; then
+        if grep -q "^SETUP_FINISHED=" "${kvas_conf}" 2>/dev/null; then
+            sed -i "s/^SETUP_FINISHED=.*/SETUP_FINISHED=true/" "${kvas_conf}"
+        else
+            echo "SETUP_FINISHED=true" >> "${kvas_conf}"
+        fi
+    fi
+
+    # Telegram (P.8): sender each 1min, health each 15min — та же схема, что cron.5mins/check_vpn
+    mkdir -p /opt/etc/cron.1min /opt/etc/cron.15min 2>/dev/null
+    ln -sf /opt/apps/kvas/bin/tg_sender.sh /opt/etc/cron.1min/tg_sender 2>/dev/null
+    ln -sf /opt/apps/kvas/bin/tg_health.sh /opt/etc/cron.15min/tg_health 2>/dev/null
+    # Интерактивный бот (P.8+): при апгрейде убиваем старый демон (иначе он
+    # читает заменённый скрипт и singleton не даст стартовать новому)
+    _bp=/opt/var/kvas/tg_bot.pid
+    _old_bot=$(cat "${_bp}" 2>/dev/null)
+    [ -n "${_old_bot}" ] && kill "${_old_bot}" 2>/dev/null
+    rm -f "${_bp}"
+    if [ "$(sed -n 's/^TG_ENABLED=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)" = "true" ]; then
+        ( sh /opt/apps/kvas/bin/tg_bot.sh >/dev/null 2>&1 & ) 2>/dev/null
+    fi
+
+    /opt/apps/kvas/bin/kvas init >/dev/null 2>&1 &
+    # Web UI — запускаем при чистой установке (если ещё не запущен)
+    if ! pgrep -f "kvas.*monitor.*web" >/dev/null 2>&1 && ! pgrep -f "httpd.sh" >/dev/null 2>&1; then
+        /opt/bin/kvas monitor web start >/dev/null 2>&1 &
+    fi
+fi
+exit 0
