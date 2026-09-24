@@ -72,6 +72,25 @@ tg_curl(){
 	curl -s --max-time "${TG_CURL_MAX:-12}" "$@" "${_tg_url}" 2>/dev/null
 }
 
+# Как tg_curl, но пишет в файл (-o), без $() в вызывающем sh:
+# long-poll $(tg_curl ...) держал subshell с тем же cmdline = «второй» процесс в ps.
+# Аргументы: tg_curl_to FILE URL [доп. аргументы curl...]
+tg_curl_to(){
+	_tg_out="$1"; _tg_url="$2"; shift 2
+	rm -f "${_tg_out}" 2>/dev/null
+	_p=$(tg_socks_port)
+	[ -n "${_p}" ] || _p=1097
+	curl -s --max-time "${TG_CURL_MAX:-15}" -o "${_tg_out}" "$@" -x "socks5h://127.0.0.1:${_p}" "${_tg_url}" 2>/dev/null
+	[ -s "${_tg_out}" ] && return 0
+	for _q in 1097 10808 10818; do
+		[ "${_q}" = "${_p}" ] && continue
+		curl -s --max-time "${TG_CURL_MAX:-12}" -o "${_tg_out}" "$@" -x "socks5h://127.0.0.1:${_q}" "${_tg_url}" 2>/dev/null
+		[ -s "${_tg_out}" ] && return 0
+	done
+	curl -s --max-time "${TG_CURL_MAX:-12}" -o "${_tg_out}" "$@" "${_tg_url}" 2>/dev/null
+	[ -s "${_tg_out}" ]
+}
+
 tg_notify(){
 	# $1 = код события, $2 = текст
 	[ "$(tg_conf_get TG_ENABLED)" = "true" ] || return 0

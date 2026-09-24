@@ -553,16 +553,20 @@ while true; do
 	_tok=$(tg_conf_get TG_BOT_TOKEN)
 	_me=$(tg_conf_get TG_CHAT_ID)
 	_off=$(cat "${OFFF}" 2>/dev/null); [ -n "${_off}" ] || _off=0
-	_resp=$(tg_curl "https://api.telegram.org/bot${_tok}/getUpdates?timeout=25&offset=${_off}&allowed_updates=%5B%22message%22%5D")
-	if [ -z "${_resp}" ]; then
+	# getUpdates в ФАЙЛ: _resp=$(tg_curl ...) держал subshell с тем же cmdline («2-й» процесс в ps)
+	_tgresp="/tmp/.tgupd.$$"
+	tg_curl_to "${_tgresp}" "https://api.telegram.org/bot${_tok}/getUpdates?timeout=25&offset=${_off}&allowed_updates=%5B%22message%22%5D"
+	if [ ! -s "${_tgresp}" ]; then
+		rm -f "${_tgresp}" 2>/dev/null
 		sleep 5
 		continue
 	fi
-	_max=$(printf '%s' "${_resp}" | jq -r '[.result[]?.update_id] | max // empty' 2>/dev/null)
+	_max=$(jq -r '[.result[]?.update_id] | max // empty' < "${_tgresp}" 2>/dev/null)
 	[ -n "${_max}" ] && echo $((_max + 1)) > "${OFFF}" 2>/dev/null
 	# БЕЗ пайпа jq|while: subshell в busybox = второй ps-процесс с тем же cmdline и main ждёт его
 	_tmsgf="/tmp/.tgmsgs.$$"
-	printf '%s' "${_resp}" | jq -r '.result[]? | select((.message.text // "") != "") | [(.message.chat.id|tostring), (.message.from.username // ""), .message.text] | @tsv' 2>/dev/null > "${_tmsgf}"
+	jq -r '.result[]? | select((.message.text // "") != "") | [(.message.chat.id|tostring), (.message.from.username // ""), .message.text] | @tsv' < "${_tgresp}" 2>/dev/null > "${_tmsgf}"
+	rm -f "${_tgresp}" 2>/dev/null
 	while IFS="$(printf '\t')" read -r _ch _un _tx; do
 		[ -n "${_ch}" ] && [ -n "${_tx}" ] || continue
 		printf '%s\n@%s\n' "${_ch}" "${_un}" > "${LASTCHAT}" 2>/dev/null
