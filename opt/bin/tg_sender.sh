@@ -1,13 +1,10 @@
 #!/bin/sh
 # Отправка очереди Telegram (P.8): из tg_notify в фоне и по cron.1min
 . /opt/apps/kvas/bin/libs/tgq 2>/dev/null || exit 0
-# keepalive интерактивного бота (P.8+): только если lock свободен и инстансов 0
+# keepalive интерактивного бота (P.8+): не стартуем, пока lock существует (даже pid пуст = бот стартует)
 if [ "$(tg_conf_get TG_ENABLED)" = "true" ]; then
 	_lockd=/opt/var/kvas/tg_bot.lock
-	_lockpid=$(cat "${_lockd}/pid" 2>/dev/null)
-	if [ -n "${_lockpid}" ] && kill -0 "${_lockpid}" 2>/dev/null; then
-		: # живой владелец lock — не трогаем
-	else
+	if [ ! -d "${_lockd}" ]; then
 		_cnt=0
 		for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
 			_cnt=$((_cnt + 1))

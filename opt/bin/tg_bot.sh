@@ -31,10 +31,20 @@ _acquired=0
 if mkdir "${LOCKD}" 2>/dev/null; then
 	_acquired=1
 else
+	# lock есть: если pid пуст — другой только что mkdir, ждём запись, НЕ воруем
 	_lockpid=$(cat "${LOCKD}/pid" 2>/dev/null)
+	if [ -z "${_lockpid}" ]; then
+		_i=0
+		while [ "${_i}" -lt 3 ] && [ -z "${_lockpid}" ]; do
+			sleep 1
+			_i=$((_i + 1))
+			_lockpid=$(cat "${LOCKD}/pid" 2>/dev/null)
+		done
+	fi
 	if [ -n "${_lockpid}" ] && [ "${_lockpid}" != "$$" ] && kill -0 "${_lockpid}" 2>/dev/null; then
 		exit 0
 	fi
+	# pid мёртв или так и не появился — можно занять
 	rm -rf "${LOCKD}" 2>/dev/null
 	if mkdir "${LOCKD}" 2>/dev/null; then
 		_acquired=1
@@ -43,6 +53,10 @@ fi
 [ "${_acquired}" = "1" ] || exit 0
 echo $$ > "${LOCKD}/pid" 2>/dev/null
 _tb_kill_others
+# re-verify: кто-то мог перехватить lock, пока мы писали pid
+if [ "$(cat "${LOCKD}/pid" 2>/dev/null)" != "$$" ]; then
+	exit 0
+fi
 echo $$ > "${PIDF}" 2>/dev/null
 # один EXIT-trap на cleanup; TERM/INT/HUP → exit (иначе процесс не умирает и держит getUpdates)
 trap '_tb_cleanup' EXIT
