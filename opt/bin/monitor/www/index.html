@@ -851,6 +851,7 @@ function loadFailoverHistory() {
 /* ========== TELEGRAM (P.8) ========== */
 var TG_EVENT_DEFS = [
   ['failover','Переключение VPN'],['update_found','Новая версия KVAS'],
+  ['upgrade','Обновление/откат KVAS'],
   ['tunnel','Состояние туннеля'],['health','Здоровье системы'],
   ['parental_expire','Истёк срок контроля']
 ];
@@ -1285,7 +1286,11 @@ function upgTick() {
     if (n >= 10) { upgStopWatch(); return; }
     next = parseInt(sessionStorage.getItem('kvas_upg_next') || '0', 10);
   } catch(e) { return; }
-  var wait = Math.max(300, next - Date.now());
+  var wait = next - Date.now();
+  // v606: после релоада next уже в прошлом → ждали 300мс и system_status не успевал.
+  // Всегда полный интервал, чтобы loadSystemStatus успел увидеть новую версию и стопнуть watch.
+  if (wait < 5000) wait = 15000;
+  if (wait > 15000) wait = 15000;
   if (_upgTimer) clearTimeout(_upgTimer);
   _upgTimer = setTimeout(function() {
     try { sessionStorage.setItem('kvas_upg_n', String(n + 1)); } catch(e) {}

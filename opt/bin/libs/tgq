@@ -111,8 +111,9 @@ tg_notify(){
 	# $1 = код события, $2 = текст
 	[ "$(tg_conf_get TG_ENABLED)" = "true" ] || return 0
 	# P.8+: только эти события; остальные хуки в коде гасятся здесь
+	# v606: +upgrade — иначе «Обновление KVAS выполнено» из CLI/WebUI не доходило
 	case "$1" in
-		failover|update_found|tunnel|health|parental_expire) ;;
+		failover|update_found|upgrade|tunnel|health|parental_expire) ;;
 		*) return 0 ;;
 	esac
 	_tg_t=$(tg_conf_get TG_BOT_TOKEN); _tg_c=$(tg_conf_get TG_CHAT_ID)

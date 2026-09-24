@@ -679,6 +679,15 @@ while true; do
 	fi
 	_tok=$(tg_conf_get TG_BOT_TOKEN)
 	_me=$(tg_conf_get TG_CHAT_ID)
+	# v606: фоновая проверка новой версии из цикла бота (дубль tg_health, общий rate-limit 1/h).
+	# Если cron.15min не работает — бот всё равно объявит о релизе сам.
+	_upd_ts=/opt/var/kvas/tg.updcheck.ts
+	_now=$(date +%s)
+	_last=$(cat "${_upd_ts}" 2>/dev/null || echo 0)
+	if [ $((_now - _last)) -ge 3600 ] 2>/dev/null; then
+		echo "${_now}" > "${_upd_ts}" 2>/dev/null
+		tg_check_kvas_update >/dev/null 2>&1
+	fi
 	_off=$(cat "${OFFF}" 2>/dev/null); [ -n "${_off}" ] || _off=0
 	# getUpdates в ФАЙЛ: _resp=$(tg_curl ...) держал subshell с тем же cmdline («2-й» процесс в ps)
 	_tgresp="/tmp/.tgupd.$$"
