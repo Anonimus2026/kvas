@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-600
+**Версия:** 1.1.9_beta-10-601
 **Дата:** 24.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -41,7 +41,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, **600** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v600)
+## 4. Текущий статус (v601)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -55,7 +55,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | Adblock + parental control | ✓ |
 | Закваски tags (add/del/edit, web + CLI) | ✓ |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
-| **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600 |
+| **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
 
 ### 4.1 Telegram-бот (P.8+)
@@ -67,7 +67,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота). Следующий = **601**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота). Следующий = **602**.
 
 ## 5. Сетевая конфигурация
 
@@ -210,7 +210,7 @@ kvas xray [core [версия]]
 - В тесте 552: `.hchip min-height:44px` — правка есть, **не в релизе**.
 - **Решение:** не делать, пока не будет явного макета/сценария.
 
-### 8. Уведомления / Telegram — ✅ реализовано (P.8, v588–600)
+### 8. Уведомления / Telegram — ✅ реализовано (P.8, v588–601)
 
 - **Готово:** `libs/tgq` (`tg_notify`, quiet hours, очередь), interactive bot (`tg_bot.sh`, English ASCII menus, state machine), `tg_sender` (cron.1min + keepalive), `tg_health` (cron.15min), `tg_job` (update/test/debug в фоне с ответом в чат).
 - **UI:** Web UI → «Уведомления Telegram» (token, chat_id, quiet hours, события).
@@ -237,7 +237,7 @@ kvas xray [core [версия]]
 | 5 | Единый parental→AdGuard | ⚠ smoke-test; риск слома adblock |
 | 6 | JSON export | уже есть backup |
 | 7 | Mobile polish | отложить до ТЗ |
-| 8 | Telegram/webhook | ✅ P.8/P.8+ реализовано (v588–600) |
+| 8 | Telegram/webhook | ✅ P.8/P.8+ реализовано (v588–601) |
 | 9 | Changelog UI | нет; git relnotes достаточно |
 | 10 | Security token | не нужно |
 
