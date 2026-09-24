@@ -85,9 +85,10 @@ tb_kb() {
 		_row=""
 		_rest="${_r}"
 		while [ -n "${_rest}" ]; do
+			# | в case = alternation, не литерал: *|* матчит всё и не двигает _rest → infinite loop
 			case "${_rest}" in
-				*|*) _btn=${_rest%%|*}; _rest=${_rest#*|} ;;
-				*)   _btn="${_rest}";  _rest="" ;;
+				*'|'*) _btn=${_rest%%|*}; _rest=${_rest#*|} ;;
+				*)     _btn="${_rest}";   _rest="" ;;
 			esac
 			_row="${_row}${_row:+,}\"${_btn}\""
 		done
