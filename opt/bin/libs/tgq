@@ -184,7 +184,7 @@ ${_tl_line}"
 		fi
 	done < "${_tl_f}"
 	rm -f "${_tl_f}"
-	[ -n "${_tl_buf}" ] && tg_send_msg "${_ch}" "${_tl_buf}" "${_tl_mk}"
+	[ -n "${_tl_buf}" ] && tg_send_msg "${_tl_ch}" "${_tl_buf}" "${_tl_mk}"
 	return 0
 }
 
