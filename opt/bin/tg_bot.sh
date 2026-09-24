@@ -15,26 +15,38 @@ STF=/opt/var/kvas/tg_bot.state
 LOCKD=/opt/var/kvas/tg_bot.lock
 mkdir -p /opt/var/kvas 2>/dev/null
 
-# singleton через atomic mkdir + kill всех чужих инстансов
+# singleton через atomic mkdir + kill всех чужих инстансов (kill -9: TERM-trap без exit не убивал)
 _tb_kill_others() {
 	for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
 		[ "${_p}" = "$$" ] && continue
-		kill "${_p}" 2>/dev/null
+		kill -9 "${_p}" 2>/dev/null
 	done
 }
-if ! mkdir "${LOCKD}" 2>/dev/null; then
+_tb_cleanup() {
+	[ "$(cat "${LOCKD}/pid" 2>/dev/null)" = "$$" ] && rm -rf "${LOCKD}" 2>/dev/null
+	[ "$(cat "${PIDF}" 2>/dev/null)" = "$$" ] && rm -f "${PIDF}" 2>/dev/null
+	return 0
+}
+_acquired=0
+if mkdir "${LOCKD}" 2>/dev/null; then
+	_acquired=1
+else
 	_lockpid=$(cat "${LOCKD}/pid" 2>/dev/null)
 	if [ -n "${_lockpid}" ] && [ "${_lockpid}" != "$$" ] && kill -0 "${_lockpid}" 2>/dev/null; then
 		exit 0
 	fi
 	rm -rf "${LOCKD}" 2>/dev/null
-	mkdir "${LOCKD}" 2>/dev/null || exit 0
+	if mkdir "${LOCKD}" 2>/dev/null; then
+		_acquired=1
+	fi
 fi
+[ "${_acquired}" = "1" ] || exit 0
 echo $$ > "${LOCKD}/pid" 2>/dev/null
 _tb_kill_others
 echo $$ > "${PIDF}" 2>/dev/null
-trap '[ "$(cat "${LOCKD}/pid" 2>/dev/null)" = "$$" ] && rm -rf "${LOCKD}"' EXIT INT TERM HUP
-trap '[ "$(cat "${PIDF}" 2>/dev/null)" = "$$" ] && rm -f "${PIDF}"' EXIT INT TERM HUP
+# один EXIT-trap на cleanup; TERM/INT/HUP → exit (иначе процесс не умирает и держит getUpdates)
+trap '_tb_cleanup' EXIT
+trap 'exit 0' INT TERM HUP
 
 tb_send() { tg_send_msg "$1" "$2" "$3"; }
 
