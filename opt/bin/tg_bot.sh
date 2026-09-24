@@ -120,18 +120,74 @@ tb_help() {
 /list — full protected list
 /add <domains...> — add (multiple ok)
 /del <domains...> — remove (multiple ok)
-/status — version and tunnel state
+/status — full status (tunnel + services)
 /update — update KVAS
 /rollback — rollback
 Menu: Kvas.list, Tags, Diagnostics."
 }
 
+# live tunnel state: state file (check_vpn/cron) → Keenetic API probe → ?
+tb_tunnel_state() {
+	_s=$(cat /opt/var/kvas/tg.tunnel.state 2>/dev/null)
+	case "${_s}" in ok|down) printf '%s' "${_s}"; return 0 ;; esac
+	_cli=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	[ -n "${_cli}" ] || { printf '?'; return 0; }
+	if curl -s --max-time 3 "http://localhost:79/rci/show/interface" 2>/dev/null \
+		| jq -r '.[] | select(.id=="'"${_cli}"'") | .connected' 2>/dev/null \
+		| head -1 | grep -qx yes; then
+		printf 'ok'
+	else
+		printf 'down'
+	fi
+}
+
+# full status for /status: build, tunnel (name+state), services, hosts, free space
 tb_status() {
 	_v=$(sed -n 's/^APP_RELEASE=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
-	_t=$(cat /opt/var/kvas/tg.tunnel.state 2>/dev/null)
-	[ -n "${_t}" ] || _t="?"
+	_cli=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	_tn=$(tb_friendly "${_cli}"); [ -n "${_tn}" ] || _tn="?"
+	_t=$(tb_tunnel_state)
+	_d="not_installed"
+	if [ -f /opt/etc/init.d/S56dnsmasq ]; then
+		if /opt/etc/init.d/S56dnsmasq status 2>/dev/null | grep -qi 'alive\|running\|started'; then
+			_d="running"
+		else
+			_d="stopped"
+		fi
+	fi
+	_ag="off"
+	if [ "$(sed -n 's/^ADGUARD_ENABLE=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)" = "true" ]; then
+		if [ -f /opt/etc/init.d/S99adguardhome ]; then
+			if /opt/etc/init.d/S99adguardhome status 2>/dev/null | grep -qi 'alive\|running\|started'; then
+				_ag="running"
+			else
+				_ag="stopped"
+			fi
+		else
+			_ag="not_installed"
+		fi
+	fi
+	_xr="stopped"; pidof xray >/dev/null 2>&1 && _xr="running"
+	_hy="stopped"; pidof hysteria >/dev/null 2>&1 && _hy="running"
+	_aw="stopped"
+	[ -f /var/run/wireproxy.pid ] && kill -0 "$(cat /var/run/wireproxy.pid 2>/dev/null)" 2>/dev/null && _aw="running"
+	_fm=$(sed -n 's/^FAILOVER_MODE=//p' /opt/etc/kvas.failover.conf 2>/dev/null | head -1)
+	[ -n "${_fm}" ] || _fm="manual"
+	_fd="stopped"
+	[ -f /var/run/kvas-failover.pid ] && kill -0 "$(cat /var/run/kvas-failover.pid 2>/dev/null)" 2>/dev/null && _fd="running"
+	_hc=$(grep -c . /opt/etc/kvas.list 2>/dev/null); [ -n "${_hc}" ] || _hc=0
+	_fk=$(df /opt 2>/dev/null | awk 'NR==2{print $4}')
+	[ -n "${_fk}" ] || _fk="?"
 	printf '%s' "KVAS build ${_v:-?}
-Tunnel: ${_t}"
+Tunnel: ${_tn} (${_t})
+dnsmasq: ${_d}
+AdGuard: ${_ag}
+Xray: ${_xr}
+Hysteria: ${_hy}
+AmneziaWG: ${_aw}
+Failover: ${_fm} (${_fd})
+Hosts: ${_hc}
+Free /opt: ${_fk}K"
 }
 
 # friendly name for display: Proxy21→vless, Proxy41→hysteria, Proxy42→AmneziaWG, t2s*→ent
