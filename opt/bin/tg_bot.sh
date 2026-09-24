@@ -13,9 +13,19 @@ OFFF=/opt/var/kvas/tg_bot.offset
 LASTCHAT=/opt/var/kvas/tg_lastchat
 STF=/opt/var/kvas/tg_bot.state
 mkdir -p /opt/var/kvas 2>/dev/null
+
+# singleton: убиваем ВСЕ чужие инстансы (старые после opkg иначе живут вечно)
+_tb_kill_others() {
+	for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
+		[ "${_p}" = "$$" ] && continue
+		kill "${_p}" 2>/dev/null
+	done
+}
+_tb_kill_others
+
 if [ -s "${PIDF}" ]; then
 	_old=$(cat "${PIDF}" 2>/dev/null)
-	[ -n "${_old}" ] && [ "${_old}" != "$$" ] && kill -0 "${_old}" 2>/dev/null && exit 0
+	[ -n "${_old}" ] && [ "${_old}" != "$$" ] && kill -0 "${_old}" 2>/dev/null && kill "${_old}" 2>/dev/null
 fi
 echo $$ > "${PIDF}" 2>/dev/null
 trap '[ "$(cat "${PIDF}" 2>/dev/null)" = "$$" ] && rm -f "${PIDF}"' EXIT INT TERM HUP

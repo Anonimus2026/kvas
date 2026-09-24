@@ -1,11 +1,18 @@
 #!/bin/sh
 # Отправка очереди Telegram (P.8): из tg_notify в фоне и по cron.1min
 . /opt/apps/kvas/bin/libs/tgq 2>/dev/null || exit 0
-# keepalive интерактивного бота (P.8+)
+# keepalive интерактивного бота (P.8+): только если инстансов 0
 if [ "$(tg_conf_get TG_ENABLED)" = "true" ]; then
 	_bp=/opt/var/kvas/tg_bot.pid
 	_bid=$(cat "${_bp}" 2>/dev/null)
-	if [ -z "${_bid}" ] || ! kill -0 "${_bid}" 2>/dev/null; then
+	_alive=0
+	[ -n "${_bid}" ] && kill -0 "${_bid}" 2>/dev/null && _alive=1
+	# несколько живых процессов = всё равно не стартуем (старые добьёт start сам)
+	_cnt=0
+	for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
+		_cnt=$((_cnt + 1))
+	done
+	if [ "${_alive}" != "1" ] && [ "${_cnt}" -eq 0 ]; then
 		( sh /opt/apps/kvas/bin/tg_bot.sh >/dev/null 2>&1 & ) 2>/dev/null
 	fi
 fi
