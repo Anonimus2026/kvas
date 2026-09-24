@@ -542,6 +542,10 @@ Example: example.com" "$(KB_CANCEL)"
 	}
 
 while true; do
+	# re-verify: lock могли отобрать — выходим, чтобы не плодить poller'ов
+	if [ "$(cat "${LOCKD}/pid" 2>/dev/null)" != "$$" ]; then
+		exit 0
+	fi
 	if [ "$(tg_conf_get TG_ENABLED)" != "true" ] || [ -z "$(tg_conf_get TG_BOT_TOKEN)" ]; then
 		sleep 15
 		continue
@@ -556,7 +560,9 @@ while true; do
 	fi
 	_max=$(printf '%s' "${_resp}" | jq -r '[.result[]?.update_id] | max // empty' 2>/dev/null)
 	[ -n "${_max}" ] && echo $((_max + 1)) > "${OFFF}" 2>/dev/null
-	printf '%s' "${_resp}" | jq -r '.result[]? | select((.message.text // "") != "") | [(.message.chat.id|tostring), (.message.from.username // ""), .message.text] | @tsv' 2>/dev/null |
+	# БЕЗ пайпа jq|while: subshell в busybox = второй ps-процесс с тем же cmdline и main ждёт его
+	_tmsgf="/tmp/.tgmsgs.$$"
+	printf '%s' "${_resp}" | jq -r '.result[]? | select((.message.text // "") != "") | [(.message.chat.id|tostring), (.message.from.username // ""), .message.text] | @tsv' 2>/dev/null > "${_tmsgf}"
 	while IFS="$(printf '\t')" read -r _ch _un _tx; do
 		[ -n "${_ch}" ] && [ -n "${_tx}" ] || continue
 		printf '%s\n@%s\n' "${_ch}" "${_un}" > "${LASTCHAT}" 2>/dev/null
@@ -577,6 +583,7 @@ while true; do
 				tb_on_text "${_ch}" "${_tx}"
 				;;
 		esac
-	done
+	done < "${_tmsgf}"
+	rm -f "${_tmsgf}"
 	sleep 1
 done
