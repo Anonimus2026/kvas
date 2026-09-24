@@ -32,7 +32,7 @@ if [ "$1" = "configure" ]; then
     fi
     # APP_RELEASE — из Version установленного пакета (раньше был хардкод 549)
     _rel=$(opkg status kvas 2>/dev/null | sed -n 's/^Version: //p' | head -1 | sed -n 's/.*beta-10-\([0-9][0-9]*\).*/\1/p')
-    [ -z "${_rel}" ] && _rel=597
+    [ -z "${_rel}" ] && _rel=598
     if grep -q "^APP_RELEASE=" "${kvas_conf}" 2>/dev/null; then
         sed -i "s/^APP_RELEASE=.*/APP_RELEASE=${_rel}/" "${kvas_conf}"
     else
@@ -59,7 +59,7 @@ if [ "$1" = "configure" ]; then
     rm -rf /opt/var/kvas/tg_bot.pid /opt/var/kvas/tg_bot.lock
     sleep 1
     if [ "$(sed -n 's/^TG_ENABLED=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)" = "true" ]; then
-        ( sh /opt/apps/kvas/bin/tg_bot.sh >/dev/null 2>&1 & ) 2>/dev/null
+        ( sh /opt/apps/kvas/bin/tg_bot.sh >>/opt/var/kvas/tg_bot.log 2>&1 & ) 2>/dev/null
     fi
 
     /opt/apps/kvas/bin/kvas init >/dev/null 2>&1 &

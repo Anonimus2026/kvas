@@ -135,10 +135,10 @@ tg_notify(){
 }
 
 # sendMessage: $1=chat $2=text [$3=reply_markup JSON]
-# fire-and-forget через tg_curl_to (без $() и без subshell в tg_curl)
+# fire-and-forget через tg_curl_to; return 0 только при "ok":true в ответе
 tg_send_msg(){
 	_t_s=$(tg_conf_get TG_BOT_TOKEN)
-	[ -n "${_t_s}" ] || return 0
+	[ -n "${_t_s}" ] || return 1
 	_tf="/tmp/.tgs.$$"
 	if [ -n "$3" ]; then
 		tg_curl_to "${_tf}" "https://api.telegram.org/bot${_t_s}/sendMessage" \
@@ -150,8 +150,14 @@ tg_send_msg(){
 			--data-urlencode "chat_id=$1" \
 			--data-urlencode "text=$2" 2>/dev/null
 	fi
+	_tg_ok=1
+	[ -s "${_tf}" ] && grep -q '"ok":true' "${_tf}" 2>/dev/null && _tg_ok=0
+	[ "${_tg_ok}" -ne 0 ] && [ -s "${_tf}" ] && {
+		# короткий хвост ответа в stderr → уйдёт в лог бота/демона
+		printf 'tg_send_fail: %s\n' "$(tail -c 200 "${_tf}" 2>/dev/null | tr '\n' ' ')" >&2
+	}
 	rm -f "${_tf}" 2>/dev/null
-	return 0
+	return ${_tg_ok}
 }
 
 # длинный текст → чанки ~3500 байт по строкам: $1=chat $2=text [$3=markup только для первого]

@@ -10,7 +10,7 @@ if [ "$(tg_conf_get TG_ENABLED)" = "true" ]; then
 			_cnt=$((_cnt + 1))
 		done
 		if [ "${_cnt}" -eq 0 ]; then
-			( sh /opt/apps/kvas/bin/tg_bot.sh >/dev/null 2>&1 & ) 2>/dev/null
+			( sh /opt/apps/kvas/bin/tg_bot.sh >>/opt/var/kvas/tg_bot.log 2>&1 & ) 2>/dev/null
 		fi
 	fi
 fi

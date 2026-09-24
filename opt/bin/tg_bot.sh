@@ -13,7 +13,9 @@ OFFF=/opt/var/kvas/tg_bot.offset
 LASTCHAT=/opt/var/kvas/tg_lastchat
 STF=/opt/var/kvas/tg_bot.state
 LOCKD=/opt/var/kvas/tg_bot.lock
+DBG=/opt/var/kvas/tg_bot.log
 mkdir -p /opt/var/kvas 2>/dev/null
+dbg() { printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> "${DBG}" 2>/dev/null; }
 
 # singleton через atomic mkdir + kill всех чужих инстансов (kill -9: TERM-trap без exit не убивал)
 _tb_kill_others() {
@@ -57,12 +59,17 @@ _tb_kill_others
 if [ "$(cat "${LOCKD}/pid" 2>/dev/null)" != "$$" ]; then
 	exit 0
 fi
-echo $$ > "${PIDF}" 2>/dev/null
+	echo $$ > "${PIDF}" 2>/dev/null
+	dbg "START pid=$$ lock=$(cat "${LOCKD}/pid" 2>/dev/null)"
 # один EXIT-trap на cleanup; TERM/INT/HUP → exit (иначе процесс не умирает и держит getUpdates)
 trap '_tb_cleanup' EXIT
 trap 'exit 0' INT TERM HUP
 
-tb_send() { tg_send_msg "$1" "$2" "$3"; }
+tb_send() {
+	dbg "SEND chat=$1 mk=$([ -n "$3" ] && echo y || echo n) text=$(printf '%s' "$2" | head -c 60 | tr '\n' ' ')"
+	tg_send_msg "$1" "$2" "$3"
+	dbg "SEND_RC=$?"
+}
 
 tb_state() { head -n 1 "${STF}" 2>/dev/null; }
 tb_state_set() { printf '%s\n' "$1" > "${STF}" 2>/dev/null; }
@@ -544,9 +551,11 @@ Example: example.com" "$(KB_CANCEL)"
 while true; do
 	# re-verify: lock могли отобрать — выходим, чтобы не плодить poller'ов
 	if [ "$(cat "${LOCKD}/pid" 2>/dev/null)" != "$$" ]; then
+		dbg "EXIT lost_lock owner=$(cat "${LOCKD}/pid" 2>/dev/null) me=$$"
 		exit 0
 	fi
 	if [ "$(tg_conf_get TG_ENABLED)" != "true" ] || [ -z "$(tg_conf_get TG_BOT_TOKEN)" ]; then
+		dbg "WAIT disabled"
 		sleep 15
 		continue
 	fi
@@ -555,22 +564,32 @@ while true; do
 	_off=$(cat "${OFFF}" 2>/dev/null); [ -n "${_off}" ] || _off=0
 	# getUpdates в ФАЙЛ: _resp=$(tg_curl ...) держал subshell с тем же cmdline («2-й» процесс в ps)
 	_tgresp="/tmp/.tgupd.$$"
+	dbg "POLL off=${_off}"
 	tg_curl_to "${_tgresp}" "https://api.telegram.org/bot${_tok}/getUpdates?timeout=25&offset=${_off}&allowed_updates=%5B%22message%22%5D"
+	_gsz=0; [ -s "${_tgresp}" ] && _gsz=$(wc -c < "${_tgresp}" 2>/dev/null)
+	dbg "POLL size=${_gsz}"
 	if [ ! -s "${_tgresp}" ]; then
 		rm -f "${_tgresp}" 2>/dev/null
 		sleep 5
 		continue
 	fi
 	_max=$(jq -r '[.result[]?.update_id] | max // empty' < "${_tgresp}" 2>/dev/null)
+	dbg "MAX=${_max:-empty}"
 	[ -n "${_max}" ] && echo $((_max + 1)) > "${OFFF}" 2>/dev/null
 	# БЕЗ пайпа jq|while: subshell в busybox = второй ps-процесс с тем же cmdline и main ждёт его
 	_tmsgf="/tmp/.tgmsgs.$$"
 	jq -r '.result[]? | select((.message.text // "") != "") | [(.message.chat.id|tostring), (.message.from.username // ""), .message.text] | @tsv' < "${_tgresp}" 2>/dev/null > "${_tmsgf}"
+	_nmsg=0; [ -s "${_tmsgf}" ] && _nmsg=$(grep -c . "${_tmsgf}" 2>/dev/null)
+	dbg "NMSG=${_nmsg} me=${_me}"
 	rm -f "${_tgresp}" 2>/dev/null
 	while IFS="$(printf '\t')" read -r _ch _un _tx; do
 		[ -n "${_ch}" ] && [ -n "${_tx}" ] || continue
 		printf '%s\n@%s\n' "${_ch}" "${_un}" > "${LASTCHAT}" 2>/dev/null
-		[ -n "${_me}" ] && [ "${_ch}" = "${_me}" ] || continue
+		if [ -z "${_me}" ] || [ "${_ch}" != "${_me}" ]; then
+			dbg "SKIP chat=${_ch} != me=${_me}"
+			continue
+		fi
+		dbg "MSG ch=${_ch} tx=$(printf '%s' "${_tx}" | head -c 80)"
 		_tx=$(printf '%s' "${_tx}" | head -c 2000 | tr -d '\r')
 		case "${_tx}" in
 			/*)
@@ -581,10 +600,13 @@ while true; do
 					_arg=${_tx#* }
 				fi
 				_cmd=$(printf '%s' "${_cmd}" | sed 's/@[^ ]*$//')
+				dbg "CMD=${_cmd}"
 				tb_reply_cmd "${_ch}" "${_cmd}" "${_arg}"
+				dbg "CMD_DONE=${_cmd}"
 				;;
 			*)
 				tb_on_text "${_ch}" "${_tx}"
+				dbg "TEXT_DONE"
 				;;
 		esac
 	done < "${_tmsgf}"
