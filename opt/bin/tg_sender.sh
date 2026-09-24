@@ -25,12 +25,15 @@ mv "${Q}" "${_work}" 2>/dev/null || exit 0
 while IFS="$(printf '\t')" read -r _ev _txt || [ -n "${_ev}${_txt}" ]; do
 	[ -z "${_ev}" ] && [ -z "${_txt}" ] && continue
 	# форма + urlencode (не JSON -d: curl шлёт её как form, Telegram не видит text)
-	_resp=$(tg_curl "https://api.telegram.org/bot${_tok}/sendMessage" \
+	# tg_curl_to: без $() = без subshell с cmdline tg_sender/tg_bot
+	_sf="${_work}.send"
+	tg_curl_to "${_sf}" "https://api.telegram.org/bot${_tok}/sendMessage" \
 		--data-urlencode "chat_id=${_cht}" \
-		--data-urlencode "text=[${_ev}] ${_txt}")
-	if [ -z "${_resp}" ]; then
+		--data-urlencode "text=[${_ev}] ${_txt}"
+	if [ ! -s "${_sf}" ] || ! grep -q '"ok":true' "${_sf}" 2>/dev/null; then
 		printf '%s\t%s\n' "${_ev}" "${_txt}" >> "${Q}" 2>/dev/null
 	fi
+	rm -f "${_sf}" 2>/dev/null
 done < "${_work}"
 rm -f "${_work}"
 exit 0

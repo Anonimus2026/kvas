@@ -58,18 +58,34 @@ tg_socks_port(){
 # напрямую), затем через запасные socks-порты, затем напрямую.
 # Аргументы: tg_curl URL [доп. аргументы curl...]
 # TG_CURL_MAX — общий лимит времени curl (long-poll getUpdates задаёт 30)
+# ВАЖНО: без $() вокруг curl — subshell наследует cmdline скрипта = «второй» процесс в ps.
 tg_curl(){
 	_tg_url="$1"; shift
+	_tg_tmp="/tmp/.tgc.$$"
 	_p=$(tg_socks_port)
 	[ -n "${_p}" ] || _p=1097
-	_r=$(curl -s --max-time "${TG_CURL_MAX:-15}" "$@" -x "socks5h://127.0.0.1:${_p}" "${_tg_url}" 2>/dev/null)
-	[ -n "${_r}" ] && { printf '%s\n' "${_r}"; return 0; }
+	rm -f "${_tg_tmp}" 2>/dev/null
+	curl -s --max-time "${TG_CURL_MAX:-15}" -o "${_tg_tmp}" "$@" -x "socks5h://127.0.0.1:${_p}" "${_tg_url}" 2>/dev/null
+	if [ -s "${_tg_tmp}" ]; then
+		cat "${_tg_tmp}"
+		rm -f "${_tg_tmp}"
+		return 0
+	fi
 	for _q in 1097 10808 10818; do
 		[ "${_q}" = "${_p}" ] && continue
-		_r=$(curl -s --max-time "${TG_CURL_MAX:-12}" "$@" -x "socks5h://127.0.0.1:${_q}" "${_tg_url}" 2>/dev/null)
-		[ -n "${_r}" ] && { printf '%s\n' "${_r}"; return 0; }
+		rm -f "${_tg_tmp}" 2>/dev/null
+		curl -s --max-time "${TG_CURL_MAX:-12}" -o "${_tg_tmp}" "$@" -x "socks5h://127.0.0.1:${_q}" "${_tg_url}" 2>/dev/null
+		if [ -s "${_tg_tmp}" ]; then
+			cat "${_tg_tmp}"
+			rm -f "${_tg_tmp}"
+			return 0
+		fi
 	done
-	curl -s --max-time "${TG_CURL_MAX:-12}" "$@" "${_tg_url}" 2>/dev/null
+	rm -f "${_tg_tmp}" 2>/dev/null
+	curl -s --max-time "${TG_CURL_MAX:-12}" -o "${_tg_tmp}" "$@" "${_tg_url}" 2>/dev/null
+	cat "${_tg_tmp}" 2>/dev/null
+	rm -f "${_tg_tmp}" 2>/dev/null
+	return 0
 }
 
 # Как tg_curl, но пишет в файл (-o), без $() в вызывающем sh:
@@ -119,19 +135,23 @@ tg_notify(){
 }
 
 # sendMessage: $1=chat $2=text [$3=reply_markup JSON]
+# fire-and-forget через tg_curl_to (без $() и без subshell в tg_curl)
 tg_send_msg(){
 	_t_s=$(tg_conf_get TG_BOT_TOKEN)
 	[ -n "${_t_s}" ] || return 0
+	_tf="/tmp/.tgs.$$"
 	if [ -n "$3" ]; then
-		tg_curl "https://api.telegram.org/bot${_t_s}/sendMessage" \
+		tg_curl_to "${_tf}" "https://api.telegram.org/bot${_t_s}/sendMessage" \
 			--data-urlencode "chat_id=$1" \
 			--data-urlencode "text=$2" \
-			--data-urlencode "reply_markup=$3" >/dev/null 2>&1
+			--data-urlencode "reply_markup=$3" 2>/dev/null
 	else
-		tg_curl "https://api.telegram.org/bot${_t_s}/sendMessage" \
+		tg_curl_to "${_tf}" "https://api.telegram.org/bot${_t_s}/sendMessage" \
 			--data-urlencode "chat_id=$1" \
-			--data-urlencode "text=$2" >/dev/null 2>&1
+			--data-urlencode "text=$2" 2>/dev/null
 	fi
+	rm -f "${_tf}" 2>/dev/null
+	return 0
 }
 
 # длинный текст → чанки ~3500 байт по строкам: $1=chat $2=text [$3=markup только для первого]
