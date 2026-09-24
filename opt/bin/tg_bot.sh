@@ -66,7 +66,7 @@ trap '_tb_cleanup' EXIT
 trap 'exit 0' INT TERM HUP
 
 tb_send() {
-	dbg "SEND chat=$1 mk=$([ -n "$3" ] && echo y || echo n) text=$(printf '%s' "$2" | head -c 60 | tr '\n' ' ')"
+	dbg "SEND_ENTER"
 	tg_send_msg "$1" "$2" "$3"
 	dbg "SEND_RC=$?"
 }
@@ -181,8 +181,11 @@ tb_kb_lines() {
 }
 
 tb_show_main() {
+	dbg "SHOW_ENTER"
 	tb_state_clear
-	tb_send "$1" "$(tb_help)" "$(KB_MAIN)"
+	dbg "SHOW_CLEARED"
+	tb_send "$1" "${_TB_HELP}" "${_TB_KB}"
+	dbg "SHOW_SENT"
 }
 
 tb_show_list_menu() {
@@ -204,7 +207,7 @@ tb_send_list() {
 	_ch="$1"
 	_f=/opt/etc/kvas.list
 	if [ ! -s "${_f}" ]; then
-		tb_send "${_ch}" "Protected list is empty" "$(KB_MAIN)"
+		tb_send "${_ch}" "Protected list is empty" "${_TB_KB}"
 		return
 	fi
 	_cnt=$(grep -c . "${_f}" 2>/dev/null); [ -n "${_cnt}" ] || _cnt=0
@@ -238,7 +241,7 @@ tb_bulk_add() {
 	_msg="Added:${_rep}"
 	[ -n "${_bad}" ] && _msg="${_msg}
 Skipped (bad format):${_bad}"
-	tb_send "${_ch}" "${_msg}" "$(KB_MAIN)"
+	tb_send "${_ch}" "${_msg}" "${_TB_KB}"
 }
 
 tb_bulk_del() {
@@ -267,7 +270,7 @@ tb_bulk_del() {
 	_msg="Removed:${_rep}"
 	[ -n "${_bad}" ] && _msg="${_msg}
 Skipped (bad format):${_bad}"
-	tb_send "${_ch}" "${_msg}" "$(KB_MAIN)"
+	tb_send "${_ch}" "${_msg}" "${_TB_KB}"
 }
 
 tb_zk_list() {
@@ -292,29 +295,30 @@ EOF
 }
 
 tb_reply_cmd() { # $1=chat $2=cmd $3=arg
+	dbg "REPLY cmd=$2 arg=$3"
 	_ch="$1"; _cmd="$2"; _arg="$3"
 	case "${_cmd}" in
 		/menu|/start) tb_show_main "${_ch}" ;;
-		/help)        tb_send "${_ch}" "$(tb_help)" "$(KB_MAIN)" ;;
-		/status)      tb_send "${_ch}" "$(tb_status)" "$(KB_MAIN)" ;;
+		/help)        tb_send "${_ch}" "${_TB_HELP}" "${_TB_KB}" ;;
+		/status)      tb_send "${_ch}" "$(tb_status)" "${_TB_KB}" ;;
 		/list)
 			tb_send_list "${_ch}"
-			tb_send "${_ch}" "Menu:" "$(KB_MAIN)"
+			tb_send "${_ch}" "Menu:" "${_TB_KB}"
 			;;
 		/add)
-			[ -n "${_arg}" ] || { tb_send "${_ch}" "Usage: /add example.com foo.org" "$(KB_MAIN)"; return; }
+			[ -n "${_arg}" ] || { tb_send "${_ch}" "Usage: /add example.com foo.org" "${_TB_KB}"; return; }
 			tb_bulk_add "${_ch}" "${_arg}"
-			tb_send "${_ch}" "Menu:" "$(KB_MAIN)"
+			tb_send "${_ch}" "Menu:" "${_TB_KB}"
 			;;
 		/del)
-			[ -n "${_arg}" ] || { tb_send "${_ch}" "Usage: /del example.com foo.org" "$(KB_MAIN)"; return; }
+			[ -n "${_arg}" ] || { tb_send "${_ch}" "Usage: /del example.com foo.org" "${_TB_KB}"; return; }
 			tb_bulk_del "${_ch}" "${_arg}"
-			tb_send "${_ch}" "Menu:" "$(KB_MAIN)"
+			tb_send "${_ch}" "Menu:" "${_TB_KB}"
 			;;
 		/update)   tb_job "${_ch}" update ;;
 		/rollback) tb_job "${_ch}" rollback ;;
 		/*) tb_send "${_ch}" "Unknown command: ${_cmd}
-$(tb_help)" "$(KB_MAIN)" ;;
+${_TB_HELP}" "${_TB_KB}" ;;
 	esac
 	return 0
 }
@@ -329,7 +333,7 @@ tb_on_text() { # $1=chat $2=text
 	# глобальные кнопки — до state-машины (только ASCII-лейблы)
 	case "${_tx}" in
 		Help|/help)
-			tb_send "${_ch}" "$(tb_help)" "$(KB_MAIN)"
+			tb_send "${_ch}" "${_TB_HELP}" "${_TB_KB}"
 			return
 			;;
 		Cancel|/menu|/start)
@@ -543,10 +547,15 @@ Example: example.com" "$(KB_CANCEL)"
 
 		case "${_tx}" in
 			*)
-				tb_send "${_ch}" "Unknown. Use menu or /help:" "$(KB_MAIN)"
+				tb_send "${_ch}" "Unknown. Use menu or /help:" "${_TB_KB}"
 				;;
 		esac
 	}
+
+# precompute после определения функций: $(tb_help)/$(KB_MAIN) в hot path = subshell-hang
+_TB_HELP=$(tb_help)
+_TB_KB=$(KB_MAIN)
+dbg "PRE help=${#_TB_HELP} kb=${#_TB_KB}"
 
 while true; do
 	# re-verify: lock могли отобрать — выходим, чтобы не плодить poller'ов
