@@ -1,7 +1,7 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-549
-**Дата:** 22.09.2026
+**Версия:** 1.1.9_beta-10-600
+**Дата:** 24.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
 **Оригинал:** https://github.com/qzeleza/kvas
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-549_all.ipk  ← текущий релиз
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 600)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,9 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Assets: 512, 534, 546, **549** (upgrade берёт старший через jq sort).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, **600** (текущий).
+- Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v549)
+## 4. Текущий статус (v600)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -49,10 +50,24 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | AmneziaWG / OpenConnect / WG | ✓ |
 | Failover (3 канала: primary/secondary/tertiary) | ✓ работает |
 | Web UI (статус, VPN, adblock, parental, закваски, диагностика, backup, upgrade) | ✓ |
-| Backup / Restore (CLI + web upload) | ✓ |
+| Backup / Restore (CLI + web upload) | ✓ (v591+: ELF-check, `_restored`, nested tar, `_rc`) |
 | kvas upgrade (force-reinstall + rollback) | ✓ |
 | Adblock + parental control | ✓ |
 | Закваски tags (add/del/edit, web + CLI) | ✓ |
+| **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
+| **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600 |
+| **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
+
+### 4.1 Telegram-бот (P.8+)
+
+- **Файлы:** `bin/tg_bot.sh`, `bin/libs/tgq`, `bin/tg_sender.sh`, `bin/tg_job.sh`, `bin/tg_health.sh`; cron: `cron.1min/tg_sender`, `cron.15min/tg_health`.
+- **Конфиг:** `TG_ENABLED`, `TG_BOT_TOKEN`, `TG_CHAT_ID`, `TG_QUIET_START/END` (тихие часы), whitelist событий `failover|update_found|tunnel|health|parental_expire`.
+- **Сеть:** Telegram только через `tg_curl`/`tg_curl_to` (socks5h, порт из `tg_socks_port`, default 1097). long-poll getUpdates `timeout=25`, sendMessage fire-and-forget, RC=0 только при `"ok":true`.
+- **Singleton:** atomic `mkdir` lock + pid re-verify + `kill -9` чужих; один EXIT-trap; TERM/INT/HUP → `exit 0`. Keepalive: `tg_sender` стартует бота, только если lock-каталога нет и 0 инстансов.
+- **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
+- **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
+- **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота). Следующий = **601**.
 
 ## 5. Сетевая конфигурация
 
@@ -195,17 +210,11 @@ kvas xray [core [версия]]
 - В тесте 552: `.hchip min-height:44px` — правка есть, **не в релизе**.
 - **Решение:** не делать, пока не будет явного макета/сценария.
 
-### 8. Уведомления — нужна расшифровка (пока не оценено)
+### 8. Уведомления / Telegram — ✅ реализовано (P.8, v588–600)
 
-- Идея: Webhook/Telegram «VPN упал», «переключились на резерв», «доступно обновление».
-- **Как реализуется (черновик, для обсуждения):**
-  1. В `libs/failover` после `switch_to` — писать событие в `/opt/etc/kvas/events.log` (время, from, to, reason).
-  2. Cron/S96kvas: tail новых строк → `curl -s -X POST $TG_BOT/sendMessage -d chat_id=... -d text=...` (или generic webhook URL из kvas.conf).
-  3. События: failover switch, VPN down (health fail N раз), upgrade available, AdGuard down.
-  4. **Не слать:** приватные ключи, полные конфиги, токен в cleartext логах; rate-limit (не чаще 1/мин на тип события).
-  5. UI: поле «Telegram bot token + chat_id» / «Webhook URL» в настройках; тестовая кнопка «Отправить ping».
-- **Риски:** токен в conf (chmod 600); спам при flapping — связать с anti-flap из п.2.
-- **Сложность:** средняя. **Решение:** расписать ТЗ → оценить → в P1 вместе с п.2.
+- **Готово:** `libs/tgq` (`tg_notify`, quiet hours, очередь), interactive bot (`tg_bot.sh`, English ASCII menus, state machine), `tg_sender` (cron.1min + keepalive), `tg_health` (cron.15min), `tg_job` (update/test/debug в фоне с ответом в чат).
+- **UI:** Web UI → «Уведомления Telegram» (token, chat_id, quiet hours, события).
+- **Не логировать:** приватные ключи, полные конфиги, токен в cleartext.
 
 ### 9. Обновления / changelog — в общих чертах на git
 
@@ -228,7 +237,7 @@ kvas xray [core [версия]]
 | 5 | Единый parental→AdGuard | ⚠ smoke-test; риск слома adblock |
 | 6 | JSON export | уже есть backup |
 | 7 | Mobile polish | отложить до ТЗ |
-| 8 | Telegram/webhook | нужен ТЗ (см. черновик выше) → P1 |
+| 8 | Telegram/webhook | ✅ P.8/P.8+ реализовано (v588–600) |
 | 9 | Changelog UI | нет; git relnotes достаточно |
 | 10 | Security token | не нужно |
 
