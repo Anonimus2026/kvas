@@ -24,4 +24,16 @@ elif [ -z "${_probs}" ] && [ -n "${_old}" ] && [ "${_old}" != "clean" ]; then
 fi
 mkdir -p /opt/var/kvas 2>/dev/null
 echo "${_new}" > "${_state}" 2>/dev/null
+
+# Фоновая проверка новой версии KVAS (P.8: update_found) — не чаще 1 раза в час.
+# Раньше check_updates вызывался только кнопкой Web UI → бот молчал о релизах.
+if [ "$(tg_conf_get TG_ENABLED)" = "true" ]; then
+	_upd_ts=/opt/var/kvas/tg.updcheck.ts
+	_now=$(date +%s)
+	_last=$(cat "${_upd_ts}" 2>/dev/null || echo 0)
+	if [ $((_now - _last)) -ge 3600 ] 2>/dev/null; then
+		echo "${_now}" > "${_upd_ts}" 2>/dev/null
+		tg_check_kvas_update >/dev/null 2>&1
+	fi
+fi
 exit 0

@@ -15,7 +15,11 @@ KVAS_CONF_FILE=/opt/etc/kvas.conf
 PARENTAL_LIST=/opt/etc/adblock/block.list
 PARENTAL_PAGE=/opt/apps/kvas/bin/monitor/www/blocked.html
 # Telegram-уведомления (P.8)
-if ! . /opt/apps/kvas/bin/libs/tgq 2>/dev/null; then tg_notify(){ :; }; fi
+if ! . /opt/apps/kvas/bin/libs/tgq 2>/dev/null; then
+	tg_notify(){ :; }
+	tg_check_kvas_update(){ echo "up_to_date"; }
+	tg_conf_get(){ :; }
+fi
 tg_upsert() {
 	if grep -q "^$1=" "$KVAS_CONF_FILE" 2>/dev/null; then
 		sed -i "s|^$1=.*|$1=$2|" "$KVAS_CONF_FILE"
@@ -259,31 +263,9 @@ check_service() {
 }
 
 check_updates() {
-	local current_ver=$(opkg list-installed 2>/dev/null | grep kvas | awk '{print $3}')
-	local repo="Anonimus2026/kvas"
-	# Get latest ipk build number from release assets
-	local latest_ver=$(curl -s --connect-timeout 5 --max-time 10 "https://api.github.com/repos/${repo}/releases" 2>/dev/null | \
-		grep -o 'kvas_[A-Za-z0-9._-]*_all\.ipk' | \
-		sed -n 's/.*beta-10-\([0-9][0-9]*\)_all\.ipk/\1/p' | \
-		sort -n | tail -1)
-	if [ -n "$latest_ver" ]; then
-		# Extract build number from current version (e.g. 1.1.9_beta-10-239 -> 239)
-		local current_num=$(echo "$current_ver" | sed 's/.*beta-10-//')
-		if [ -n "$current_num" ] && [ "$latest_ver" -gt "$current_num" ] 2>/dev/null; then
-			# Telegram P.8: update_found — один раз на конкретную версию
-			mkdir -p /opt/var/kvas 2>/dev/null
-			_tg_lu=/opt/var/kvas/tg.lastupd
-			if [ "$(cat "${_tg_lu}" 2>/dev/null)" != "v${latest_ver}" ]; then
-				tg_notify update_found "Доступно обновление KVAS v${latest_ver} (у вас сборка ${current_num})"
-				echo "v${latest_ver}" > "${_tg_lu}" 2>/dev/null
-			fi
-			echo "available:v${latest_ver}"
-		else
-			echo "up_to_date"
-		fi
-	else
-		echo "up_to_date"
-	fi
+	# Общая логика в libs/tgq (tg_check_kvas_update): GitHub + update_found dedup.
+	# Там же фоновый вызов из tg_health (cron.15min, rate-limit 1h).
+	tg_check_kvas_update 2>/dev/null || echo "up_to_date"
 }
 
 get_tag_domain_list_from_file() {

@@ -184,6 +184,29 @@ ${_tl_line}"
 		fi
 	done < "${_tl_f}"
 	rm -f "${_tl_f}"
-	[ -n "${_tl_buf}" ] && tg_send_msg "${_tl_ch}" "${_tl_buf}" "${_tl_mk}"
+	[ -n "${_tl_buf}" ] && tg_send_msg "${_ch}" "${_tl_buf}" "${_tl_mk}"
 	return 0
+}
+
+# Проверка новой версии KVAS на GitHub + update_found (dedup через tg.lastupd).
+# Возвращает available:vN | up_to_date (для Web UI и фонового чека).
+tg_check_kvas_update(){
+	_cur=$(opkg list-installed 2>/dev/null | grep kvas | awk '{print $3}')
+	_cur_num=$(printf '%s' "${_cur}" | sed 's/.*beta-10-//')
+	[ -n "${_cur_num}" ] || _cur_num=$(sed -n 's/^APP_RELEASE=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	_lat=$(curl -s --connect-timeout 5 --max-time 10 "https://api.github.com/repos/Anonimus2026/kvas/releases" 2>/dev/null | \
+		grep -o 'kvas_[A-Za-z0-9._-]*_all\.ipk' | \
+		sed -n 's/.*beta-10-\([0-9][0-9]*\)_all\.ipk/\1/p' | \
+		sort -n | tail -1)
+	if [ -n "${_lat}" ] && [ -n "${_cur_num}" ] && [ "${_lat}" -gt "${_cur_num}" ] 2>/dev/null; then
+		mkdir -p /opt/var/kvas 2>/dev/null
+		_tg_lu=/opt/var/kvas/tg.lastupd
+		if [ "$(cat "${_tg_lu}" 2>/dev/null)" != "v${_lat}" ]; then
+			tg_notify update_found "Доступно обновление KVAS v${_lat} (у вас сборка ${_cur_num})"
+			echo "v${_lat}" > "${_tg_lu}" 2>/dev/null
+		fi
+		echo "available:v${_lat}"
+	else
+		echo "up_to_date"
+	fi
 }
