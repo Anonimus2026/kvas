@@ -12,22 +12,28 @@ PIDF=/opt/var/kvas/tg_bot.pid
 OFFF=/opt/var/kvas/tg_bot.offset
 LASTCHAT=/opt/var/kvas/tg_lastchat
 STF=/opt/var/kvas/tg_bot.state
+LOCKD=/opt/var/kvas/tg_bot.lock
 mkdir -p /opt/var/kvas 2>/dev/null
 
-# singleton: убиваем ВСЕ чужие инстансы (старые после opkg иначе живут вечно)
+# singleton через atomic mkdir + kill всех чужих инстансов
 _tb_kill_others() {
 	for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
 		[ "${_p}" = "$$" ] && continue
 		kill "${_p}" 2>/dev/null
 	done
 }
-_tb_kill_others
-
-if [ -s "${PIDF}" ]; then
-	_old=$(cat "${PIDF}" 2>/dev/null)
-	[ -n "${_old}" ] && [ "${_old}" != "$$" ] && kill -0 "${_old}" 2>/dev/null && kill "${_old}" 2>/dev/null
+if ! mkdir "${LOCKD}" 2>/dev/null; then
+	_lockpid=$(cat "${LOCKD}/pid" 2>/dev/null)
+	if [ -n "${_lockpid}" ] && [ "${_lockpid}" != "$$" ] && kill -0 "${_lockpid}" 2>/dev/null; then
+		exit 0
+	fi
+	rm -rf "${LOCKD}" 2>/dev/null
+	mkdir "${LOCKD}" 2>/dev/null || exit 0
 fi
+echo $$ > "${LOCKD}/pid" 2>/dev/null
+_tb_kill_others
 echo $$ > "${PIDF}" 2>/dev/null
+trap '[ "$(cat "${LOCKD}/pid" 2>/dev/null)" = "$$" ] && rm -rf "${LOCKD}"' EXIT INT TERM HUP
 trap '[ "$(cat "${PIDF}" 2>/dev/null)" = "$$" ] && rm -f "${PIDF}"' EXIT INT TERM HUP
 
 tb_send() { tg_send_msg "$1" "$2" "$3"; }

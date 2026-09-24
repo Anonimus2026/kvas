@@ -977,15 +977,22 @@ main() {
 			;;
 		backup)
 			check_token "$token"
-			out=$($KVAS_BIN backup 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\\/\\\\/g; s/"/\\"/g')
-			rc=$?
-			[ $rc -ne 0 ] && json_error "backup failed"
-			json_ok "$out"
+			_out=$($KVAS_BIN backup 2>&1)
+			_rc=$?
+			_out=$(printf '%s' "$_out" | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\\/\\\\/g; s/"/\\"/g')
+			[ $_rc -ne 0 ] && json_error "backup failed: $_out"
+			json_ok "$_out"
 			;;
 		restore)
 			check_token "$token"
 			path=$(echo "$QUERY_STRING" | sed 's/.*path=//; s/&.*//' 2>/dev/null)
 			[ "$path" = "$QUERY_STRING" ] && path=""
+			# пустой path → последний каталог; если его нет — ошибка
+			if [ -z "$path" ]; then
+				path=$(ls -dt /opt/kvas_backup_* 2>/dev/null | head -1)
+				[ -z "$path" ] && json_error "Нет резервных копий"
+			fi
+			[ -d "$path" ] || json_error "Каталог бэкапа не найден: $path"
 			out=$($KVAS_BIN restore "$path" 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "restore failed: $out"
@@ -1012,11 +1019,33 @@ main() {
 			_post_file="${KVAS_POST_BODY:-}"
 			[ -z "$_post_file" ] && json_error "no POST body"
 			[ -s "$_post_file" ] || json_error "empty body"
-			tar -xzf "$_post_file" -C /opt 2>/dev/null
+			# безопасно: распаковываем во временный каталог, ищем kvas_backup_*, потом ставим
+			_utmp="/opt/.kvas_restore_$$"
+			rm -rf "$_utmp"
+			mkdir -p "$_utmp"
+			if ! tar -xzf "$_post_file" -C "$_utmp" 2>/dev/null; then
+				rm -rf "$_utmp" "$_post_file"
+				json_error "archive extract failed (не tar.gz?)"
+			fi
 			rm -f "$_post_file"
-			_dir=$(ls -dt /opt/kvas_backup_* 2>/dev/null | head -1)
-			[ -z "$_dir" ] && json_error "extract failed"
-			out=$($KVAS_BIN restore "$_dir" 2>&1 | head -60 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			_dir=$(find "$_utmp" -maxdepth 3 -type d -name 'kvas_backup_*' 2>/dev/null | head -1)
+			if [ -z "$_dir" ]; then
+				# архив без родительской папки — файлы прямо в _utmp
+				if [ -f "$_utmp/kvas.conf" ] || [ -f "$_utmp/kvas.list" ] || [ -f "$_utmp/hysteria" ]; then
+					_dir="$_utmp"
+				fi
+			fi
+			[ -z "$_dir" ] && { rm -rf "$_utmp"; json_error "extract failed: нет kvas_backup_* и нет kvas.conf/kvas.list"; }
+			# переименовываем в свежий /opt/kvas_backup_* чтобы restore нашёл его
+			_target="/opt/kvas_backup_restore_$(date +%Y%m%d-%H%M%S)"
+			if [ "$_dir" != "$_utmp" ]; then
+				mv "$_dir" "$_target" 2>/dev/null || _target="$_dir"
+			else
+				mkdir -p "$_target"
+				cp -rf "$_utmp"/. "$_target"/ 2>/dev/null
+			fi
+			rm -rf "$_utmp"
+			out=$($KVAS_BIN restore "$_target" 2>&1 | head -80 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
 			[ -z "$out" ] && out="Restored"
 			printf '{"ok":true,"output":"%s"}\n' "$out"
 			;;

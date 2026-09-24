@@ -306,6 +306,20 @@ restore_backups(){
 		ready "Бинарник Hysteria ${BLUE}восстановлен${NOCL}"
 		when_ok "УСПЕШНО"
 	}
+	[ -f "${KVAS_BACKUP_PATH}/xray_bin" ] && {
+		mkdir -p /opt/sbin
+		cp -f "${KVAS_BACKUP_PATH}/xray_bin" /opt/sbin/xray
+		chmod 755 /opt/sbin/xray
+		ready "Бинарник xray ${BLUE}восстановлен${NOCL}"
+		when_ok "УСПЕШНО"
+	}
+	[ -f "${KVAS_BACKUP_PATH}/wireproxy_bin" ] && {
+		mkdir -p /opt/apps/kvas/awg/bin
+		cp -f "${KVAS_BACKUP_PATH}/wireproxy_bin" /opt/apps/kvas/awg/bin/wireproxy
+		chmod 755 /opt/apps/kvas/awg/bin/wireproxy
+		ready "Бинарник wireproxy ${BLUE}восстановлен${NOCL}"
+		when_ok "УСПЕШНО"
+	}
 	restore_backup "${KVAS_WEB_PASS_BACKUP}" "${KVAS_WEB_PASS}" "пароля веб-интерфейса"
 	print_line
 }
@@ -345,6 +359,8 @@ save_backups(){
 	backup_copy "${ADBLOCK_BLOCK_FILE}" "${ADBLOCK_BLOCK_FILE_BACKUP}"
 
 	[ -f /opt/apps/kvas/hysteria/bin/hysteria ] && cp -f /opt/apps/kvas/hysteria/bin/hysteria "${backup_dir}/hysteria_bin" 2>/dev/null
+	[ -f /opt/sbin/xray ] && cp -f /opt/sbin/xray "${backup_dir}/xray_bin" 2>/dev/null
+	[ -f /opt/apps/kvas/awg/bin/wireproxy ] && cp -f /opt/apps/kvas/awg/bin/wireproxy "${backup_dir}/wireproxy_bin" 2>/dev/null
 
 	echo "Резервная копия сохранена в: ${backup_dir}"
 }

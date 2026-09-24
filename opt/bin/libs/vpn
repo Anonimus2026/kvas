@@ -2567,8 +2567,12 @@ start_vless(){
 	# Если после повторного запроса конфига всё нет — пропускаем
 	[ -f ${VLESS_CONFIG_FILE} ] || { echo "VLESS не настроен. Выполните: kvas vless new"; return 0; }
 	
-	# Проверка конфигурации xray
-	check_xray_config=$(${XRAY} run -test -c ${VLESS_CONFIG_FILE})
+	# Проверка конфигурации xray (бинарник может отсутствовать после сбоя/очистки)
+	if [ ! -x "${XRAY}" ]; then
+		echo -e "${YELLOW}xray не найден (${XRAY}). Установите: kvas xray core${NC}"
+		return 0
+	fi
+	check_xray_config=$(${XRAY} run -test -c ${VLESS_CONFIG_FILE} 2>&1)
 
 	if echo "${check_xray_config}" | grep -q "Configuration OK" ; then
 

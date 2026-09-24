@@ -626,7 +626,11 @@ _cmd_install_vless_proxy(){
     #cat "${VLESS_CONFIG_FILE}"
 
     # Проверка конфигурации xray
-    check_xray_config=$(${XRAY} run -test -c ${VLESS_CONFIG_FILE})
+    if [ ! -x "${XRAY}" ]; then
+        echo -e "${YELLOW}xray не найден (${XRAY}). Выполните: kvas xray core${NC}"
+        return 1
+    fi
+    check_xray_config=$(${XRAY} run -test -c ${VLESS_CONFIG_FILE} 2>&1)
 
     if echo "${check_xray_config}" | grep -q "Configuration OK." ; then
         # Запуск xray в случае, если конфигурация xray не содержит ошибок

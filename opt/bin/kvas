@@ -198,7 +198,8 @@ case "${1}" in
 		cp -f "$ADGUARD_IPSET_FILE" "$BKPDIR/" 2>/dev/null
 		cp -f "$VLESS_CONFIG_FILE" "$BKPDIR/" 2>/dev/null
 		[ -f "$KVAS_WEB_PASS" ] && cp -f "$KVAS_WEB_PASS" "$BKPDIR/" 2>/dev/null
-		[ -f /opt/apps/kvas/hysteria/bin/hysteria ] && cp -f /opt/apps/kvas/hysteria/bin/hysteria "$BKPDIR/"
+		[ -f /opt/apps/kvas/hysteria/bin/hysteria ] && cp -f /opt/apps/kvas/hysteria/bin/hysteria "$BKPDIR/hysteria"
+		[ -f /opt/sbin/xray ] && cp -f /opt/sbin/xray "$BKPDIR/xray"
 		cp -f "$ADBLOCK_HOSTS_FILE" "$BKPDIR/" 2>/dev/null
 		cp -f "$ADBLOCK_BLOCK_FILE" "$BKPDIR/" 2>/dev/null
 		cp -f "$ADBLOCK_LIST_EXCEPTION" "$BKPDIR/" 2>/dev/null
@@ -207,6 +208,21 @@ case "${1}" in
 		[ -f /opt/apps/kvas/awg/bin/wireproxy ] && cp -f /opt/apps/kvas/awg/bin/wireproxy "$BKPDIR/" 2>/dev/null
 		[ -f /opt/etc/kvas.failover.conf ] && cp -f /opt/etc/kvas.failover.conf "$BKPDIR/" 2>/dev/null
 		[ -f /opt/etc/inface_equals ] && cp -f /opt/etc/inface_equals "$BKPDIR/" 2>/dev/null
+		# magic ELF check для бинарников
+		for _bn in hysteria xray wireproxy; do
+			[ -f "$BKPDIR/$_bn" ] || continue
+			_hdr=$(head -c 4 "$BKPDIR/$_bn" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			if [ "$_hdr" != "7f454c46" ]; then
+				echo "ВНИМАНИЕ: $_bn в бэкапе не ELF — пропущен"
+				rm -f "$BKPDIR/$_bn"
+			fi
+		done
+		_n=$(ls -A "$BKPDIR" 2>/dev/null | wc -l)
+		if [ "${_n:-0}" -eq 0 ]; then
+			echo "ОШИБКА: нечего сохранять"
+			rmdir "$BKPDIR" 2>/dev/null
+			exit 1
+		fi
 		echo "Резервная копия сохранена: $BKPDIR"
 		;;
 	restore)
@@ -216,27 +232,89 @@ case "${1}" in
 			BKP=$(ls -dt /opt/kvas_backup_* 2>/dev/null | head -1)
 			[ -z "$BKP" ] && echo "Нет резервных копий" && exit 1
 		fi
+		if [ ! -d "$BKP" ]; then
+			echo "ОШИБКА: каталог бэкапа не найден: $BKP"
+			exit 1
+		fi
+		# нормализуем: если внутри архива лежит kvas_backup_*, берём его
+		if [ ! -f "$BKP/kvas.conf" ] && [ ! -f "$BKP/kvas.list" ]; then
+			_inner=$(find "$BKP" -maxdepth 3 -name 'kvas.conf' -o -name 'kvas.list' 2>/dev/null | head -1)
+			if [ -n "$_inner" ]; then
+				BKP=$(dirname "$_inner")
+			fi
+		fi
+		_restored=0
 		for _f in "$KVAS_LIST_FILE" "$TAGS_LIST_FILE" "$KVAS_CONF_FILE" "$HYSTERIA_CONFIG" "$HYSTERIA_ENV_FILE" "$SHADOWSOCKS_CONF" "$DNSMASQ_CONFIG" "$DNSMASQ_IPSET_HOSTS" "$DNSCRYPT_CONFIG" "$ADGUARDHOME_CONFIG" "$ADGUARD_IPSET_FILE" "$VLESS_CONFIG_FILE" "$ADBLOCK_HOSTS_FILE" "$ADBLOCK_BLOCK_FILE" "$ADBLOCK_LIST_EXCEPTION" "$ADBLOCK_SOURCES_LIST"; do
 			[ -z "$_f" ] && continue
 			_bn=$(basename "$_f" 2>/dev/null)
 			[ -z "$_bn" ] && continue
 			_b="${BKP}/${_bn}"
-			[ -f "$_b" ] && cp -f "$_b" "$_f" 2>/dev/null && echo "Восстановлен: ${_bn}"
+			if [ -f "$_b" ]; then
+				mkdir -p "$(dirname "$_f")" 2>/dev/null
+				if cp -f "$_b" "$_f" 2>/dev/null; then
+					echo "Восстановлен: ${_bn}"
+					_restored=$((_restored + 1))
+				else
+					echo "ОШИБКА: не скопирован ${_bn}"
+				fi
+			fi
 		done
 		_f="$KVAS_WEB_PASS"; [ -n "$_f" ] && {
 			_bn=$(basename "$_f" 2>/dev/null)
 			[ -n "$_bn" ] && {
 				_b="${BKP}/${_bn}"
-				[ -f "$_b" ] && cp -f "$_b" "$_f" 2>/dev/null && echo "Восстановлен: ${_bn}"
+				if [ -f "$_b" ]; then
+					mkdir -p "$(dirname "$_f")" 2>/dev/null
+					cp -f "$_b" "$_f" 2>/dev/null && echo "Восстановлен: ${_bn}" && _restored=$((_restored + 1))
+				fi
 			}
 		}
-		[ -f "${BKP}/hysteria" ] && cp -f "${BKP}/hysteria" /opt/apps/kvas/hysteria/bin/hysteria 2>/dev/null && chmod 755 /opt/apps/kvas/hysteria/bin/hysteria && echo "Восстановлен бинарник hysteria"
-		[ -f "${BKP}/awg.conf" ] && { mkdir -p /opt/etc/awg; cp -f "${BKP}/awg.conf" /opt/etc/awg/awg.conf 2>/dev/null && echo "Восстановлен: awg.conf"; }
-		[ -f "${BKP}/wireproxy" ] && { mkdir -p /opt/apps/kvas/awg/bin; cp -f "${BKP}/wireproxy" /opt/apps/kvas/awg/bin/wireproxy 2>/dev/null && chmod 755 /opt/apps/kvas/awg/bin/wireproxy && echo "Восстановлен бинарник wireproxy"; }
-		[ -f "${BKP}/kvas.failover.conf" ] && cp -f "${BKP}/kvas.failover.conf" /opt/etc/kvas.failover.conf 2>/dev/null && echo "Восстановлен: kvas.failover.conf"
-		[ -f "${BKP}/inface_equals" ] && cp -f "${BKP}/inface_equals" /opt/etc/inface_equals 2>/dev/null && echo "Восстановлен: inface_equals"
-		# Файлы на месте — пересоздаём NDM-хуки (могли быть удалены при аварии)
-		# и поднимаем службы: hysteria socks5, awg/wireproxy, dnsmasq и т.д.
+		# hysteria: только ELF, с mkdir
+		if [ -f "${BKP}/hysteria" ]; then
+			_hdr=$(head -c 4 "${BKP}/hysteria" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			if [ "$_hdr" = "7f454c46" ]; then
+				mkdir -p /opt/apps/kvas/hysteria/bin
+				if cp -f "${BKP}/hysteria" /opt/apps/kvas/hysteria/bin/hysteria 2>/dev/null; then
+					chmod 755 /opt/apps/kvas/hysteria/bin/hysteria
+					echo "Восстановлен бинарник hysteria (ELF OK)"
+					_restored=$((_restored + 1))
+				else
+					echo "ОШИБКА: hysteria не скопирован"
+				fi
+			else
+				echo "ОШИБКА: hysteria в бэкапе не ELF — пропущен"
+			fi
+		fi
+		# xray binary
+		if [ -f "${BKP}/xray" ]; then
+			_hdr=$(head -c 4 "${BKP}/xray" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			if [ "$_hdr" = "7f454c46" ]; then
+				mkdir -p /opt/sbin
+				if cp -f "${BKP}/xray" /opt/sbin/xray 2>/dev/null; then
+					chmod 755 /opt/sbin/xray
+					echo "Восстановлен бинарник xray (ELF OK)"
+					_restored=$((_restored + 1))
+				fi
+			else
+				echo "ОШИБКА: xray в бэкапе не ELF — пропущен"
+			fi
+		fi
+		[ -f "${BKP}/awg.conf" ] && { mkdir -p /opt/etc/awg; cp -f "${BKP}/awg.conf" /opt/etc/awg/awg.conf 2>/dev/null && echo "Восстановлен: awg.conf" && _restored=$((_restored + 1)); }
+		[ -f "${BKP}/wireproxy" ] && {
+			_hdr=$(head -c 4 "${BKP}/wireproxy" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			if [ "$_hdr" = "7f454c46" ]; then
+				mkdir -p /opt/apps/kvas/awg/bin
+				cp -f "${BKP}/wireproxy" /opt/apps/kvas/awg/bin/wireproxy 2>/dev/null && chmod 755 /opt/apps/kvas/awg/bin/wireproxy && echo "Восстановлен бинарник wireproxy" && _restored=$((_restored + 1))
+			fi
+		}
+		[ -f "${BKP}/kvas.failover.conf" ] && cp -f "${BKP}/kvas.failover.conf" /opt/etc/kvas.failover.conf 2>/dev/null && echo "Восстановлен: kvas.failover.conf" && _restored=$((_restored + 1))
+		[ -f "${BKP}/inface_equals" ] && cp -f "${BKP}/inface_equals" /opt/etc/inface_equals 2>/dev/null && echo "Восстановлен: inface_equals" && _restored=$((_restored + 1))
+		if [ "${_restored}" -eq 0 ]; then
+			echo "ОШИБКА: в $BKP не найдено файлов для восстановления"
+			exit 1
+		fi
+		echo "Восстановлено файлов: ${_restored}"
+		# Файлы на месте — пересоздаём NDM-хуки и поднимаем службы
 		home_dir=/opt/apps/kvas
 		hook_dir=$(get_hook_dir)
 		mkdir -p "/opt/etc/ndm/${hook_dir}" /opt/etc/ndm/iflayerchanged.d /opt/etc/ndm/ifcreated.d /opt/etc/ndm/ifdestroyed.d /opt/etc/ndm/netfilter.d
