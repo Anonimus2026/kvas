@@ -510,12 +510,21 @@ main() {
 			hysteria_ok="false"
 			other_ok="false"
 			other_desc=""
-			command -v ss >/dev/null 2>&1 && {
-				ss -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="true"
-				ss -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="true"
-			}
-			[ "$vless_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="true"
-			[ "$hysteria_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="true"
+			# Real connectivity through SOCKS (not just port listening):
+			# port may be bound while upstream tunnel is dead.
+			_probe_ip=$(curl -4 -s --connect-timeout 3 --max-time 5 -x "socks5://127.0.0.1:1097" "https://myip.addr.tools" 2>/dev/null)
+			echo "${_probe_ip}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && vless_ok="true"
+			_probe_ip=$(curl -4 -s --connect-timeout 3 --max-time 5 -x "socks5://127.0.0.1:10808" "https://myip.addr.tools" 2>/dev/null)
+			echo "${_probe_ip}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && hysteria_ok="true"
+			# Fallback: if real probe failed, still show port state as weak signal (process up)
+			if [ "$vless_ok" = "false" ]; then
+				command -v ss >/dev/null 2>&1 && ss -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="port"
+				[ "$vless_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="port"
+			fi
+			if [ "$hysteria_ok" = "false" ]; then
+				command -v ss >/dev/null 2>&1 && ss -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="port"
+				[ "$hysteria_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="port"
+			fi
 			# Check other VPN interface (OpenConnect, WG, etc.)
 			inface_cli=$(grep "^INFACE_CLI=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
 			inface_ent=$(grep "^INFACE_ENT=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
@@ -529,7 +538,8 @@ main() {
 			esac
 			_other_json="false"
 			[ "$other_ok" = "true" ] && _other_json="true"
-			printf '{"ok":true,"vless":%s,"hysteria":%s,"other":%s,"other_desc":"%s"}\n' "$vless_ok" "$hysteria_ok" "$_other_json" "$other_desc"
+			# vless/hysteria: true | port | false
+			printf '{"ok":true,"vless":"%s","hysteria":"%s","other":%s,"other_desc":"%s"}\n' "$vless_ok" "$hysteria_ok" "$_other_json" "$other_desc"
 			;;
 		vpn_interfaces)
 			check_token "$token"

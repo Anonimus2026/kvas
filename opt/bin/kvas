@@ -208,8 +208,22 @@ case "${1}" in
 		[ -f /opt/apps/kvas/awg/bin/wireproxy ] && cp -f /opt/apps/kvas/awg/bin/wireproxy "$BKPDIR/" 2>/dev/null
 		[ -f /opt/etc/kvas.failover.conf ] && cp -f /opt/etc/kvas.failover.conf "$BKPDIR/" 2>/dev/null
 		[ -f /opt/etc/inface_equals ] && cp -f /opt/etc/inface_equals "$BKPDIR/" 2>/dev/null
+		# --- полный охват: AdGuard service + data, feature flags, parental, hosts, awg env ---
+		[ -f /opt/etc/init.d/S99adguardhome ] && cp -f /opt/etc/init.d/S99adguardhome "$BKPDIR/" 2>/dev/null
+		[ -f /opt/bin/AdGuardHome ] && cp -f /opt/bin/AdGuardHome "$BKPDIR/" 2>/dev/null
+		[ -f /opt/etc/hosts ] && cp -f /opt/etc/hosts "$BKPDIR/" 2>/dev/null
+		[ -f /opt/etc/kvas-failover-enabled ] && cp -f /opt/etc/kvas-failover-enabled "$BKPDIR/" 2>/dev/null
+		[ -f /opt/etc/kvas-monitor-web-enabled ] && cp -f /opt/etc/kvas-monitor-web-enabled "$BKPDIR/" 2>/dev/null
+		[ -f /opt/apps/kvas/awg/etc/conf/env.sh ] && cp -f /opt/apps/kvas/awg/etc/conf/env.sh "$BKPDIR/awg.env.sh" 2>/dev/null
+		[ -f /opt/etc/adblock/temporary.list ] && cp -f /opt/etc/adblock/temporary.list "$BKPDIR/" 2>/dev/null
+		[ -d /opt/etc/adblock/parental.d ] && cp -a /opt/etc/adblock/parental.d "$BKPDIR/parental.d" 2>/dev/null
+		[ -f /opt/etc/dnsmasq.d/kvas-parental.dnsmasq ] && cp -f /opt/etc/dnsmasq.d/kvas-parental.dnsmasq "$BKPDIR/" 2>/dev/null
+		# AdGuardHome data (querylog/filters) — tar, чтобы не плодить файлы
+		if [ -d /opt/etc/AdGuardHome/data ]; then
+			tar -czf "$BKPDIR/AdGuardHome.data.tgz" -C /opt/etc/AdGuardHome data 2>/dev/null
+		fi
 		# magic ELF check для бинарников
-		for _bn in hysteria xray wireproxy; do
+		for _bn in hysteria xray wireproxy AdGuardHome; do
 			[ -f "$BKPDIR/$_bn" ] || continue
 			_hdr=$(head -c 4 "$BKPDIR/$_bn" 2>/dev/null | od -An -tx1 | tr -d ' \n')
 			if [ "$_hdr" != "7f454c46" ]; then
@@ -309,6 +323,28 @@ case "${1}" in
 		}
 		[ -f "${BKP}/kvas.failover.conf" ] && cp -f "${BKP}/kvas.failover.conf" /opt/etc/kvas.failover.conf 2>/dev/null && echo "Восстановлен: kvas.failover.conf" && _restored=$((_restored + 1))
 		[ -f "${BKP}/inface_equals" ] && cp -f "${BKP}/inface_equals" /opt/etc/inface_equals 2>/dev/null && echo "Восстановлен: inface_equals" && _restored=$((_restored + 1))
+		# --- полный охват: AdGuard service + data, feature flags, parental, hosts, awg env ---
+		if [ -f "${BKP}/S99adguardhome" ]; then
+			cp -f "${BKP}/S99adguardhome" /opt/etc/init.d/S99adguardhome 2>/dev/null && chmod 755 /opt/etc/init.d/S99adguardhome && echo "Восстановлен: S99adguardhome" && _restored=$((_restored + 1))
+		elif [ -f /opt/apps/kvas/etc/init.d/S99adguard ]; then
+			# init отсутствует в старом бэкапе — разворачиваем из пакета, чтобы has_adguard_enable не падал
+			cp -f /opt/apps/kvas/etc/init.d/S99adguard /opt/etc/init.d/S99adguardhome 2>/dev/null && chmod 755 /opt/etc/init.d/S99adguardhome && echo "Восстановлен: S99adguardhome (из пакета)" && _restored=$((_restored + 1))
+		fi
+		if [ -f "${BKP}/AdGuardHome" ]; then
+			_hdr=$(head -c 4 "${BKP}/AdGuardHome" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			[ "$_hdr" = "7f454c46" ] && cp -f "${BKP}/AdGuardHome" /opt/bin/AdGuardHome 2>/dev/null && chmod 755 /opt/bin/AdGuardHome && echo "Восстановлен: AdGuardHome binary" && _restored=$((_restored + 1))
+		fi
+		[ -f "${BKP}/hosts" ] && cp -f "${BKP}/hosts" /opt/etc/hosts 2>/dev/null && echo "Восстановлен: hosts" && _restored=$((_restored + 1))
+		[ -f "${BKP}/kvas-failover-enabled" ] && cp -f "${BKP}/kvas-failover-enabled" /opt/etc/kvas-failover-enabled 2>/dev/null && echo "Восстановлен: kvas-failover-enabled" && _restored=$((_restored + 1))
+		[ -f "${BKP}/kvas-monitor-web-enabled" ] && cp -f "${BKP}/kvas-monitor-web-enabled" /opt/etc/kvas-monitor-web-enabled 2>/dev/null && echo "Восстановлен: kvas-monitor-web-enabled" && _restored=$((_restored + 1))
+		[ -f "${BKP}/awg.env.sh" ] && mkdir -p /opt/apps/kvas/awg/etc/conf && cp -f "${BKP}/awg.env.sh" /opt/apps/kvas/awg/etc/conf/env.sh 2>/dev/null && echo "Восстановлен: awg env.sh" && _restored=$((_restored + 1))
+		[ -f "${BKP}/temporary.list" ] && mkdir -p /opt/etc/adblock && cp -f "${BKP}/temporary.list" /opt/etc/adblock/temporary.list 2>/dev/null && echo "Восстановлен: temporary.list" && _restored=$((_restored + 1))
+		[ -d "${BKP}/parental.d" ] && mkdir -p /opt/etc/adblock/parental.d && cp -a "${BKP}/parental.d/." /opt/etc/adblock/parental.d/ 2>/dev/null && echo "Восстановлен: parental.d" && _restored=$((_restored + 1))
+		[ -f "${BKP}/kvas-parental.dnsmasq" ] && mkdir -p /opt/etc/dnsmasq.d && cp -f "${BKP}/kvas-parental.dnsmasq" /opt/etc/dnsmasq.d/kvas-parental.dnsmasq 2>/dev/null && echo "Восстановлен: kvas-parental.dnsmasq" && _restored=$((_restored + 1))
+		if [ -f "${BKP}/AdGuardHome.data.tgz" ]; then
+			mkdir -p /opt/etc/AdGuardHome 2>/dev/null
+			tar -xzf "${BKP}/AdGuardHome.data.tgz" -C /opt/etc/AdGuardHome 2>/dev/null && echo "Восстановлен: AdGuardHome data" && _restored=$((_restored + 1))
+		fi
 		if [ "${_restored}" -eq 0 ]; then
 			echo "ОШИБКА: в $BKP не найдено файлов для восстановления"
 			exit 1
@@ -325,6 +361,13 @@ case "${1}" in
 		ln -sf "${home_dir}/etc/ndm/netfilter.d/100-vpn-mark" "/opt/etc/ndm/netfilter.d/100-vpn-mark"
 		echo "Хуки NDM пересозданы"
 		cmd_kvas_init "no_reset"
+		# явно поднимаем AdGuard, если он был включён (has_adguard_enable требует init-файл)
+		if grep -q '^ADGUARD_ENABLE=true' /opt/etc/kvas.conf 2>/dev/null && [ -f /opt/etc/init.d/S99adguardhome ]; then
+			/opt/etc/init.d/S99adguardhome status 2>/dev/null | grep -qi alive || {
+				/opt/etc/init.d/S99adguardhome start >/dev/null 2>&1
+				echo "AdGuardHome запущен после восстановления"
+			}
+		fi
 		echo "Сервисы перезапущены"
 		;;
 

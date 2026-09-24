@@ -523,6 +523,12 @@ ip4__mark__create_chain() {
 	{
 		if ! ip4__chain__is_exist "${TABLE_MARK}" "${CHAIN_MARK}" ; then
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -N "${CHAIN_MARK}" 2>/dev/null
+		elif save_iptables | grep -F -- "-A ${CHAIN_MARK}" | grep -qF -- "--set-mark"; then
+			# chain already populated — skip re-append (fixes duplicate rules on every netfilter event)
+			return 0
+		else
+			# chain exists but empty/incomplete — flush and rebuild
+			/opt/sbin/iptables -w -t "${TABLE_MARK}" -F "${CHAIN_MARK}" 2>/dev/null
 		fi
 
 		# базовые правила цепочки данных (исключения по источнику, исключённые назначения, DNS)
@@ -591,7 +597,12 @@ ip4__add_routing_for_home() {
 
 	local net_interface=$(get_local_inface)
 
-	if save_iptables | grep -F 'PREROUTING' | grep -F "${net_interface}" | grep -F "${IPSET_TABLE_NAME}" | grep -Fq "${chain_name}" ; then
+	# atomic -C check instead of non-atomic grep (race with concurrent netfilter.d hooks)
+	if /opt/sbin/iptables -C PREROUTING -w -t "${table}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE_NAME}" dst -j "${chain_name}" 2>/dev/null; then
+		# remove duplicates if any (loop until one remains)
+		while [ "$(save_iptables | grep -c -- "-A PREROUTING .*${net_interface} .*${chain_name}")" -gt 1 ] 2>/dev/null; do
+			/opt/sbin/iptables -D PREROUTING -w -t "${table}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE_NAME}" dst -j "${chain_name}" 2>/dev/null || break
+		done
 		return
 	fi
 
@@ -690,6 +701,13 @@ ip4__dns__add_routing() {
 	fi
 
 	if save_iptables | grep -F 'PREROUTING' | grep -F -- "${iptables_filter}" | grep -Fq "${CHAIN_DNS}" ; then
+		# remove any duplicate copies (loop until only one remains)
+		while /opt/sbin/iptables -C PREROUTING -w -t "${TABLE_DNS}"$(echo "${iptables_filter}") -j "${CHAIN_DNS}" 2>/dev/null; do
+			# count how many exact matches exist; delete while more than one
+			_cnt=$(/opt/sbin/iptables -S PREROUTING -w -t "${TABLE_DNS}" 2>/dev/null | grep -c -- "$(echo "${iptables_filter}") .*${CHAIN_DNS}")
+			[ "${_cnt:-1}" -le 1 ] && break
+			/opt/sbin/iptables -D PREROUTING -w -t "${TABLE_DNS}"$(echo "${iptables_filter}") -j "${CHAIN_DNS}" 2>/dev/null
+		done
 		return
 	fi
 	local rulenum
@@ -724,7 +742,10 @@ ip4__dns__delete_routing() {
 	log_warning "Отключение DNS перенаправления${submessage}"
 
 	# без echo дублирование пробелов (что даёт warning и проблему наличия)
-	/opt/sbin/iptables -D PREROUTING -t "${TABLE_DNS}"$(echo "${iptables_filter}") -j "${CHAIN_DNS}"
+	# loop: remove ALL copies of the jump rule
+	while /opt/sbin/iptables -C PREROUTING -t "${TABLE_DNS}"$(echo "${iptables_filter}") -j "${CHAIN_DNS}" 2>/dev/null; do
+		/opt/sbin/iptables -D PREROUTING -t "${TABLE_DNS}"$(echo "${iptables_filter}") -j "${CHAIN_DNS}" 2>/dev/null || break
+	done
 }
 
 
@@ -787,7 +808,10 @@ ip4__add_routing() {
 
 	log_warning "Подключение перехвата трафика по${submessage}"
 
-	/opt/sbin/iptables -A PREROUTING -w -t "${table}" $(echo "${iptables_filter}") -j "${chain_name}"
+	# atomic -C check before append (race with concurrent hooks)
+	if ! /opt/sbin/iptables -C PREROUTING -w -t "${table}" $(echo "${iptables_filter}") -j "${chain_name}" 2>/dev/null; then
+		/opt/sbin/iptables -A PREROUTING -w -t "${table}" $(echo "${iptables_filter}") -j "${chain_name}"
+	fi
 }
 
 ip4__add_routing_by_list_for_net() {
@@ -844,7 +868,10 @@ ip4__delete_routing() {
 
 	log_warning "Отключение перехвата трафика по${submessage}"
 
-	/opt/sbin/iptables -D PREROUTING -t "${table}" $(echo "${iptables_filter}") -j "${chain_name}"
+	# loop: remove ALL copies of the jump rule
+	while /opt/sbin/iptables -C PREROUTING -t "${table}" $(echo "${iptables_filter}") -j "${chain_name}" 2>/dev/null; do
+		/opt/sbin/iptables -D PREROUTING -t "${table}" $(echo "${iptables_filter}") -j "${chain_name}" 2>/dev/null || break
+	done
 }
 
 ip4__delete_routing_by_list_for_net() {

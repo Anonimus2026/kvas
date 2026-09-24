@@ -362,7 +362,11 @@ record_switch() {
     tail -50 "$FAILOVER_HISTORY" > "${FAILOVER_HISTORY}.tmp" 2>/dev/null
     mv "${FAILOVER_HISTORY}.tmp" "$FAILOVER_HISTORY" 2>/dev/null
     log_failover "SWITCH: $from -> $to ($reason)"
-    tg_notify failover "Переключение: ${from} → ${to} (${reason})"
+    # friendly names for Telegram: Proxy21→vless, Proxy41→hysteria, Proxy42→AmneziaWG, t2s*→...
+    local fdisp tdisp
+    fdisp=$(printf '%s' "$from" | sed 's/^Proxy21$/vless/; s/^Proxy41$/hysteria/; s/^Proxy42$/AmneziaWG/; s/^t2s21$/vless/; s/^t2s41$/hysteria/; s/^t2s42$/AmneziaWG/')
+    tdisp=$(printf '%s' "$to" | sed 's/^Proxy21$/vless/; s/^Proxy41$/hysteria/; s/^Proxy42$/AmneziaWG/; s/^t2s21$/vless/; s/^t2s41$/hysteria/; s/^t2s42$/AmneziaWG/')
+    tg_notify failover "Переключение: ${fdisp} → ${tdisp} (${reason})"
 }
 
 log_failover() {

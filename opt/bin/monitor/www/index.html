@@ -1201,13 +1201,20 @@ function loadSystemStatus() {
       document.getElementById('sysTunnel').innerHTML = '<span style="color:#8b949e;">проверка...</span>';
       api('/cgi-bin/manage.sh?action=tunnel_check', function(t) {
         if (t.ok) {
-          var ok = '<span style="color:#3fb950;">\u2713</span> ';
-          var fail = '<span style="color:#f85149;">\u2717</span> ';
+          var ok = '<span style="color:#3fb950;">✓</span> ';
+          var fail = '<span style="color:#f85149;">✗</span> ';
+          var warn = '<span style="color:#d29922;">⚠</span> ';
           var mode = d.mode || '-';
+          // tunnel_check returns "true" (live probe OK), "port" (listening only), "false"
+          function tunnelState(v) {
+            if (v === true || v === 'true') return ok + 'работает';
+            if (v === 'port') return warn + 'порт открыт, тоннель не проверен';
+            return fail + 'не работает';
+          }
           if (mode === 'vless') {
-            document.getElementById('sysTunnel').innerHTML = 'VLESS ' + (t.vless ? ok + 'работает' : fail + 'не работает');
+            document.getElementById('sysTunnel').innerHTML = 'VLESS ' + tunnelState(t.vless);
           } else if (mode === 'hysteria') {
-            document.getElementById('sysTunnel').innerHTML = 'Hysteria ' + (t.hysteria ? ok + 'работает' : fail + 'не работает');
+            document.getElementById('sysTunnel').innerHTML = 'Hysteria ' + tunnelState(t.hysteria);
           } else if (t.other_desc) {
             document.getElementById('sysTunnel').innerHTML = t.other_desc + ' ' + (t.other ? ok + 'работает' : fail + 'не работает');
           } else {

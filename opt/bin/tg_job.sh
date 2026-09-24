@@ -5,6 +5,16 @@
 # modes: update|rollback|test|debug|init|site <iface> <site>|speed <iface>
 . /opt/apps/kvas/bin/libs/tgq 2>/dev/null || exit 0
 
+# friendly display name (same as bot tb_friendly)
+tb_friendly() {
+	case "$1" in
+		Proxy21|t2s21|vless)    printf 'vless' ;;
+		Proxy41|t2s41|hysteria) printf 'hysteria' ;;
+		Proxy42|t2s42|awg)      printf 'AmneziaWG' ;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
 _ch="$1"; _mode="$2"; shift 2
 
 tbj_send() { # $1=text — простая отправка без markup
@@ -106,7 +116,7 @@ ${_out:-нет вывода}"
 			_speed=$(curl -s --max-time 15 ${_opt} -o /dev/null -w '%{speed_download}' "https://nbg1-speed.hetzner.com/1MB.bin" 2>/dev/null)
 		[ -z "${_speed}" ] && _speed=0
 		_speed=$(printf '%s' "${_speed}" | awk '{printf "%.0f", $1/1024}')
-		tbj_send "Тест ${_site} через ${_iface}:
+		tbj_send "Тест ${_site} через $(tb_friendly "${_iface}"):
 IP: ${_ip}
 HTTP: ${_http}
 Отклик: ${_time} с
@@ -127,7 +137,7 @@ HTTP: ${_http}
 		[ -z "${_speed}" ] && _speed=0
 		[ -z "${_time}" ] && _time=0
 		_speed=$(printf '%s' "${_speed}" | awk '{printf "%.0f", $1/1024}')
-		tbj_send "Скорость входящего ${_iface}:
+		tbj_send "Скорость входящего $(tb_friendly "${_iface}"):
 IP: ${_ip}
 100MB: ${_speed} КБ/с за ${_time} с"
 		;;

@@ -113,10 +113,12 @@ test_connection(){
 	_sf=/opt/var/kvas/tg.tunnel.state
 	_prev=$(cat "${_sf}" 2>/dev/null)
 	_now=$(_tg_probe_state)
+	# friendly name for Telegram: t2s21→vless, t2s41→hysteria, t2s42→AmneziaWG, Proxy*→…
+	_disp=$(printf '%s' "${ENTWARE_INTERFACE}" | sed 's/^Proxy21$/vless/; s/^Proxy41$/hysteria/; s/^Proxy42$/AmneziaWG/; s/^t2s21$/vless/; s/^t2s41$/hysteria/; s/^t2s42$/AmneziaWG/')
 	case "${_prev}|${_now}" in
-		ok\|down) tg_notify tunnel "${ENTWARE_INTERFACE}: туннель потерян" ;;
-		\|down)   tg_notify tunnel "${ENTWARE_INTERFACE}: туннель недоступен" ;;
-		down\|ok) tg_notify tunnel "${ENTWARE_INTERFACE}: туннель восстановлен" ;;
+		ok\|down) tg_notify tunnel "${_disp}: туннель потерян" ;;
+		\|down)   tg_notify tunnel "${_disp}: туннель недоступен" ;;
+		down\|ok) tg_notify tunnel "${_disp}: туннель восстановлен" ;;
 	esac
 	mkdir -p /opt/var/kvas 2>/dev/null
 	echo "${_now}" > "${_sf}" 2>/dev/null

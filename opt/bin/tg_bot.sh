@@ -105,6 +105,7 @@ KB_ZK() { tb_kb "List tags" "Add to tunnel|Remove from tunnel" "Back"; }
 KB_DIAG() { tb_kb "Kvas test|Kvas debug" "Site test|Speed test" "Restart KVAS" "Back"; }
 KB_CANCEL() { tb_kb "Cancel"; }
 KB_BACK() { tb_kb "Back"; }
+KB_UPD() { tb_kb "Yes update" "No cancel"; }
 
 tb_valid_domain() {
 	case "$1" in
@@ -133,6 +134,39 @@ tb_status() {
 Tunnel: ${_t}"
 }
 
+# friendly name for display: Proxy21→vless, Proxy41→hysteria, Proxy42→AmneziaWG, t2s*→ent
+tb_friendly() {
+	case "$1" in
+		Proxy21|t2s21|vless)   printf 'vless' ;;
+		Proxy41|t2s41|hysteria) printf 'hysteria' ;;
+		Proxy42|t2s42|awg)     printf 'AmneziaWG' ;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
+# check GitHub for newer build; 0=update available (sets _upd_new/_upd_cur), 1=up-to-date/error
+tb_check_update() {
+	_upd_cur=$(sed -n 's/^APP_RELEASE=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	_upd_new=$(curl -s --connect-timeout 5 --max-time 10 "https://api.github.com/repos/Anonimus2026/kvas/releases" 2>/dev/null \
+		| grep -o 'kvas_[A-Za-z0-9._-]*_all\.ipk' \
+		| sed -n 's/.*beta-10-\([0-9][0-9]*\)_all\.ipk/\1/p' \
+		| sort -n | tail -1)
+	[ -n "${_upd_new}" ] && [ -n "${_upd_cur}" ] || return 1
+	[ "${_upd_new}" -gt "${_upd_cur}" ] 2>/dev/null
+}
+
+# /update: сначала проверка версии, потом подтверждение
+tb_update_ask() {
+	_ch="$1"
+	if tb_check_update; then
+		tb_state_set "update_confirm"
+		tb_send "${_ch}" "New KVAS version available: ${_upd_new} (you have ${_upd_cur}).
+Update now? (1-2 min)" "$(KB_UPD)"
+	else
+		tb_send "${_ch}" "KVAS is up to date (build ${_upd_cur:-?})." "${_TB_KB}"
+	fi
+}
+
 tb_job() { # $1=chat $2=mode [$3...] — из /tmp, чтобы opkg не перезаписал скрипт
 	_jch="$1"; _jmode="$2"; shift 2
 	case "${_jmode}" in
@@ -154,7 +188,7 @@ tb_job() { # $1=chat $2=mode [$3...] — из /tmp, чтобы opkg не пер�
 	( sh "${_w}" "${_jch}" "${_jmode}" "$@" >/dev/null 2>&1; rm -f "${_w}" ) &
 }
 
-# список тоннелей: cli|ent|desc из inface_equals
+# список тоннелей: friendly name (vless/hysteria/AmneziaWG) из inface_equals
 tb_tunnel_lines() {
 	_seen=""
 	while IFS='|' read -r _cli _ent _desc _rest; do
@@ -165,7 +199,7 @@ tb_tunnel_lines() {
 			t2s*|ezcfg*) ;;
 			*) ip link show "${_ent}" 2>/dev/null | grep -q '<' || continue ;;
 		esac
-		printf '%s\n' "${_cli}"
+		printf '%s\n' "$(tb_friendly "${_cli}")"
 	done < /opt/etc/inface_equals 2>/dev/null
 }
 
@@ -316,7 +350,7 @@ tb_reply_cmd() { # $1=chat $2=cmd $3=arg
 			tb_bulk_del "${_ch}" "${_arg}"
 			tb_send "${_ch}" "Menu:" "${_TB_KB}"
 			;;
-		/update)   tb_job "${_ch}" update ;;
+		/update)   tb_update_ask "${_ch}" ;;
 		/rollback) tb_job "${_ch}" rollback ;;
 		/*) tb_send "${_ch}" "Unknown command: ${_cmd}
 ${_TB_HELP}" "${_TB_KB}" ;;
@@ -366,6 +400,24 @@ tb_on_text() { # $1=chat $2=text
 	esac
 
 	case "${_st}" in
+		update_confirm)
+			case "${_tx}" in
+				"Yes update"|Yes|yes|y|Y|Confirm)
+					tb_state_clear
+					tb_job "${_ch}" update
+					return
+					;;
+				"No cancel"|No|no|n|N|Cancel|Back)
+					tb_state_clear
+					tb_send "${_ch}" "Update cancelled." "${_TB_KB}"
+					return
+					;;
+				*)
+					tb_send "${_ch}" "Tap Yes update or No cancel." "$(KB_UPD)"
+					return
+					;;
+			esac
+			;;
 		list)
 			case "${_tx}" in
 				"Add domains")
