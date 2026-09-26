@@ -41,7 +41,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, **600** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v607)
+## 4. Текущий статус (v608)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -67,11 +67,11 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long). Следующий = **608**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). Следующий = **609**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
-- **Real tunnel probe (v607):** Web UI `tunnel_check` (manage.sh) при рабочем VLESS показывал «порт открыт, тоннель не проверен»: `socks5://` резолвил `myip.addr.tools` локально (через роутер) и падал. Фикс — как в диагностике: VLESS = `curl --interface <t2s-интерфейс>` (только при `INFACE_CLI=Proxy21/vless`), Hysteria = `socks5h://` (DNS через прокси) на порт из `hysteria/etc/conf/env.sh`; SOCKS-проба (теперь `socks5h`) — фоллбэк, порт — последняя инстанция.
+- **Real tunnel probe (v608):** Web UI `tunnel_check` (manage.sh) при рабочем VLESS показывал «порт открыт, тоннель не проверен» — пробы ходили на внешний домен, который не резолвился у пользователя (v606 `socks5://`, v607 `socks5h://` + `--interface` — не помогло). Фикс: точная реплика диагностики (`tunnel_test_site`/`tg_job.sh site`): HTTPS через туннель на **`2ip.io`** (`socks5://`, `max-time 10`) + `ifconfig.me` фоллбэк; VLESS дополнительно — быстрая проба `--interface <t2s>` (`test_vless_proxy`-стиль); порт — последняя инстанция. Порт тоннельного SOCKS берётся из `hysteria/etc/conf/env.sh`.
 
 ## 5. Сетевая конфигурация
 

@@ -492,34 +492,43 @@ main() {
 			hysteria_ok="false"
 			other_ok="false"
 			other_desc=""
-			# v607: реальная проверка тоннеля (как в диагностике), а не только SOCKS:
-			# VLESS — curl привязан к тоннельному интерфейсу (как test_vless_proxy),
-			# Hysteria — socks5h:// (DNS через прокси, как в test_connection.sh);
-			# старый socks5:// резолвил домен локально и падал при рабочем тоннеле.
+			# v608: реальная проверка тоннеля — реплика диагностики (tunnel_test_site/tg_job):
+			# HTTPS через туннель на 2ip.io (max-time 10) + ifconfig.me фоллбэк.
+			# v606/v607 использовали внешний домен, который не резолвился у пользователя,
+			# обе пробы падали → "порт открыт, тоннель не проверен" при рабочем VLESS.
 			inface_cli=$(grep "^INFACE_CLI=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
 			inface_ent=$(grep "^INFACE_ENT=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
-			# VLESS: реальная проверка — curl через тоннельный интерфейс (myip.addr.tools)
+			_tun_ip_ok() { echo "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; }
+			# 1) VLESS: проба через тоннельный интерфейс (как test_vless_proxy в CLI)
 			case "$inface_cli" in
 				*Proxy21*|*vless*)
-					if [ -n "$inface_ent" ]; then
-						_probe_ip=$(curl -4 -s --connect-timeout 4 --max-time 10 --interface "$inface_ent" "https://myip.addr.tools" 2>/dev/null)
-						echo "${_probe_ip}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && vless_ok="true"
-					fi
+					[ -n "$inface_ent" ] && {
+						_probe_ip=$(curl -4 -s --connect-timeout 3 --max-time 6 --interface "$inface_ent" "https://2ip.io" 2>/dev/null)
+						_tun_ip_ok "$_probe_ip" && vless_ok="true"
+					}
 					;;
 			esac
-			# Fallback: SOCKS-проба (socks5h — DNS через прокси)
+			# 2) VLESS: SOCKS-проба — в точности как tunnel_test_site в диагностике
 			if [ "$vless_ok" = "false" ]; then
-				_probe_ip=$(curl -4 -s --connect-timeout 3 --max-time 5 -x "socks5h://127.0.0.1:1097" "https://myip.addr.tools" 2>/dev/null)
-				echo "${_probe_ip}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && vless_ok="true"
+				_probe_ip=$(curl -s --connect-timeout 4 --max-time 10 -x "socks5://127.0.0.1:1097" "https://2ip.io" 2>/dev/null)
+				_tun_ip_ok "$_probe_ip" && vless_ok="true"
+				[ "$vless_ok" = "false" ] && {
+					_probe_ip=$(curl -s --connect-timeout 4 --max-time 6 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+					_tun_ip_ok "$_probe_ip" && vless_ok="true"
+				}
 			fi
-			# Hysteria: socks5h через локальный порт (как в test_connection.sh)
+			# 3) Hysteria: SOCKS через локальный порт (как test_connection.sh/tg_job site)
 			_hyst_port=10808
 			[ -f /opt/apps/kvas/hysteria/etc/conf/env.sh ] && {
 				_hp=$(grep '^PROXY_LOCAL_PORT_SOCKS=' /opt/apps/kvas/hysteria/etc/conf/env.sh 2>/dev/null | cut -d= -f2)
 				[ -n "${_hp}" ] && [ "${_hp}" -ge 1 ] 2>/dev/null && _hyst_port="${_hp}"
 			}
-			_probe_ip=$(curl -4 -s --connect-timeout 3 --max-time 8 -x "socks5h://127.0.0.1:${_hyst_port}" "https://ifconfig.me" 2>/dev/null)
-			echo "${_probe_ip}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && hysteria_ok="true"
+			_probe_ip=$(curl -s --connect-timeout 4 --max-time 10 -x "socks5://127.0.0.1:${_hyst_port}" "https://2ip.io" 2>/dev/null)
+			_tun_ip_ok "$_probe_ip" && hysteria_ok="true"
+			[ "$hysteria_ok" = "false" ] && {
+				_probe_ip=$(curl -s --connect-timeout 4 --max-time 6 -x "socks5://127.0.0.1:${_hyst_port}" "https://ifconfig.me" 2>/dev/null)
+				_tun_ip_ok "$_probe_ip" && hysteria_ok="true"
+			}
 			# Fallback: if real probe failed, still show port state as weak signal (process up)
 			if [ "$vless_ok" = "false" ]; then
 				command -v ss >/dev/null 2>&1 && ss -tlnp 2>/dev/null | grep -q ":1097 " && vless_ok="port"
