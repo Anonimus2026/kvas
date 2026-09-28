@@ -940,6 +940,8 @@ main() {
 			case "$_task" in
 				vless)   _lock=/tmp/kvas_vless_new.lock; _rc=/tmp/kvas_vless_new.rc; _log=/tmp/kvas_vless_new.log ;;
 				hysteria) _lock=/tmp/kvas_hyst_new.lock; _rc=/tmp/kvas_hyst_new.rc; _log=/tmp/kvas_hyst_new.log ;;
+				tags_add) _lock=/tmp/kvas_tags_add.lock; _rc=/tmp/kvas_tags_add.rc; _log=/tmp/kvas_tags_add.log ;;
+				tags_del) _lock=/tmp/kvas_tags_del.lock; _rc=/tmp/kvas_tags_del.rc; _log=/tmp/kvas_tags_del.log ;;
 				*) json_error "task required" ;;
 			esac
 			_running="false"
@@ -1582,12 +1584,24 @@ adblock_off)
 			[ "$tag" = "$QUERY_STRING" ] && tag=""
 			[ -z "$tag" ] && json_error "tag required"
 			grep -qF "[$tag]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
-			out=$($KVAS_BIN tags add-protect "$tag" 2>&1)
-			rc=$?
-			[ $rc -ne 0 ] && json_error "add failed: $out"
-			/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
-			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
-			json_ok "закваска «$tag» добавлена в тоннель"
+			# add-protect + пересборка dnsmasq долгие: httpd убивает CGI раньше
+			# браузера → «Failed to fetch». Как в vless_new/hysteria_new: фоном
+			# + лок/rc/log, браузер опрашивает vpn_progress (task=tags_add).
+			rm -f /tmp/kvas_tags_add.lock /tmp/kvas_tags_add.rc /tmp/kvas_tags_add.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_tags_add.lock
+				{
+					out=$($KVAS_BIN tags add-protect "$tag" 2>&1); rc=$?
+					echo "$out"
+					if [ $rc -eq 0 ]; then
+						/opt/apps/kvas/bin/main/dnsmasq >/dev/null 2>&1
+						kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+					fi
+					echo $rc > /tmp/kvas_tags_add.rc
+				} > /tmp/kvas_tags_add.log 2>&1
+				rm -f /tmp/kvas_tags_add.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"tags_add","msg":"Добавление закваски в тоннель..."}\n'
 			;;
 		tags_del)
 			check_token "$token"
@@ -1595,14 +1609,26 @@ adblock_off)
 			[ "$tag" = "$QUERY_STRING" ] && tag=""
 			[ -z "$tag" ] && json_error "tag required"
 			grep -qF "[$tag]" "$TAGS_FILE" 2>/dev/null || json_error "tag not found"
-			out=$($KVAS_BIN tags del-protect "$tag" 2>&1)
-			rc=$?
-			[ $rc -ne 0 ] && json_error "del failed: $out"
-			/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
-			ipset flush "${IPSET_TABLE_NAME:-KVAS_LIST}" 2>/dev/null
-			/opt/apps/kvas/bin/main/ipset &>/dev/null
-			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
-			json_ok "закваска «$tag» убрана из тоннеля"
+			# del-protect + ipset-flush/rebuild долгие (cmd_kvas_init): httpd
+			# убивает CGI раньше браузера → «Failed to fetch». Фоном + лок/rc/log,
+			# браузер опрашивает vpn_progress (task=tags_del).
+			rm -f /tmp/kvas_tags_del.lock /tmp/kvas_tags_del.rc /tmp/kvas_tags_del.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_tags_del.lock
+				{
+					out=$($KVAS_BIN tags del-protect "$tag" 2>&1); rc=$?
+					echo "$out"
+					if [ $rc -eq 0 ]; then
+						/opt/apps/kvas/bin/main/dnsmasq >/dev/null 2>&1
+						ipset flush "${IPSET_TABLE_NAME:-KVAS_LIST}" 2>/dev/null
+						/opt/apps/kvas/bin/main/ipset >/dev/null 2>&1
+						kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+					fi
+					echo $rc > /tmp/kvas_tags_del.rc
+				} > /tmp/kvas_tags_del.log 2>&1
+				rm -f /tmp/kvas_tags_del.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"tags_del","msg":"Удаление закваски из тоннеля..."}\n'
 			;;
 		tags_status)
 			check_token "$token"

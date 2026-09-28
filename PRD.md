@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-610
+**Версия:** 1.1.9_beta-10-611
 **Дата:** 28.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 610)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 611)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 609, **610** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, **611** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v610)
+## 4. Текущий статус (v611)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -67,7 +67,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). 608/609 — рабочие. Следующий = **611**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). 608/609/610 — рабочие. Следующий = **612**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -82,6 +82,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Web UI: профиль ресурсов wireproxy** — в карточке «Настройка VPN» селект «Профиль wireproxy» (eco/balanced/perf/auto) + кнопка «Применить». Новый CGI-экшен `awg_mode`: без параметра — текущий `RESOURCE_PROFILE` из `awg/etc/conf/env.sh` (`{"ok":true,"profile":...}`), с параметром — валидация (eco|balanced|perf|auto) + `kvas awg mode <p>` (обновляет env и рестартует wireproxy, если запущен), ответ `{"ok":true,"profile":...,"output":...}`. Текущий профиль подтягивается при загрузке (`showMain → awgModeLoad`), результат показывается в `vpnSetupMsg`.
   - **`kvas hysteria install` не зависает на зеркалах:** curl зеркал получил `--speed-limit 5120 --speed-time 20` — мёртвое зеркало (нет прогресса 20с) обрывается сразу, вместо ожидания полных 120с (раньше требовался ^C); stderr каждой попытки выводится (`curl: (28) ...`), после всех зеркал — итоговая подсказка (github.com недоступен с роутера → смена DNS/VPN). Версия через Location/github API при недоступности GitHub падает в рабочий дефолт `app/v2.12.2` (валидный тег апстрима HyNetworks/hysteria, проверено).
   - **`kvas hysteria test` с автодиагностикой:** при провале в вывод допечатываются последние 12 строк `/var/log/hysteria.log` + подсказка про блокировку UDP/QUIC провайдером — причина (мёртвый сервер из ссылки, кривая ссылка, заложенный UDP) видна сразу, а не «прокси не отвечает».
+- **Пакет v611 (Web UI закваски: фикс «Failed to fetch»):**
+  - **`tags_add`/`tags_del` асинхронны** (тот же паттерн adguard_on/vless_new из v609): CGI только валидирует тег и запускает `tags add-protect`/`del-protect` + пересборку dnsmasq/ipset фоном (лок/rc/log `/tmp/kvas_tags_add.*`, `/tmp/kvas_tags_del.*`), отвечает `{"pending":true,"task":...}` немедленно. Причина бага: синхронный `del-protect` (домены по одному + `cmd_kvas_init`) длился дольше таймаута httpd — соединение рвалось на стороне сервера, браузер показывал «Failed to fetch», таймаут клиента 180с (v609) не спасал.
+  - **`vpn_progress` расширен** задачами `tags_add`/`tags_del` (whitelist case в manage.sh); JS `vpnPoll` обобщён: опциональный `opts.msgEl` (по умолчанию `vpnSetupMsg`) и `opts.done` (по умолчанию `loadSystemStatus(); loadVpnInterfaces()`) — vless/hysteria-вызовы без 5-го аргумента работают как раньше.
+  - **`tagsAdd`/`tagsDel` (index.html):** при `pending` стартует `vpnPoll(..., {msgEl:'tagsMsg', done:loadTags})` с прогрессом «Удаление «X» из тоннеля… (N×4с)» в `tagsMsg`; таймаут начального запроса 60с (сейчас ответ мгновенный).
 
 ## 5. Сетевая конфигурация
 
@@ -255,6 +259,31 @@ kvas xray [core [версия]]
 | 8 | Telegram/webhook | ✅ P.8/P.8+ реализовано (v588–601) |
 | 9 | Changelog UI | нет; git relnotes достаточно |
 | 10 | Security token | не нужно |
+
+## 12.2. На будущее: IPv6 («только через туннель», opt-in)
+
+Записано 28.09.2026 по результатам консультации. Тест пользователь проведёт позже — задача не начата.
+
+**Симптом-триггер:** мобильный Telegram не работает, десктопный — работает; пользователь спрашивал, могут ли IPv6-префиксы Telegram (`2001:b28:f23c::/48`, `2001:b28:f23d::/48`, `2001:b28:f23f::/48`, `2001:67c:4e8::/48`, `2a0a:f280::/32`) идти напрямую, минуя туннель.
+
+**Факты по коду (диагноз 28.09.2026):**
+- Маршрутизация только IPv4: `ip4_*` цепочки, ipset `KVAS_LIST` = `family inet`; IPv6-трафик правилами kvas не перехватывается вовсе.
+- `ip6set_create_table()` (таблица `KVAS_LIST6`) объявлена в `etc/ndm/ndm:1371`, но нигде не вызывается; правил `ip6tables` в пакете нет.
+- Защита от утечки есть только через гашение AAAA: dnscrypt `block_ipv6=true` + `ipv6_servers=false` (libs/vpn:2955-2957), shadowsocks `dns_ipv6=false`.
+- Отключение IPv6 в setup закомментировано («с отключением IPv6 можно потерять провайдеров», main/setup:614-621); диагностика `hint__if_dns_ipv6` (libs/vpn:347).
+- `IP_FILTER` (libs/main:108) — только IPv4: префиксы/подсети IPv6 в `kvas.list` **не принимаются**, т.е. хот-фикс «добавить IPv6-префиксы телеграма в список» без общей IPv6-работы невозможен.
+
+**Рабочая гипотеза симптома (вероятнее IPv6):** телефон резолвит мимо роутера (Android Private DNS / iOS Encrypted DNS / DoH) → IP телеграма не попадают в `KVAS_LIST` → прямое соединение к 91.108.x.x/149.154.x.x блокируется провайдером → не работает; десктоп берёт DNS у роутера → через туннель. IPv6-путь возможен только если провайдер фактически даёт глобальный IPv6 (по словам пользователя — не даёт; тогда соединения по перечисленным префиксам физически не поднимаются).
+
+**TODO-диагностика (пользователь, «тест позже»):** при подключённом телефоне `ipset list KVAS_LIST | grep -E '91\.108\.|149\.154\.'` (адресов нет → DNS ушёл мимо); на телефоне выключить Private DNS/DoH; `kvas debug` → `hint__if_dns_ipv6`; `kvas tags list telegram`/`add_tags telegram` — применён ли тег `[telegram]` (секция есть в tags.list:185-200, дефолтный kvas.list Telegram не содержит).
+
+**План реализации (отдельная задача, opt-in, по умолчанию выключено):**
+1. Поддержка IPv6-записей (CIDR6) в списке: `IP_FILTER`/`get_regexp_ip_or_range` + `ipset create KVAS_LIST6 family inet6` (оживить `ip6set_create_table`).
+2. `ip6tables`: перехват DNS/соединений по IPv6 → маршрутизация через туннель (DNAT/mark → локальный socks как в IPv4) либо блок AAAA при выключенном туннеле.
+3. Переключатель в kvas.conf (`IPV6_MODE=off|tunnel`), off = текущее поведение 1:1; включение — снятие `block_ipv6` только для туннельного пути.
+4. Web UI: индикатор/переключатель; диагностика `hint__if_dns_ipv6` расширить.
+
+**Оценка рисков:** при opt-in с дефолтом off существующий IPv4-путь не затрагивается (другие цепочки), поведение без изменений; риски — конфликт с родным IPv6-менеджментом NDM и апгрейды со старыми конфигами (новый ключ с дефолтом) — управляемые. Работа по IPv6 возможна только после диагностики выше (подтвердить, что проблема реально в IPv6, а не в DoH телефона).
 
 ## 13. Авторы
 

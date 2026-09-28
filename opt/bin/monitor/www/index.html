@@ -1056,23 +1056,25 @@ function renderTags(tags) {
 function tagsAdd(tag, btn) {
   if (btn) loadingBtn(btn, true);
   api('/cgi-bin/manage.sh?action=tags_add&tag=' + encodeURIComponent(tag), function(d){
-    if (btn) loadingBtn(btn, false);
     var el = document.getElementById('tagsMsg');
     if (!el) return;
+    if (d.ok && d.pending) { vpnPoll('tags_add', 0, btn, 'Добавление «' + tag + '» в тоннель', { msgEl: 'tagsMsg', done: function(){ loadTags(); } }); return; }
+    if (btn) loadingBtn(btn, false);
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Добавлено'; loadTags(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
-  }, 180000);
+  }, 60000);
 }
 
 function tagsDel(tag, btn) {
   if (btn) loadingBtn(btn, true);
   api('/cgi-bin/manage.sh?action=tags_del&tag=' + encodeURIComponent(tag), function(d){
-    if (btn) loadingBtn(btn, false);
     var el = document.getElementById('tagsMsg');
     if (!el) return;
+    if (d.ok && d.pending) { vpnPoll('tags_del', 0, btn, 'Удаление «' + tag + '» из тоннеля', { msgEl: 'tagsMsg', done: function(){ loadTags(); } }); return; }
+    if (btn) loadingBtn(btn, false);
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Убрано из тоннеля'; loadTags(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
-  }, 180000);
+  }, 60000);
 }
 
 function normalizeDomain(d) {
@@ -2182,22 +2184,24 @@ function vlessNew(btn) {
     });
 }
 
-function vpnPoll(task, n, btn, title) {
-  var el = document.getElementById('vpnSetupMsg');
+function vpnPoll(task, n, btn, title, opts) {
+  opts = opts || {};
+  var el = document.getElementById(opts.msgEl || 'vpnSetupMsg');
+  if (!el) el = document.getElementById('vpnSetupMsg');
   if (n > 60) {
     el.className = 'msg err';
     el.textContent = 'Тайм-аут: настройка не завершилась за ~4 мин. Обновите статус позже.';
     if (btn) loadingBtn(btn, false);
-    loadSystemStatus(); loadVpnInterfaces();
+    if (opts.done) opts.done(); else { loadSystemStatus(); loadVpnInterfaces(); }
     return;
   }
   setTimeout(function(){
     api('/cgi-bin/manage.sh?action=vpn_progress&task=' + task, function(p){
-      if (!p.ok) { vpnPoll(task, n + 1, btn, title); return; }
+      if (!p.ok) { vpnPoll(task, n + 1, btn, title, opts); return; }
       if (p.running) {
         el.className = '';
         el.innerHTML = '<span style="color:#8b949e;">' + title + '... (' + (n + 1) + '×4с)</span>';
-        vpnPoll(task, n + 1, btn, title);
+        vpnPoll(task, n + 1, btn, title, opts);
         return;
       }
       if (btn) loadingBtn(btn, false);
@@ -2209,7 +2213,7 @@ function vpnPoll(task, n, btn, title) {
         el.className = 'msg err';
         el.textContent = log || (title + ' завершилась с ошибкой (код ' + (p.rc || '?') + ')');
       }
-      loadSystemStatus(); loadVpnInterfaces();
+      if (opts.done) opts.done(); else { loadSystemStatus(); loadVpnInterfaces(); }
     }, 15000);
   }, 4000);
 }
