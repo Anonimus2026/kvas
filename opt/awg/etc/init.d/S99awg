@@ -1,10 +1,102 @@
-#!/bin/sh 
-
+#!/bin/sh
 ENABLED=yes
-PROCS=/opt/apps/kvas/awg/bin/wireproxy
-ARGS=" -c /opt/etc/awg/awg.conf"
-PREARGS=""
-DESC=$PROCS
-PATH=/opt/sbin:/opt/bin:/opt/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PROG="/opt/apps/kvas/awg/bin/wireproxy"
+CONF="/opt/etc/awg/awg.conf"
+PIDFILE="/var/run/wireproxy.pid"
+LOGFILE="/var/log/wireproxy.log"
+ENV_FILE="/opt/apps/kvas/awg/etc/conf/env.sh"
 
-. /opt/etc/init.d/rc.func
+WATCHDOG_PROG="/opt/apps/kvas/awg/etc/ndm/watchdog.sh"
+WATCHDOG_PID="/var/run/wireproxy-watchdog.pid"
+ACTIVE_FLAG="/var/run/wireproxy.active"
+
+# Подключаем параметры конфигурации среды и лимиты ресурсов
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
+case "$1" in
+    start)
+        [ "$ENABLED" != "yes" ] && exit 0
+        if [ ! -f "$CONF" ]; then
+            echo "Конфигурация $CONF не найдена. Сначала выполните: kvas awg new"
+            exit 1
+        fi
+        if [ ! -x "$PROG" ]; then
+            echo "Бинарник $PROG не найден. Выполните: kvas awg install"
+            exit 1
+        fi
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+            echo "AmneziaWG (wireproxy) уже запущен."
+        else
+            GOMAXPROCS="${GOMAXPROCS:-2}" \
+            GOMEMLIMIT="${GOMEMLIMIT:-24MiB}" \
+            GOGC="${GOGC:-25}" \
+            GODEBUG="${GODEBUG:-madvdontneed=1}" \
+            $PROG -c "$CONF" > "$LOGFILE" 2>&1 &
+            echo $! > "$PIDFILE"
+            touch "$ACTIVE_FLAG"
+            sleep 1
+            if ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+                echo "AmneziaWG не запустился (упал на старте - проверьте $CONF)."
+                echo "Последние строки журнала ($LOGFILE):"
+                tail -n 10 "$LOGFILE" 2>/dev/null
+                rm -f "$PIDFILE"
+                exit 1
+            fi
+            echo "AmneziaWG (wireproxy) успешно запущен."
+        fi
+
+        # Запуск фонового мониторинга
+        if [ -x "$WATCHDOG_PROG" ]; then
+            if [ ! -f "$WATCHDOG_PID" ] || ! kill -0 "$(cat "$WATCHDOG_PID" 2>/dev/null)" 2>/dev/null; then
+                "$WATCHDOG_PROG" >/dev/null 2>&1 &
+                echo $! > "$WATCHDOG_PID"
+            fi
+        fi
+        ;;
+    stop)
+        # 1. Принудительная остановка мониторинга
+        rm -f "$ACTIVE_FLAG"
+        if [ -f "$WATCHDOG_PID" ]; then
+            kill "$(cat "$WATCHDOG_PID" 2>/dev/null)" 2>/dev/null
+            rm -f "$WATCHDOG_PID"
+        fi
+        killall watchdog.sh 2>/dev/null
+
+        # 2. Остановка основного демона wireproxy
+        if [ -f "$PIDFILE" ]; then
+            kill "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null
+            rm -f "$PIDFILE"
+            echo "AmneziaWG (wireproxy) остановлен."
+        else
+            killall wireproxy 2>/dev/null
+            echo "AmneziaWG (wireproxy) не был запущен."
+        fi
+        ;;
+    restart)
+        $0 stop && sleep 2 && $0 start
+        ;;
+    status)
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+            PID=$(cat "$PIDFILE")
+            echo "AmneziaWG (wireproxy) запущен (PID: $PID)."
+            if [ -r "/proc/$PID/status" ]; then
+                TH_CNT=$(grep -i '^Threads:' "/proc/$PID/status" 2>/dev/null | awk '{print $2}')
+                VM_RSS=$(grep -i '^VmRSS:' "/proc/$PID/status" 2>/dev/null | awk '{print $2, $3}')
+                [ -n "$TH_CNT" ] && [ -n "$VM_RSS" ] && echo "Ресурсы: ${TH_CNT} потоков, память (RSS): ${VM_RSS}."
+            fi
+            if [ -f "$WATCHDOG_PID" ] && kill -0 "$(cat "$WATCHDOG_PID" 2>/dev/null)" 2>/dev/null; then
+                echo "Мониторинг активен (PID: $(cat "$WATCHDOG_PID"))."
+            else
+                echo "Мониторинг не активен."
+            fi
+            exit 0
+        else
+            echo "AmneziaWG (wireproxy) остановлен."
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Использование: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac

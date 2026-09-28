@@ -250,7 +250,7 @@ get_active_iface() {
 
 # Проверка vless через socks5
 check_vless() {
-    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://127.0.0.1:1097" "https://myip.addr.tools" 2>/dev/null)
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://127.0.0.1:1097" "https://2ip.io" 2>/dev/null)
     if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
         test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
     fi
@@ -267,7 +267,7 @@ check_hysteria() {
     [ -f "$env_conf" ] || return 1
     . "$env_conf"
     [ -z "$PROXY_LOCAL_IP" ] || [ -z "$PROXY_LOCAL_PORT_SOCKS" ] && return 1
-    local test_ip=$(curl -s --connect-timeout 6 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://myip.addr.tools" 2>/dev/null)
+    local test_ip=$(curl -s --connect-timeout 6 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://2ip.io" 2>/dev/null)
     if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
         test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
     fi
@@ -282,7 +282,7 @@ check_hysteria() {
 check_tun_interface() {
     local ent="$1"
     [ -z "$ent" ] && return 1
-    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 --interface "$ent" "https://myip.addr.tools" 2>/dev/null)
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 --interface "$ent" "https://2ip.io" 2>/dev/null)
     if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
         test_ip=$(curl -s --connect-timeout 10 --max-time 20 --interface "$ent" "https://ifconfig.me" 2>/dev/null)
     fi

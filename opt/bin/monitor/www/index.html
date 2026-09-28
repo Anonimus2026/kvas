@@ -1050,7 +1050,7 @@ function tagsAdd(tag, btn) {
     if (!el) return;
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Добавлено'; loadTags(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
-  });
+  }, 180000);
 }
 
 function tagsDel(tag, btn) {
@@ -1059,9 +1059,9 @@ function tagsDel(tag, btn) {
     if (btn) loadingBtn(btn, false);
     var el = document.getElementById('tagsMsg');
     if (!el) return;
-    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Удалено'; loadTags(); }
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Убрано из тоннеля'; loadTags(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
-  });
+  }, 180000);
 }
 
 function normalizeDomain(d) {
@@ -1082,7 +1082,7 @@ function tagCreate(btn) {
     if (!el) return;
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Создано'; if (document.getElementById('tagName')) document.getElementById('tagName').value = ''; if (document.getElementById('tagDomains')) document.getElementById('tagDomains').value = ''; loadTags(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
-  });
+  }, 180000);
 }
 
 function tagDelete(tag, btn) {
@@ -1092,9 +1092,9 @@ function tagDelete(tag, btn) {
     if (btn) loadingBtn(btn, false);
     var el = document.getElementById('tagsMsg');
     if (!el) return;
-    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Удалено'; loadTags(); }
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Закваска удалена'; loadTags(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
-  });
+  }, 180000);
 }
 
 function tagsEdit(tag, btn) {
@@ -2149,36 +2149,82 @@ function vlessNew(btn) {
   var link = document.getElementById('vlessLink').value.trim();
   if (!link) { alert('Введите ссылку vless://...'); return; }
   var el = document.getElementById('vpnSetupMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Настройка VLESS... может занять до 60с</span>';
+  el.className = '';
+  el.innerHTML = '<span style="color:#8b949e;">Запуск настройки VLESS...</span>';
   loadingBtn(btn, true);
-  var u = '/cgi-bin/manage.sh?action=vless_new&token=' + AUTH_TOKEN + '&link=' + encodeURIComponent(link);
-  var ctrl = new AbortController();
-  var timer = setTimeout(function() { ctrl.abort(); }, 60000);
-  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
-    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
-    if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'VLESS настроен'; }
-    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+  // CGI только запускает задачу в фоне и отвечает сразу — результат опрашиваем через vpn_progress.
+  // Это исключает обрыв соединения таймаутом httpd («Failed to fetch»).
+  fetch('/cgi-bin/manage.sh?action=vless_new&token=' + AUTH_TOKEN + '&link=' + encodeURIComponent(link))
+    .then(function(r){ return r.text(); }).then(function(t){
+      try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+      if (d.ok && d.pending) { vpnPoll('vless', 0, btn, 'Настройка VLESS'); return; }
+      loadingBtn(btn, false);
+      if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'VLESS настроен'; }
+      else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+      loadSystemStatus(); loadVpnInterfaces();
+    }).catch(function(e){
+      loadingBtn(btn, false);
+      el.className = 'msg err';
+      el.textContent = (e && e.name === 'AbortError')
+        ? 'Запрос прерван — настройка может выполняться, проверьте статус через минуту'
+        : 'Ошибка сети: ' + (e && e.message);
+    });
+}
+
+function vpnPoll(task, n, btn, title) {
+  var el = document.getElementById('vpnSetupMsg');
+  if (n > 60) {
+    el.className = 'msg err';
+    el.textContent = 'Тайм-аут: настройка не завершилась за ~4 мин. Обновите статус позже.';
+    if (btn) loadingBtn(btn, false);
     loadSystemStatus(); loadVpnInterfaces();
-  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+    return;
+  }
+  setTimeout(function(){
+    api('/cgi-bin/manage.sh?action=vpn_progress&task=' + task, function(p){
+      if (!p.ok) { vpnPoll(task, n + 1, btn, title); return; }
+      if (p.running) {
+        el.className = '';
+        el.innerHTML = '<span style="color:#8b949e;">' + title + '... (' + (n + 1) + '×4с)</span>';
+        vpnPoll(task, n + 1, btn, title);
+        return;
+      }
+      if (btn) loadingBtn(btn, false);
+      var log = (p.log || '').replace(/\s+$/, '');
+      if (p.rc === '0') {
+        el.className = 'msg ok';
+        el.textContent = log || (title + ' завершена успешно');
+      } else {
+        el.className = 'msg err';
+        el.textContent = log || (title + ' завершилась с ошибкой (код ' + (p.rc || '?') + ')');
+      }
+      loadSystemStatus(); loadVpnInterfaces();
+    }, 15000);
+  }, 4000);
 }
 
 function hysteriaNew(btn) {
   var link = document.getElementById('hysteriaLink').value.trim();
   if (!link) { alert('Введите ссылку hysteria://...'); return; }
   var el = document.getElementById('vpnSetupMsg');
-  el.innerHTML = '<span style="color:#8b949e;">Настройка Hysteria... может занять до 120с</span>';
+  el.className = '';
+  el.innerHTML = '<span style="color:#8b949e;">Запуск настройки Hysteria...</span>';
   loadingBtn(btn, true);
-  var u = '/cgi-bin/manage.sh?action=hysteria_new&token=' + AUTH_TOKEN + '&link=' + encodeURIComponent(link);
-  var ctrl = new AbortController();
-  var timer = setTimeout(function() { ctrl.abort(); }, 120000);
-  fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
-    try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
-    if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'Hysteria настроена'; }
-    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
-    loadSystemStatus();
-  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+  fetch('/cgi-bin/manage.sh?action=hysteria_new&token=' + AUTH_TOKEN + '&link=' + encodeURIComponent(link))
+    .then(function(r){ return r.text(); }).then(function(t){
+      try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+      if (d.ok && d.pending) { vpnPoll('hysteria', 0, btn, 'Настройка Hysteria'); return; }
+      loadingBtn(btn, false);
+      if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'Hysteria настроена'; }
+      else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+      loadSystemStatus();
+    }).catch(function(e){
+      loadingBtn(btn, false);
+      el.className = 'msg err';
+      el.textContent = (e && e.name === 'AbortError')
+        ? 'Запрос прерван — настройка может выполняться, проверьте статус через минуту'
+        : 'Ошибка сети: ' + (e && e.message);
+    });
 }
 
 function awgNew(btn) {
@@ -2206,7 +2252,7 @@ function awgNew(btn) {
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'AmneziaWG настроен'; loadVpnInterfaces(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
     loadSystemStatus(); loadVpnInterfaces();
-  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
+  }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.className = 'msg err'; el.textContent = 'Ошибка сети: ' + e.message; });
 }
 
 function awgFileSelected(input) {

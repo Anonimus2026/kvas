@@ -150,16 +150,16 @@ vpn_check(){
 					# SOCKS-прокси (VLESS/Hysteria) — через socks5
 					local _socks_port=1097
 					case "${_inface_cli}" in *Proxy41*|*hysteria*) _socks_port=10808 ;; esac
-					local test_ip=$(curl -4 -s --max-time 10 -x "socks5://127.0.0.1:${_socks_port}" "https://myip.addr.tools" 2>/dev/null)
+					local test_ip=$(curl -4 -s --max-time 10 -x "socks5://127.0.0.1:${_socks_port}" "https://2ip.io" 2>/dev/null)
 					if [ -z "$test_ip" ] || ! echo "$test_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
-						test_ip=$(curl -4 -s --max-time 15 -x "socks5://127.0.0.1:${_socks_port}" "https://myip.addr.tools" 2>/dev/null)
+						test_ip=$(curl -4 -s --max-time 15 -x "socks5://127.0.0.1:${_socks_port}" "https://ifconfig.me" 2>/dev/null)
 					fi
 					;;
 				*)
 					# TUN-интерфейс (OpenConnect, WG, AWG) — через --interface
-					local test_ip=$(curl -4 -s --max-time 10 --interface "${_inface_ent}" "https://myip.addr.tools" 2>/dev/null)
+					local test_ip=$(curl -4 -s --max-time 10 --interface "${_inface_ent}" "https://2ip.io" 2>/dev/null)
 					if [ -z "$test_ip" ] || ! echo "$test_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
-						test_ip=$(curl -4 -s --max-time 15 --interface "${_inface_ent}" "https://myip.addr.tools" 2>/dev/null)
+						test_ip=$(curl -4 -s --max-time 15 --interface "${_inface_ent}" "https://ifconfig.me" 2>/dev/null)
 					fi
 					;;
 			esac
@@ -505,15 +505,15 @@ ipset_site_visit_check() {
 	echo -e  "${GREEN}Проверяем заполнения ipset таблицы при посещении сайта.${NOCL}"
 	print_line
 	echo "Сейчас, для проверки заполнения, откройте на компьютере браузер"
-	echo -e "Затем зайдите на сайт ${BLUE}https://myip.addr.tools${NOCL} в режиме ${RED}ИНКОГНИТО.${NOCL}"
+	echo -e "Затем зайдите на сайт ${BLUE}https://2ip.io${NOCL} в режиме ${RED}ИНКОГНИТО.${NOCL}"
 	echo -e "На странице должен появиться ${BLUE}IP Вашего VDS/VPN провайдера${NOCL}."
 	echo -n "После чего вновь перейдите сюда и нажмите на любую клавишу."
 	pause
 	
-	#  Проверяем наличие в защищенном списке myip.addr.tools
-	grep -q myip.addr.tools ${KVAS_LIST_FILE} || {
+	#  Проверяем наличие в защищенном списке 2ip.io (пробный хост проверки туннеля)
+	grep -q 2ip.io ${KVAS_LIST_FILE} || {
 		# если домена в списке нет, то добавляем его
-		cmd_add_one_host myip.addr.tools no '' &> /dev/null
+		cmd_add_one_host 2ip.io no '' &> /dev/null
 	}
 
 
@@ -584,9 +584,9 @@ cmd_state_checker() {
 #	VLESS — если xray запущен
 	if pidof xray >/dev/null 2>&1; then
 		ready "VLESS"
-		local _vless_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://127.0.0.1:1097" "https://myip.addr.tools" 2>/dev/null)
+		local _vless_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://127.0.0.1:1097" "https://2ip.io" 2>/dev/null)
 		if [ -z "$_vless_ip" ] || echo "$_vless_ip" | grep -qE "(Failed|Error|404|html)"; then
-			_vless_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://127.0.0.1:1097" "https://myip.addr.tools" 2>/dev/null)
+			_vless_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
 		fi
 		if [ -n "$_vless_ip" ] && echo "$_vless_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
 			when_ok "РАБОТАЕТ (IP: $_vless_ip)"
@@ -609,9 +609,9 @@ cmd_state_checker() {
 			local env_conf="/opt/apps/kvas/hysteria/etc/conf/env.sh"
 			. "$env_conf"
 			if [ -n "$PROXY_LOCAL_IP" ] && [ -n "$PROXY_LOCAL_PORT_SOCKS" ]; then
-				local _hyst_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://myip.addr.tools" 2>/dev/null)
+				local _hyst_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://2ip.io" 2>/dev/null)
 				if [ -z "$_hyst_ip" ] || echo "$_hyst_ip" | grep -qE "(Failed|Error|404|html)"; then
-					_hyst_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://myip.addr.tools" 2>/dev/null)
+					_hyst_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
 				fi
 				if [ -n "$_hyst_ip" ] && echo "$_hyst_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
 					when_ok "РАБОТАЕТ (IP: $_hyst_ip)"
@@ -631,9 +631,9 @@ cmd_state_checker() {
 		. /opt/apps/kvas/awg/etc/conf/env.sh 2>/dev/null
 		ready "AmneziaWG"
 		if [ -f /var/run/wireproxy.pid ] && kill -0 "$(cat /var/run/wireproxy.pid 2>/dev/null)" 2>/dev/null; then
-			local _awg_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://127.0.0.1:10818" "https://myip.addr.tools" 2>/dev/null)
+			local _awg_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 -x "socks5://127.0.0.1:10818" "https://2ip.io" 2>/dev/null)
 			if [ -z "$_awg_ip" ] || echo "$_awg_ip" | grep -qE "(Failed|Error|404|html)"; then
-				_awg_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://127.0.0.1:10818" "https://myip.addr.tools" 2>/dev/null)
+				_awg_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 -x "socks5://127.0.0.1:10818" "https://ifconfig.me" 2>/dev/null)
 			fi
 			if [ -n "$_awg_ip" ] && echo "$_awg_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
 				when_ok "РАБОТАЕТ (IP: $_awg_ip)"
@@ -652,9 +652,9 @@ cmd_state_checker() {
 		local _tdesc_clean=$(echo "$_tdesc" | sed 's/^"//; s/"$//')
 		ready "$_tdesc_clean ($_tent)"
 		if /opt/sbin/ip link show "$_tent" 2>/dev/null | grep -q '<.*UP'; then
-			local _tun_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 --interface "$_tent" "https://myip.addr.tools" 2>/dev/null)
+			local _tun_ip=$(curl -4 -s --connect-timeout 5 --max-time 12 --interface "$_tent" "https://2ip.io" 2>/dev/null)
 			if [ -z "$_tun_ip" ] || echo "$_tun_ip" | grep -qE "(Failed|Error|404|html)"; then
-				_tun_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 --interface "$_tent" "https://myip.addr.tools" 2>/dev/null)
+				_tun_ip=$(curl -4 -s --connect-timeout 10 --max-time 15 --interface "$_tent" "https://ifconfig.me" 2>/dev/null)
 			fi
 			if [ -n "$_tun_ip" ] && echo "$_tun_ip" | grep -qE "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$|[0-9a-fA-F]*:[0-9a-fA-F:]+)"; then
 				when_ok "РАБОТАЕТ (IP: $_tun_ip)"

@@ -890,16 +890,46 @@ main() {
 			# URL-decode
 			_link=$(echo "$_link" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_link" ] && json_error "link required"
-			out=$(printf '%s\nq\n' "$_link" | $KVAS_BIN vless new 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			printf '{"ok":true,"output":"%s"}\n' "$out"
+			# Фоновый запуск: CGI отвечает сразу, результат опрашивается через vpn_progress.
+			# Иначе CGI-таймаут httpd обрывает соединение («Failed to fetch» в браузере).
+			rm -f /tmp/kvas_vless_new.lock /tmp/kvas_vless_new.rc /tmp/kvas_vless_new.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_vless_new.lock
+				{ printf '%s\nq\n' "$_link" | $KVAS_BIN vless new; echo $? > /tmp/kvas_vless_new.rc; } > /tmp/kvas_vless_new.log 2>&1
+				rm -f /tmp/kvas_vless_new.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"msg":"Запуск настройки VLESS..."}\n'
 			;;
 		hysteria_new)
 			check_token "$token"
 			_link=$(echo "$QUERY_STRING" | sed 's/.*link=//')
 			_link=$(echo "$_link" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_link" ] && json_error "link required"
-			out=$(printf '%s\n' "$_link" | $KVAS_BIN hysteria new 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			printf '{"ok":true,"output":"%s"}\n' "$out"
+			# Фоновый запуск (см. vless_new) — результат опрашивается через vpn_progress
+			rm -f /tmp/kvas_hyst_new.lock /tmp/kvas_hyst_new.rc /tmp/kvas_hyst_new.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_hyst_new.lock
+				{ printf '%s\n' "$_link" | $KVAS_BIN hysteria new; echo $? > /tmp/kvas_hyst_new.rc; } > /tmp/kvas_hyst_new.log 2>&1
+				rm -f /tmp/kvas_hyst_new.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"msg":"Запуск настройки Hysteria..."}\n'
+			;;
+		vpn_progress)
+			check_token "$token"
+			_task=$(echo "$QUERY_STRING" | sed 's/.*task=//; s/&.*//')
+			case "$_task" in
+				vless)   _lock=/tmp/kvas_vless_new.lock; _rc=/tmp/kvas_vless_new.rc; _log=/tmp/kvas_vless_new.log ;;
+				hysteria) _lock=/tmp/kvas_hyst_new.lock; _rc=/tmp/kvas_hyst_new.rc; _log=/tmp/kvas_hyst_new.log ;;
+				*) json_error "task required" ;;
+			esac
+			_running="false"
+			[ -f "$_lock" ] && _running="true"
+			_rc_val=""
+			[ "$_running" = "false" ] && [ -f "$_rc" ] && _rc_val=$(tr -dc '0-9' < "$_rc" 2>/dev/null)
+			_out=""
+			# Сначала обрезаем лог (до 7500 байт), потом экранируем — иначе JSON ломается
+			[ -f "$_log" ] && _out=$(head -c 7500 "$_log" 2>/dev/null | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			printf '{"ok":true,"running":%s,"rc":"%s","log":"%s"}\n' "$_running" "$_rc_val" "$_out"
 			;;
 		tunnel_start)
 			check_token "$token"
@@ -1535,9 +1565,9 @@ adblock_off)
 			out=$($KVAS_BIN tags add-protect "$tag" 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "add failed: $out"
-			opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
 			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
-			json_ok "added $tag"
+			json_ok "закваска «$tag» добавлена в тоннель"
 			;;
 		tags_del)
 			check_token "$token"
@@ -1548,11 +1578,11 @@ adblock_off)
 			out=$($KVAS_BIN tags del-protect "$tag" 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "del failed: $out"
-			opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
 			ipset flush "${IPSET_TABLE_NAME:-KVAS_LIST}" 2>/dev/null
-			opt/apps/kvas/bin/main/ipset &>/dev/null
+			/opt/apps/kvas/bin/main/ipset &>/dev/null
 			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
-			json_ok "removed $tag"
+			json_ok "закваска «$tag» убрана из тоннеля"
 			;;
 		tags_status)
 			check_token "$token"
@@ -1584,9 +1614,9 @@ adblock_off)
 			out=$($KVAS_BIN tags create "$name" $domains 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "create failed: $out"
-			opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
 			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
-			json_ok "created $name"
+			json_ok "закваска «$name» создана"
 			;;
 		tags_delete)
 			check_token "$token"
@@ -1597,7 +1627,7 @@ adblock_off)
 			out=$($KVAS_BIN tags delete "$tag" 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "delete failed: $out"
-			json_ok "удалена закваска $tag"
+			json_ok "закваска «$tag» удалена"
 			;;
 		tags_edit_save)
 			check_token "$token"
@@ -1611,7 +1641,7 @@ adblock_off)
 			out=$($KVAS_BIN tags edit-save "$tag" $domains 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "edit failed: $out"
-			json_ok "закваска $tag обновлена"
+			json_ok "закваска «$tag» обновлена"
 			;;
 		tags_download)
 			check_token "$token"

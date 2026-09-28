@@ -38,6 +38,7 @@ TEST_SCRIPT="${APP_BASE}/etc/ndm/test_connection.sh"
 FINAL_CONFIG_DIR="/opt/etc/hysteria"
 FINAL_CONFIG_PATH="${FINAL_CONFIG_DIR}/config.yaml"
 SYSTEM_INIT_PATH="/opt/etc/init.d/S99hysteria"
+HYSTERIA_LOGFILE="/var/log/hysteria.log"
 
 cmd_hysteria_status() {
     echo "=== Менеджер Kvas-Hysteria ==="
@@ -66,7 +67,9 @@ cmd_hysteria_status() {
     echo "Использование:"
     echo "  kvas hysteria install          - Скачать/обновить бинарный файл Hysteria"
     echo "  kvas hysteria new              - Настройка нового подключения"
+    echo -e "  kvas hysteria add ${BLUE}\"hysteria2://...\"${NC} - Импорт ссылки (без аргумента — чтение из stdin)"
     echo "  kvas hysteria test             - Экспресс-тест проксирования туннеля"
+    echo "  kvas hysteria log              - Просмотр журнала работы демона"
     echo "  kvas hysteria start | stop | restart"
 }
 
@@ -144,14 +147,23 @@ cmd_hysteria_install() {
     echo -e "  Определена: ${BLUE}$BINARY_ARCH${NC}"
 
     echo "Запрос актуальной версии Hysteria с GitHub..."
-    LATEST_VERSION=$(curl -s --max-time 10 https://api.github.com/repos/apernet/hysteria/releases/latest 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null)
-    # валидация: тег должен выглядеть как версия (v2.x или app/v2.x), иначе — hardcoded fallback
+    # 1) Редирект github.com/.../releases/latest — работает даже если api.github.com недоступен
+    LATEST_VERSION=$(curl -sI --max-time 10 https://github.com/apernet/hysteria/releases/latest 2>/dev/null | grep -i '^location:' | head -1 | sed -E 's|.*/tag/([^[:space:]]+).*|\1|')
+    # валидация: тег должен выглядеть как версия (v2.x или app/v2.x)
     case "$LATEST_VERSION" in
         v[0-9]*|app/v[0-9]*) : ;;
         *) LATEST_VERSION="" ;;
     esac
+    # 2) Fallback: GitHub API (нужен jq)
     if [ -z "$LATEST_VERSION" ]; then
-        echo -e "${YELLOW}Предупреждение: не удалось получить версию через API, используем app/v2.12.2${NC}"
+        LATEST_VERSION=$(curl -s --max-time 10 https://api.github.com/repos/apernet/hysteria/releases/latest 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null)
+        case "$LATEST_VERSION" in
+            v[0-9]*|app/v[0-9]*) : ;;
+            *) LATEST_VERSION="" ;;
+        esac
+    fi
+    if [ -z "$LATEST_VERSION" ]; then
+        echo -e "${YELLOW}Предупреждение: не удалось получить версию через GitHub, используем app/v2.12.2${NC}"
         LATEST_VERSION="app/v2.12.2"
     fi
 
@@ -241,10 +253,29 @@ urldecode() {
 
 cmd_hysteria_add() {
     URL="$1"
+
+    # Если аргумент не передан или передан '-' — читаем из stdin
+    # Это полностью обходит 512-байтный лимит интерактивной строки ash
+    if [ -z "$URL" ] || [ "$URL" = "-" ]; then
+        echo -e "${YELLOW}Вставьте ссылку hysteria2:// и нажмите Enter:${NC}"
+        IFS= read -r URL
+    fi
+
     if [ -z "$URL" ]; then
         echo -e "${RED}Ошибка: Не указана ссылка!${NC}"
         exit 1
     fi
+
+    # Если передан путь к локальному файлу со ссылкой
+    if [ -f "$URL" ]; then
+        echo "Чтение из файла $URL..."
+        IFS= read -r URL < "$URL"
+    fi
+
+    [ ! -f "$TEMPLATE_CONFIG" ] && {
+        echo -e "${RED}Ошибка: Шаблон конфигурации не найден: $TEMPLATE_CONFIG${NC}"
+        exit 1
+    }
 
     echo "Разбираем конфигурацию пира..."
     URL=$(echo "$URL" | tr -d '[:space:]')
@@ -316,17 +347,14 @@ obfs:
 EOC
     fi
 
-    # Добавляем настройки прокси
-    cat >> "$FINAL_CONFIG_PATH" << EOC
-
-socks5:
-  listen: ${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}
-http:
-  listen: ${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_HTTP}
-bandwidth:
-  up: 50 mbps
-  down: 100 mbps
-EOC
+    # Дописываем хвостовую часть конфигурации из шаблона
+    # (socks5/http/quic/bandwidth/fast_open/lazy), подставляя @ПЛЕЙСХОЛДЕРЫ
+    # значениями переменных среды — шаблон единый источник тюнимых настроек
+    echo "" >> "$FINAL_CONFIG_PATH"
+    sed -e "s|@PROXY_LOCAL_IP|${PROXY_LOCAL_IP}|g" \
+        -e "s|@PROXY_LOCAL_PORT_SOCKS|${PROXY_LOCAL_PORT_SOCKS}|g" \
+        -e "s|@PROXY_LOCAL_PORT_HTTP|${PROXY_LOCAL_PORT_HTTP}|g" \
+        "$TEMPLATE_CONFIG" >> "$FINAL_CONFIG_PATH"
 
     echo -e "${GREEN}Конфигурация успешно сгенерирована: $FINAL_CONFIG_PATH${NC}"
 
@@ -399,6 +427,15 @@ cmd_hysteria_restart() {
         cmd_hysteria_test
     else
         echo -e "${RED}Ошибка: Конфигурация не инициализирована. Сначала вызовите add${NC}"
+    fi
+}
+
+cmd_hysteria_log() {
+    if [ -f "$HYSTERIA_LOGFILE" ]; then
+        echo "=== Журнал $HYSTERIA_LOGFILE (последние 40 строк) ==="
+        tail -n 40 "$HYSTERIA_LOGFILE"
+    else
+        echo "Журнал $HYSTERIA_LOGFILE пуст или не создан."
     fi
 }
 

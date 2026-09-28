@@ -31,7 +31,7 @@ PROXY_VLESS_DESC="Kvas-proxy-vless"
 PROXY_LOCAL_IP="127.0.0.1"
 PROXY_VLESS_PORT=1097
 PROXY_VLESS_PROTO=socks5
-DOMAIN_FOR_CHECK="myip.addr.tools"
+DOMAIN_FOR_CHECK="2ip.io"
 
 
 has_package_installed() {
@@ -944,4 +944,4 @@ with zipfile.ZipFile('$_tmp') as z:
 # system_packages_action install proxy opkg-kmod-netfilter opkg-kmod-netfilter-addons
 # cmd_install_vless_proxy
 # ifs=$(ip a | grep global | grep t2s_ | sed 's/.*\(t2s_.*\)/\1/g')
-# curl -v -i ${ifs} myip.addr.tools && echo
+# curl -v -i ${ifs} 2ip.io && echo

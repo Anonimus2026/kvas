@@ -1,7 +1,7 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-606
-**Дата:** 24.09.2026
+**Версия:** 1.1.9_beta-10-609
+**Дата:** 28.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
 **Оригинал:** https://github.com/qzeleza/kvas
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 600)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 609)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, **600** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, **609** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v608)
+## 4. Текущий статус (v609)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -67,11 +67,17 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). Следующий = **609**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). 608 — рабочий. Следующий = **610**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
 - **Real tunnel probe (v608):** Web UI `tunnel_check` (manage.sh) при рабочем VLESS показывал «порт открыт, тоннель не проверен» — пробы ходили на внешний домен, который не резолвился у пользователя (v606 `socks5://`, v607 `socks5h://` + `--interface` — не помогло). Фикс: точная реплика диагностики (`tunnel_test_site`/`tg_job.sh site`): HTTPS через туннель на **`2ip.io`** (`socks5://`, `max-time 10`) + `ifconfig.me` фоллбэк; VLESS дополнительно — быстрая проба `--interface <t2s>` (`test_vless_proxy`-стиль); порт — последняя инстанция. Порт тоннельного SOCKS берётся из `hysteria/etc/conf/env.sh`.
+- **Пакет v609 (порт jobgomel/kvas-hysteria + jobgomel/kvas-awg, все изменения; Web UI фиксы):**
+  - **Hysteria:** версия GitHub через `Location`-заголовок `github.com/.../releases/latest` (fallback api.github.com → `app/v2.12.2`); новая команда `kvas hysteria add "hysteria2://..."` (без аргумента — чтение из stdin, обход 512-байт лимита ash; поддержка файла) — раньше install писал подсказку `kvas hysteria add`, но команды не существовала; `kvas hysteria log`; генерация конфига из шаблона `etc/conf/config.yaml` (теперь с `quic.init_to/keepalive_period`, `fast_open`, `lazy`); S99hysteria — лог `/var/log/hysteria.log` + вывод последних строк при падении + `status` + старт/стоп watchdog; **watchdog.sh** (30с: падение → рестарт, WAN-пинг, двойная socks5h-проба → рестарт); `check_space.sh` — чтение подтверждения из `/dev/tty` (EOF закрытого пайпа = «Установка отменена» — главный кандидат бага «бинарник не скачался»); `test_connection.sh` → 2ip.io/ifconfig.me.
+  - **AWG:** профили ресурсов `kvas awg mode [eco|balanced|perf|auto]` (GOMAXPROCS/GOMEMLIMIT/GOGC/GODEBUG в `env.sh`, автоопределение по RAM/CPU, автоперезапуск); `kvas awg log`; B64-паддинг `=` до кратности 4 (генераторы опускают); подсказка по закрытому формату Amnezia (`AA…` zlib/JSON — экспорт .conf из приложения); S99awg переписан (env-лимиты, лог `/var/log/wireproxy.log`, watchdog, `status` с потоками/RSS, вывод лога при падении); **новые** `watchdog.sh`, `check_space.sh` (tty-fix), `conf/template.conf`; status показывает профиль и параметры обфускации; `test_connection.sh` → socks5h + 2ip.io/ifconfig.me.
+  - **myip.addr.tools → 2ip.io** повсеместно: `libs/check` (16), `libs/failover` (3), `libs/vless` (`DOMAIN_FOR_CHECK` + test_vless_proxy), `libs/awg`, оба `test_connection.sh`, дефолтные `kvas.list`/`tags.list` и авто-добавление пробного хоста; вторая проба везде `ifconfig.me`.
+  - **Web UI vless/hysteria «Failed to fetch»:** `vless_new`/`hysteria_new` теперь только запускают фоновый процесс (паттерн adguard_on: lock/rc/log в /tmp) и возвращают `{"pending":true}`; новый action **`vpn_progress`** (running/rc/log, лог режется до 7500 байт ДО экранирования); JS `vpnPoll` опрашивает каждые 4с до 4 мин и показывает полный вывод (включая «Распарсенные параметры VLESS») зелёным/красным по коду выхода. Причина: синхронный CGI висел в пайпе `kvas vless new | head` (фоновые процессы держали fd) либо упирался в таймаут httpd → браузер рвал соединение. `.catch()` теперь ставит `className='msg err'` (раньше тост оставался скрытым `display:none`).
+  - **Web UI закваски:** относительные пути `opt/apps/kvas/bin/main/{dnsmasq,ipset}` → абсолютные `/opt/...` (не выполнялись); тосты по-русски («закваска «X» убрана из тоннеля» и т.п.) вместо `removed X`; таймаут `api()` для add/del/create/delete — 180с (del-protect с ребилдом ipset переставал укладываться в 60с).
 
 ## 5. Сетевая конфигурация
 
@@ -105,8 +111,8 @@ opt/apps/kvas/
 
 ```bash
 kvas setup | ver | test | help | init
-kvas vless new | hysteria new | hysteria status|test
-kvas awg [install|new|test|start|stop|uninstall]
+kvas vless new | hysteria new|add|status|test|log
+kvas awg [install|new|add|test|log|mode [eco|balanced|perf|auto]|start|stop|uninstall]
 kvas failover on|off|status|test|log [N]|primary|secondary|tertiary
 kvas vpn set <vless|hysteria|описание>
 kvas route [add|del full|list|exclude <IP>|refresh]

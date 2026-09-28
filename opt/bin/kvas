@@ -424,7 +424,9 @@ case "${1}" in
 			install)	cmd_hysteria_install ;;
 			uninstall)	cmd_hysteria_uninstall ;;
 			new)		cmd_hysteria_new ;;
+			add)		cmd_hysteria_add "${3}" ;;
 			test)		cmd_hysteria_test; _h_rc=$?; [ "${_h_rc}" -ne 0 ] 2>/dev/null && tg_notify test_err "hysteria test: код ${_h_rc}" ;;
+			log)		cmd_hysteria_log ;;
 			start)		cmd_hysteria_start ;;
 			stop)		cmd_hysteria_stop ;;
 			restart)	cmd_hysteria_restart ;;
@@ -434,10 +436,12 @@ case "${1}" in
 
 	awg)
 		case "${2}" in
-			new)		cmd_awg_new "${3}" ;;
+			new|add)	cmd_awg_new "${3}" ;;
 			install)	cmd_awg_install ;;
 			uninstall)	cmd_awg_uninstall ;;
 			test)		cmd_awg_test; _a_rc=$?; [ "${_a_rc}" -ne 0 ] 2>/dev/null && tg_notify test_err "awg test: код ${_a_rc}" ;;
+			mode|profile)	cmd_awg_mode "${3}" ;;
+			log)		cmd_awg_log ;;
 			start)		cmd_awg_start ;;
 			stop)		cmd_awg_stop ;;
 			restart)	cmd_awg_restart ;;
