@@ -95,13 +95,15 @@ _download_hysteria_binary() {
         https://gh-proxy.com/https://github.com/apernet/hysteria/releases/download/${version}/hysteria-linux-${arch}${suffix}
     "
 
+    local _err=""
     for url in $URLS; do
         url=$(echo "$url" | tr -d '[:space:]')
         [ -z "$url" ] && continue
 
         echo -e "  Пробуем: ${BLUE}$(echo "$url" | cut -d'/' -f3)${NC}"
         rm -f "$output"
-        curl -L --connect-timeout 10 --max-time 120 -o "$output" "$url" 2>/dev/null
+        # speed-limit/speed-time: обрыв мёртвого зеркала (нет прогресса 20с при <5КБ/с)
+        _err=$(curl -L --connect-timeout 10 --max-time 120 --speed-limit 5120 --speed-time 20 -o "$output" "$url" 2>&1 1>/dev/null)
 
         if [ -s "$output" ]; then
             chmod +x "$output"
@@ -109,10 +111,14 @@ _download_hysteria_binary() {
             if "$output" version >/dev/null 2>&1; then
                 return 0
             fi
+            _err="файл скачан, но не запускается (не бинарник для этой архитектуры?)"
         fi
+        [ -n "$_err" ] && echo -e "    ${YELLOW}$(echo "$_err" | tail -1)${NC}"
         rm -f "$output"
     done
 
+    echo -e "  ${RED}Все зеркала не смогли отдать бинарник.${NC}"
+    echo -e "  ${YELLOW}Проверьте доступ в интернет и доступность github.com с роутера (обычно помогает смена DNS или VPN).${NC}"
     return 1
 }
 

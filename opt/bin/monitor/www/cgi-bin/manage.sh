@@ -749,6 +749,26 @@ main() {
 			[ -f /var/run/wireproxy.pid ] && kill -0 "$(cat /var/run/wireproxy.pid 2>/dev/null)" 2>/dev/null && _running="true"
 			printf '{"ok":true,"installed":"%s","running":"%s"}\n' "$_installed" "$_running"
 			;;
+		awg_mode)
+			check_token "$token"
+			_profile=$(echo "$QUERY_STRING" | sed 's/.*profile=//; s/&.*//')
+			_envf=/opt/apps/kvas/awg/etc/conf/env.sh
+			if [ -z "$_profile" ]; then
+				_cur=$(sed -n 's/^RESOURCE_PROFILE=//p' "$_envf" 2>/dev/null | head -1 | tr -d '"')
+				[ -z "$_cur" ] && _cur="balanced"
+				printf '{"ok":true,"profile":"%s"}\n' "$_cur"
+			else
+				case "$_profile" in
+					eco|balanced|perf|auto) ;;
+					*) json_error "unknown profile: ${_profile}" ;;
+				esac
+				out=$($KVAS_BIN awg mode "$_profile" 2>&1 | head -40 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+				_cur=$(sed -n 's/^RESOURCE_PROFILE=//p' "$_envf" 2>/dev/null | head -1 | tr -d '"')
+				[ -z "$_cur" ] && _cur="$_profile"
+				[ -z "$out" ] && out="Профиль установлен: ${_cur}\\n"
+				printf '{"ok":true,"profile":"%s","output":"%s"}\n' "$_cur" "$out"
+			fi
+			;;
 		awg_config)
 			check_token "$token"
 			if [ -f /opt/etc/awg/awg.conf ]; then

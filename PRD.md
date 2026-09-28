@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-609
+**Версия:** 1.1.9_beta-10-610
 **Дата:** 28.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 609)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 610)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, **609** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 609, **610** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v609)
+## 4. Текущий статус (v610)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -67,7 +67,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). 608 — рабочий. Следующий = **610**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). 608/609 — рабочие. Следующий = **611**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -78,6 +78,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **myip.addr.tools → 2ip.io** повсеместно: `libs/check` (16), `libs/failover` (3), `libs/vless` (`DOMAIN_FOR_CHECK` + test_vless_proxy), `libs/awg`, оба `test_connection.sh`, дефолтные `kvas.list`/`tags.list` и авто-добавление пробного хоста; вторая проба везде `ifconfig.me`.
   - **Web UI vless/hysteria «Failed to fetch»:** `vless_new`/`hysteria_new` теперь только запускают фоновый процесс (паттерн adguard_on: lock/rc/log в /tmp) и возвращают `{"pending":true}`; новый action **`vpn_progress`** (running/rc/log, лог режется до 7500 байт ДО экранирования); JS `vpnPoll` опрашивает каждые 4с до 4 мин и показывает полный вывод (включая «Распарсенные параметры VLESS») зелёным/красным по коду выхода. Причина: синхронный CGI висел в пайпе `kvas vless new | head` (фоновые процессы держали fd) либо упирался в таймаут httpd → браузер рвал соединение. `.catch()` теперь ставит `className='msg err'` (раньше тост оставался скрытым `display:none`).
   - **Web UI закваски:** относительные пути `opt/apps/kvas/bin/main/{dnsmasq,ipset}` → абсолютные `/opt/...` (не выполнялись); тосты по-русски («закваска «X» убрана из тоннеля» и т.п.) вместо `removed X`; таймаут `api()` для add/del/create/delete — 180с (del-protect с ребилдом ipset переставал укладываться в 60с).
+- **Пакет v610 (Web UI профиль wireproxy + устойчивость установки hysteria):**
+  - **Web UI: профиль ресурсов wireproxy** — в карточке «Настройка VPN» селект «Профиль wireproxy» (eco/balanced/perf/auto) + кнопка «Применить». Новый CGI-экшен `awg_mode`: без параметра — текущий `RESOURCE_PROFILE` из `awg/etc/conf/env.sh` (`{"ok":true,"profile":...}`), с параметром — валидация (eco|balanced|perf|auto) + `kvas awg mode <p>` (обновляет env и рестартует wireproxy, если запущен), ответ `{"ok":true,"profile":...,"output":...}`. Текущий профиль подтягивается при загрузке (`showMain → awgModeLoad`), результат показывается в `vpnSetupMsg`.
+  - **`kvas hysteria install` не зависает на зеркалах:** curl зеркал получил `--speed-limit 5120 --speed-time 20` — мёртвое зеркало (нет прогресса 20с) обрывается сразу, вместо ожидания полных 120с (раньше требовался ^C); stderr каждой попытки выводится (`curl: (28) ...`), после всех зеркал — итоговая подсказка (github.com недоступен с роутера → смена DNS/VPN). Версия через Location/github API при недоступности GitHub падает в рабочий дефолт `app/v2.12.2` (валидный тег апстрима HyNetworks/hysteria, проверено).
+  - **`kvas hysteria test` с автодиагностикой:** при провале в вывод допечатываются последние 12 строк `/var/log/hysteria.log` + подсказка про блокировку UDP/QUIC провайдером — причина (мёртвый сервер из ссылки, кривая ссылка, заложенный UDP) видна сразу, а не «прокси не отвечает».
 
 ## 5. Сетевая конфигурация
 

@@ -340,6 +340,16 @@ window.addEventListener('error', function(e){
         <label for="awgFileInput" class="btn btn-sm" style="white-space:nowrap;cursor:pointer;">Обзор</label>
         <button class="btn btn-sm" id="awgToggleBtn" onclick="awgToggle(this)" style="white-space:nowrap;">Стоп</button>
       </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0;">
+        <span style="font-size:12px;color:#8b949e;white-space:nowrap;">Профиль wireproxy:</span>
+        <select id="awgModeSel" style="flex:1 1 110px;min-width:90px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;box-sizing:border-box;">
+          <option value="eco">eco — экономичный</option>
+          <option value="balanced" selected>balanced — сбалансированный</option>
+          <option value="perf">perf — производительный</option>
+          <option value="auto">auto — автоопределение</option>
+        </select>
+        <button class="btn btn-sm" onclick="awgModeApply(this)" style="white-space:nowrap;">Применить</button>
+      </div>
     </div>
     <div id="vpnSetupMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:300px;overflow-y:auto;margin-top:6px;"></div>
   </div>
@@ -723,6 +733,7 @@ function showMain() {
   loadAdguardStatus();
   loadXrayStatus();
   updateAwgToggleBtn();
+  awgModeLoad();
   loadFailoverStatus();
   loadTunnelTestInterfaces();
   loadTags();
@@ -2290,6 +2301,36 @@ function awgViewConfig(btn) {
       el.textContent = 'Конфигурация не найдена. Настройте: kvas awg new';
     }
   });
+}
+
+/* ========== AWG RESOURCE PROFILE ========== */
+function awgModeSetSel(p) {
+  var s = document.getElementById('awgModeSel');
+  if (!s || !p) return;
+  var found = false;
+  for (var i = 0; i < s.options.length; i++) { if (s.options[i].value === p) { found = true; break; } }
+  if (!found) { var o = document.createElement('option'); o.value = p; o.textContent = p; s.appendChild(o); }
+  s.value = p;
+}
+
+function awgModeLoad() {
+  api('/cgi-bin/manage.sh?action=awg_mode', function(d) {
+    if (d && d.profile) awgModeSetSel(d.profile);
+  });
+}
+
+function awgModeApply(btn) {
+  var p = document.getElementById('awgModeSel').value;
+  var el = document.getElementById('vpnSetupMsg');
+  el.className = 'msg';
+  el.innerHTML = '<span style="color:#8b949e;">Установка профиля ' + p + '...</span>';
+  apiBtn('/cgi-bin/manage.sh?action=awg_mode&profile=' + encodeURIComponent(p), btn, function(d) {
+    if (d.error) { el.className = 'msg err'; el.textContent = d.error; return; }
+    el.className = d.ok ? 'msg ok' : 'msg err';
+    el.textContent = d.output || (d.ok ? 'Профиль установлен: ' + (d.profile || p) : 'Ошибка');
+    if (d.profile) awgModeSetSel(d.profile);
+    loadSystemStatus();
+  }, 45000);
 }
 
 /* ========== XRAY CORE ========== */

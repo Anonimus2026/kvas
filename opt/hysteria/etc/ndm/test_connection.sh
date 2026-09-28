@@ -20,9 +20,12 @@ if [ -n "$IP_RESPONSE" ] && ! echo "$IP_RESPONSE" | grep -q -E "(Failed|Error|40
     exit 0
 else
     echo -e "${RED}Ошибка теста! Прокси-сервер не отвечает или соединение разорвано.${NC}"
+    echo -e "${YELLOW}Последние строки журнала /var/log/hysteria.log:${NC}"
+    tail -n 12 /var/log/hysteria.log 2>/dev/null | sed 's/^/  | /'
     echo -e "${YELLOW}Рекомендации:${NC}"
     echo " 1. Проверьте статус службы: kvas hysteria status"
     echo " 2. Убедитесь, что параметры в ссылке (add) были верными."
     echo " 3. Проверьте журнал: kvas hysteria log"
+    echo " 4. Если в журнале ошибок нет — сервер из ссылки недоступен из вашей сети (UDP-порт QUIC блокируется провайдером)."
     exit 1
 fi
