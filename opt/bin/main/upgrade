@@ -337,6 +337,12 @@ ready 'Загружаем пакет...'
 }
 
 #--------------------------------------------------------------------------------------------------------------
+# Hysteria: фиксируем состояние ДО обновления — kvas uninstall (п.1) останавливает службу,
+# после установки поднимем её заново, только если она была запущена
+_upg_hyst_running=0
+[ -f /var/run/hysteria.pid ] && kill -0 "$(cat /var/run/hysteria.pid 2>/dev/null)" 2>/dev/null && _upg_hyst_running=1
+
+#--------------------------------------------------------------------------------------------------------------
 # обновление: opkg-reinstall поверх (конфиги /opt/etc сохраняются — без потери настроек)
 if [ -f /opt/bin/kvas ] && kvas 2>/dev/null | grep -q "Настройка пакета не завершена" ; then
 	ready "Удаляем незавершенную ранее установку пакета ..."
@@ -386,12 +392,19 @@ else
 			[ -f /opt/etc/init.d/S99adguardhome ] && /opt/etc/init.d/S99adguardhome start >/dev/null 2>&1
 		}
 	fi
+	# Hysteria: восстанавливаем службу, если она была запущена до обновления
+	if [ "${_upg_hyst_running}" = "1" ] && [ -f /opt/etc/init.d/S99hysteria ]; then
+		[ -f /var/run/hysteria.pid ] && kill -0 "$(cat /var/run/hysteria.pid 2>/dev/null)" 2>/dev/null || {
+			ready "Восстанавливаем службу Hysteria 2..."
+			/opt/etc/init.d/S99hysteria start >/dev/null 2>&1 && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+		}
+	fi
 	print_line
 	# Перезапуск VPN-интерфейса после сброса iptables (OpenConnect/WG могут потерять маршрутизацию)
 	sleep 2
 	_upgrade_inface_cli=$(grep "^INFACE_CLI=" /opt/etc/kvas.conf 2>/dev/null | cut -d= -f2)
 	case "$_upgrade_inface_cli" in
-		""|Proxy21|Proxy41) ;;  # VLESS/Hysteria — не трогаем
+		""|Proxy21|Proxy41|t2s21|t2s41) ;;  # VLESS/Hysteria — не трогаем
 		*)
 			rci_post '{"down":"true"}' "localhost:79/rci/interface/${_upgrade_inface_cli}" &>/dev/null
 			sleep 2

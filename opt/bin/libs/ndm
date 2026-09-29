@@ -657,7 +657,9 @@ ip4__add_routing_for_home() {
 	# atomic -C check instead of non-atomic grep (race with concurrent netfilter.d hooks)
 	if /opt/sbin/iptables -C PREROUTING -w -t "${table}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE_NAME}" dst -j "${chain_name}" 2>/dev/null; then
 		# remove duplicates if any (loop until one remains)
-		while [ "$(save_iptables | grep -c -- "-A PREROUTING .*${net_interface} .*${chain_name}")" -gt 1 ] 2>/dev/null; do
+		# якорь $ обязателен: без него подстрока "-j KVAS_MARK" матчит и "-j KVAS_MARK2",
+		# счётчик даёт 2, и цикл удаляет настоящий прыжок lane1
+		while [ "$(save_iptables | grep -c -- "-A PREROUTING .*${net_interface} .*${chain_name}\$")" -gt 1 ] 2>/dev/null; do
 			/opt/sbin/iptables -D PREROUTING -w -t "${table}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE_NAME}" dst -j "${chain_name}" 2>/dev/null || break
 		done
 		return

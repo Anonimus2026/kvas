@@ -200,14 +200,25 @@ all_services_restart() {
 		service_restart 'DNS сервер DNSCrypt' 'S09dnscrypt-proxy2'
 	fi
 
-	# Hysteria — только если текущий интерфейс Proxy41
+	# Hysteria — при основном Proxy41/t2s41 ИЛИ по маркеру «была запущена до обновления»
+	_h_restore=''
+	if [ -f /opt/var/kvas/.hysteria_running ]; then
+		_h_restore=1
+		rm -f /opt/var/kvas/.hysteria_running 2>/dev/null
+	fi
 	if [ -f /opt/apps/kvas/hysteria/bin/hysteria ]; then
 		[ -f /opt/bin/hysteria ] || ln -sf /opt/apps/kvas/hysteria/bin/hysteria /opt/bin/hysteria
 		[ -f /opt/etc/init.d/S99hysteria ] || ln -sf /opt/apps/kvas/hysteria/etc/init.d/S99hysteria /opt/etc/init.d/S99hysteria
 		case "$_cli" in
-			*Proxy41*|*hysteria*)
+			*Proxy41*|*t2s41*|*hysteria*)
 				log_warning 'Перезапуск Hysteria 2'
 				service_restart 'Hysteria 2' 'S99hysteria'
+				;;
+			*)
+				if [ -n "${_h_restore}" ]; then
+					log_warning 'Восстановление Hysteria 2 после обновления'
+					service_restart 'Hysteria 2' 'S99hysteria'
+				fi
 				;;
 		esac
 	fi

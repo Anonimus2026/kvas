@@ -963,6 +963,12 @@ cmd_uninstall() {
 
 		# 1. Останавливаем все сервисы
 		ready 'Останавливаем все сервисы'
+		# Запоминаем, что Hysteria была запущена: после обновления all_services_restart
+		# поднимает её только при основном Proxy41/t2s41 — маркер восстановит и «второстепенную»
+		if [ -f /opt/etc/init.d/S99hysteria ] && /opt/etc/init.d/S99hysteria status >/dev/null 2>&1; then
+			mkdir -p /opt/var/kvas 2>/dev/null
+			touch /opt/var/kvas/.hysteria_running 2>/dev/null
+		fi
 		{
 			[ -f /opt/etc/init.d/S99hysteria ] && /opt/etc/init.d/S99hysteria stop 2>/dev/null
 			[ -f /opt/etc/init.d/S97xray ] && /opt/etc/init.d/S97xray stop 2>/dev/null

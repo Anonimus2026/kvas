@@ -180,7 +180,9 @@ vpn_check(){
 
 					ready "Правила маркировки трафика в iptable"
 					[ -x "/opt/etc/ndm/netfilter.d/100-vpn-mark" ] && type=iptables table=mangle /opt/etc/ndm/netfilter.d/100-vpn-mark 2>/dev/null
-					if [ -n "${VPN_IPTABLES_CHAIN}" ] && [ "$(save_iptables | grep -c "${VPN_IPTABLES_CHAIN}")" -ge 2 ]; then
+					# считаем только тело цепочки (-A <CHAIN> ); "-j KVAS_MARK" как подстрока
+					# захватывал бы и KVAS_MARK2, давая ложное «ДОБАВЛЕНЫ»
+					if [ -n "${VPN_IPTABLES_CHAIN}" ] && [ "$(save_iptables | grep -c -- "-A ${VPN_IPTABLES_CHAIN} ")" -ge 2 ]; then
 						when_ok "ДОБАВЛЕНЫ"
 					else
 						when_bad "ОТСУТСТВУЮТ"
