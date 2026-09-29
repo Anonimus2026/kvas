@@ -70,6 +70,7 @@ case "${1}" in
 	ssr|vpn|dns|dnsmasq|dnscrypt|crypt|adblock|ads|adguard) _require vpn update check ;;
 	hosts) _require hosts ;;
 	tunnel|route) _require route vpn ;;
+	list2) _require list2 vpn ndm ;;
 	log|syslog) _require debug ;;
 	ipset) _require debug ;;
 	debug) _require debug vpn route hysteria ;;
@@ -186,6 +187,7 @@ case "${1}" in
 		BKPDIR="/opt/kvas_backup_$(date +%Y%m%d-%H%M%S)"
 		mkdir -p "$BKPDIR"
 		cp -f "$KVAS_LIST_FILE" "$BKPDIR/" 2>/dev/null
+		cp -f "$KVAS_LIST2_FILE" "$BKPDIR/" 2>/dev/null
 		cp -f "$TAGS_LIST_FILE" "$BKPDIR/" 2>/dev/null
 		cp -f "$KVAS_CONF_FILE" "$BKPDIR/" 2>/dev/null
 		cp -f "$HYSTERIA_CONFIG" "$BKPDIR/" 2>/dev/null
@@ -258,7 +260,7 @@ case "${1}" in
 			fi
 		fi
 		_restored=0
-		for _f in "$KVAS_LIST_FILE" "$TAGS_LIST_FILE" "$KVAS_CONF_FILE" "$HYSTERIA_CONFIG" "$HYSTERIA_ENV_FILE" "$SHADOWSOCKS_CONF" "$DNSMASQ_CONFIG" "$DNSMASQ_IPSET_HOSTS" "$DNSCRYPT_CONFIG" "$ADGUARDHOME_CONFIG" "$ADGUARD_IPSET_FILE" "$VLESS_CONFIG_FILE" "$ADBLOCK_HOSTS_FILE" "$ADBLOCK_BLOCK_FILE" "$ADBLOCK_LIST_EXCEPTION" "$ADBLOCK_SOURCES_LIST"; do
+		for _f in "$KVAS_LIST_FILE" "$KVAS_LIST2_FILE" "$TAGS_LIST_FILE" "$KVAS_CONF_FILE" "$HYSTERIA_CONFIG" "$HYSTERIA_ENV_FILE" "$SHADOWSOCKS_CONF" "$DNSMASQ_CONFIG" "$DNSMASQ_IPSET_HOSTS" "$DNSCRYPT_CONFIG" "$ADGUARDHOME_CONFIG" "$ADGUARD_IPSET_FILE" "$VLESS_CONFIG_FILE" "$ADBLOCK_HOSTS_FILE" "$ADBLOCK_BLOCK_FILE" "$ADBLOCK_LIST_EXCEPTION" "$ADBLOCK_SOURCES_LIST"; do
 			[ -z "$_f" ] && continue
 			_bn=$(basename "$_f" 2>/dev/null)
 			[ -z "$_bn" ] && continue
@@ -690,6 +692,18 @@ case "${1}" in
 			del)                cmd_route_del "${3}" "${4}" ;;
 			list)               cmd_route_list ;;
 			*)                  cmd_route         ;;
+		esac
+		;;
+
+	# Список 2 — вторая полоса через выбранный тоннель
+	list2)
+		case "${2}" in
+			add)          cmd_list2_add "${3}" ;;
+			del | rm)     cmd_list2_del "${3}" ;;
+			tunnel)       cmd_list2_tunnel "${3}" ;;
+			tunnel-list)  cmd_list2_tunnel_list ;;
+			list)         cmd_list2_list ;;
+			"" | status | *)  cmd_list2_status ;;
 		esac
 		;;
 

@@ -4,7 +4,7 @@
 # This script prints only the JSON body.
 
 json_escape() {
-	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\n/\\n/g'
+	printf '%s' "$1" | tr -d '\000-\010\013\015-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\n/\\n/g'
 }
 
 DNS_LOG=/tmp/kvas-dns.log
@@ -346,7 +346,7 @@ case "$action" in
 		[ -s "$IP_CACHE" ] && wc -l < "$IP_CACHE" 2>/dev/null || echo -n '0'
 		echo -n ',"test_resolve_93.158.134.158":"'
 		build_ip_cache 2>/dev/null
-		echo -n "$(cached_resolve "93.158.134.158")"
+		json_escape "$(cached_resolve "93.158.134.158")"
 		echo -n '"'
 		echo -n ',"has_nslookup":'
 		command -v nslookup >/dev/null 2>&1 && echo -n 'true' || echo -n 'false'

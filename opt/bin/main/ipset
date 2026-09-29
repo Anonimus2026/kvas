@@ -43,3 +43,17 @@ while read -r line || [ -n "${line}" ]; do
 		/opt/sbin/ipset -exist add "${IPSET_TABLE_NAME}" "${host}" timeout 0 &>/dev/null || true
 	fi
 done < "${HOST_LIST}"
+
+# Список 2 (вторая полоса) — статические IP/CIDR в KVAS_LIST2
+HOST_LIST2=/opt/etc/kvas2.list
+IPSET_TABLE2_NAME=KVAS_LIST2
+if [ -f "${HOST_LIST2}" ]; then
+	/opt/sbin/ipset -exist create "${IPSET_TABLE2_NAME}" hash:net family inet &>/dev/null || true
+	while read -r line || [ -n "${line}" ]; do
+		[ "${line:0:1}" = "-" ] || [ -z "${line}" ] || [ "${line:0:1}" = "#" ] && continue
+		host=$(echo "${line}" | sed 's/#.*$//g' | tr -s ' ' | sed 's/\*//')
+		if echo "${host}" | grep -qE -- "${REGEXP_IP_OR_RANGE}"; then
+			/opt/sbin/ipset -exist add "${IPSET_TABLE2_NAME}" "${host}" timeout 0 &>/dev/null || true
+		fi
+	done < "${HOST_LIST2}"
+fi

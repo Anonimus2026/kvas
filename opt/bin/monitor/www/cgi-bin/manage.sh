@@ -28,7 +28,7 @@ tg_upsert() {
 	fi
 }
 
-json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+json_str() { printf '%s' "$1" | tr -d '\000-\010\013\015-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN{ORS=""} {if(NR>1) printf "\\n"; print}'; }
 json_error() { printf '{"error":"%s"}\n' "$(json_str "$1")"; exit 0; }
 json_ok()    { printf '{"ok":true,"msg":"%s"}\n' "$(json_str "$1")"; exit 0; }
 
@@ -702,19 +702,37 @@ main() {
 			_ver=$(echo "$QUERY_STRING" | sed 's/.*version=//; s/&token=.*//')
 			_ver=$(echo "$_ver" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_ver" ] && json_error "version required"
-			out=$($KVAS_BIN xray core "$_ver" 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			printf '{"ok":true,"output":"%s"}\n' "$out"
+			# установка ядра xray — до 60с: фоном + vpn_progress (task=xray_install)
+			rm -f /tmp/kvas_xray_inst.lock /tmp/kvas_xray_inst.rc /tmp/kvas_xray_inst.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_xray_inst.lock
+				{
+					out=$($KVAS_BIN xray core "$_ver" 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_xray_inst.rc
+				} > /tmp/kvas_xray_inst.log 2>&1
+				rm -f /tmp/kvas_xray_inst.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"xray_install","msg":"Установка xray..."}\n'
 			;;
 		awg_new)
 			check_token "$token"
 			_link=$(echo "$QUERY_STRING" | sed 's/.*link=//')
 			_link=$(echo "$_link" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_link" ] && json_error "link required"
-			_tmpf=/tmp/kvas_awg_link_$$
-			printf '%s' "$_link" > "$_tmpf"
-			out=$($KVAS_BIN awg new "$_tmpf" 2>&1 | head -80 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			rm -f "$_tmpf"
-			printf '{"ok":true,"output":"%s"}\n' "$out"
+			printf '%s' "$_link" > /tmp/kvas_awg_link.data
+			# awg new — до 60с: фоном + vpn_progress (task=awg_new)
+			rm -f /tmp/kvas_awg_new.lock /tmp/kvas_awg_new.rc /tmp/kvas_awg_new.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_awg_new.lock
+				{
+					out=$($KVAS_BIN awg new /tmp/kvas_awg_link.data 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_awg_new.rc
+				} > /tmp/kvas_awg_new.log 2>&1
+				rm -f /tmp/kvas_awg_new.lock /tmp/kvas_awg_link.data 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"awg_new","msg":"Настройка AmneziaWG..."}\n'
 			;;
 		awg_new_b64)
 			# URL-safe base64 контент файла (через GET)
@@ -730,16 +748,25 @@ main() {
 			[ "$_mod" -eq 2 ] && _data="${_data}=="
 			[ "$_mod" -eq 3 ] && _data="${_data}="
 			# Декодируем base64 в файл
-			_tmpf=/tmp/kvas_awg_b64_$$
-			_b64f=/tmp/kvas_awg_b64raw_$$
+			_tmpf=/tmp/kvas_awg_b64.data
+			_b64f=/tmp/kvas_awg_b64raw.$$
 			printf '%s' "$_data" > "$_b64f"
 			base64 -d "$_b64f" > "$_tmpf" 2>/dev/null
 			rm -f "$_b64f"
 			[ -s "$_tmpf" ] || json_error "base64 decode failed"
-			out=$($KVAS_BIN awg new "$_tmpf" 2>&1 | head -120 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			rm -f "$_tmpf"
-			[ -z "$out" ] && out="AmneziaWG настроен"
-			printf '{"ok":true,"output":"%s"}\n' "$out"
+			# awg new — до 60с: фоном + vpn_progress (task=awg_new_b64)
+			rm -f /tmp/kvas_awg_b64.lock /tmp/kvas_awg_b64.rc /tmp/kvas_awg_b64.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_awg_b64.lock
+				{
+					out=$($KVAS_BIN awg new /tmp/kvas_awg_b64.data 2>&1); rc=$?
+					[ -z "$out" ] && out="AmneziaWG настроен"
+					echo "$out"
+					echo $rc > /tmp/kvas_awg_b64.rc
+				} > /tmp/kvas_awg_b64.log 2>&1
+				rm -f /tmp/kvas_awg_b64.lock /tmp/kvas_awg_b64.data 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"awg_new_b64","msg":"Настройка AmneziaWG..."}\n'
 			;;
 		awg_status)
 			check_token "$token"
@@ -942,6 +969,18 @@ main() {
 				hysteria) _lock=/tmp/kvas_hyst_new.lock; _rc=/tmp/kvas_hyst_new.rc; _log=/tmp/kvas_hyst_new.log ;;
 				tags_add) _lock=/tmp/kvas_tags_add.lock; _rc=/tmp/kvas_tags_add.rc; _log=/tmp/kvas_tags_add.log ;;
 				tags_del) _lock=/tmp/kvas_tags_del.lock; _rc=/tmp/kvas_tags_del.rc; _log=/tmp/kvas_tags_del.log ;;
+				xray_install) _lock=/tmp/kvas_xray_inst.lock; _rc=/tmp/kvas_xray_inst.rc; _log=/tmp/kvas_xray_inst.log ;;
+				awg_new) _lock=/tmp/kvas_awg_new.lock; _rc=/tmp/kvas_awg_new.rc; _log=/tmp/kvas_awg_new.log ;;
+				awg_new_b64) _lock=/tmp/kvas_awg_b64.lock; _rc=/tmp/kvas_awg_b64.rc; _log=/tmp/kvas_awg_b64.log ;;
+				adblock_on) _lock=/tmp/kvas_adblock_on.lock; _rc=/tmp/kvas_adblock_on.rc; _log=/tmp/kvas_adblock_on.log ;;
+				restore) _lock=/tmp/kvas_restore.lock; _rc=/tmp/kvas_restore.rc; _log=/tmp/kvas_restore.log ;;
+				route_refresh) _lock=/tmp/kvas_route_refresh.lock; _rc=/tmp/kvas_route_refresh.rc; _log=/tmp/kvas_route_refresh.log ;;
+				kvas_test) _lock=/tmp/kvas_test.lock; _rc=/tmp/kvas_test.rc; _log=/tmp/kvas_test.log ;;
+				kvas_debug) _lock=/tmp/kvas_debug.lock; _rc=/tmp/kvas_debug.rc; _log=/tmp/kvas_debug.log ;;
+				kvas_debug_dns) _lock=/tmp/kvas_debug_dns.lock; _rc=/tmp/kvas_debug_dns.rc; _log=/tmp/kvas_debug_dns.log ;;
+				kvas_debug_iptables) _lock=/tmp/kvas_debug_ipt.lock; _rc=/tmp/kvas_debug_ipt.rc; _log=/tmp/kvas_debug_ipt.log ;;
+				list2_add) _lock=/tmp/kvas_list2_add.lock; _rc=/tmp/kvas_list2_add.rc; _log=/tmp/kvas_list2_add.log ;;
+				list2_del) _lock=/tmp/kvas_list2_del.lock; _rc=/tmp/kvas_list2_del.rc; _log=/tmp/kvas_list2_del.log ;;
 				*) json_error "task required" ;;
 			esac
 			_running="false"
@@ -1066,10 +1105,18 @@ main() {
 				[ -z "$path" ] && json_error "Нет резервных копий"
 			fi
 			[ -d "$path" ] || json_error "Каталог бэкапа не найден: $path"
-			out=$($KVAS_BIN restore "$path" 2>&1)
-			rc=$?
-			[ $rc -ne 0 ] && json_error "restore failed: $out"
-			json_ok "restore done"
+			# восстановление + cmd_kvas_init — долго: фоном + vpn_progress (task=restore)
+			rm -f /tmp/kvas_restore.lock /tmp/kvas_restore.rc /tmp/kvas_restore.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_restore.lock
+				{
+					out=$($KVAS_BIN restore "$path" 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_restore.rc
+				} > /tmp/kvas_restore.log 2>&1
+				rm -f /tmp/kvas_restore.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"restore","msg":"Восстановление из бэкапа..."}\n'
 			;;
 		backup_download)
 			check_token "$token"
@@ -1274,10 +1321,20 @@ main() {
 			if ! grep -q "hostsdir=/opt/etc/adblock/parental.d" /opt/etc/dnsmasq.conf 2>/dev/null; then
 				echo "hostsdir=/opt/etc/adblock/parental.d" >> /opt/etc/dnsmasq.conf
 			fi
-			[ -f /opt/etc/adblock/ads.kvas.list ] || sh /opt/apps/kvas/bin/main/adblock >/dev/null 2>&1
-			parental_regen
-			/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
-			echo '{"ok":true,"msg":"Adblock включен"}'
+			# первая сборка списков adblock + parental + restart dnsmasq — долго:
+			# фоном + vpn_progress (task=adblock_on); конфиг правится синхронно выше
+			rm -f /tmp/kvas_adblock_on.lock /tmp/kvas_adblock_on.rc /tmp/kvas_adblock_on.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_adblock_on.lock
+				{
+					[ -f /opt/etc/adblock/ads.kvas.list ] || sh /opt/apps/kvas/bin/main/adblock
+					parental_regen
+					/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
+					echo 0 > /tmp/kvas_adblock_on.rc
+				} > /tmp/kvas_adblock_on.log 2>&1
+				rm -f /tmp/kvas_adblock_on.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"adblock_on","msg":"Включение Adblock..."}\n'
 		;;
 adblock_off)
 			check_token "$token"
@@ -1386,8 +1443,92 @@ adblock_off)
 			;;
 		route_refresh)
 			check_token "$token"
-			out=$($KVAS_BIN route refresh 2>&1)
-			json_ok "routes refreshed"
+			# пересборка маршрутов — фоном + vpn_progress (task=route_refresh)
+			rm -f /tmp/kvas_route_refresh.lock /tmp/kvas_route_refresh.rc /tmp/kvas_route_refresh.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_route_refresh.lock
+				{
+					out=$($KVAS_BIN route refresh 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_route_refresh.rc
+				} > /tmp/kvas_route_refresh.log 2>&1
+				rm -f /tmp/kvas_route_refresh.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"route_refresh","msg":"Обновление маршрутов..."}\n'
+			;;
+		list2_status)
+			check_token "$token"
+			_out=$($KVAS_BIN list2 status 2>/dev/null)
+			_tunnel=$(echo "$_out" | sed -n 's/^tunnel=//p' | head -1)
+			_iface=$(echo "$_out" | sed -n 's/^iface=//p' | head -1)
+			_up=$(echo "$_out" | sed -n 's/^iface_up=//p' | head -1)
+			_avail=$(echo "$_out" | sed -n 's/^available=//p' | head -1)
+			_entries=$(echo "$_out" | sed -n 's/^entries=//p' | head -1)
+			_table=$(echo "$_out" | sed -n 's/^table=//p' | head -1)
+			_mark=$(echo "$_out" | sed -n 's/^mark=//p' | head -1)
+			[ -z "$_tunnel" ] && _tunnel=current
+			[ -z "$_up" ] && _up=no
+			echo "$_entries" | grep -qE '^[0-9]+$' || _entries=0
+			[ -z "$_table" ] && _table=201
+			[ -z "$_mark" ] && _mark=0xd1001
+			printf '{"ok":true,"tunnel":"%s","iface":"%s","iface_up":"%s","available":"%s","entries":%s,"table":"%s","mark":"%s"}\n' \
+				"$(json_str "$_tunnel")" "$(json_str "$_iface")" "$_up" "$(json_str "$_avail")" "$_entries" "$(json_str "$_table")" "$(json_str "$_mark")"
+			;;
+		list2_list)
+			check_token "$token"
+			printf '{"ok":true,"entries":['
+			_first=1
+			grep -vE '^[[:space:]]*(#|$)' /opt/etc/kvas2.list 2>/dev/null | while IFS= read -r _e; do
+				[ -n "$_e" ] || continue
+				[ "$_first" -eq 1 ] || printf ','
+				printf '"%s"' "$(json_str "$_e")"
+				_first=0
+			done
+			printf ']}'
+			;;
+		list2_add)
+			check_token "$token"
+			_host=$(echo "$QUERY_STRING" | sed 's/.*host=//; s/&.*//')
+			_host=$(printf '%s' "$_host" | sed 's/%2[fF]/\//g; s/%20/ /g; s/+/ /g')
+			[ -z "$_host" ] && json_error "host required"
+			# добавление + резолв + пересборка dnsmasq — фоном + vpn_progress (task=list2_add)
+			rm -f /tmp/kvas_list2_add.lock /tmp/kvas_list2_add.rc /tmp/kvas_list2_add.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_list2_add.lock
+				{
+					out=$($KVAS_BIN list2 add "$_host" 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_list2_add.rc
+				} > /tmp/kvas_list2_add.log 2>&1
+				rm -f /tmp/kvas_list2_add.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"list2_add","msg":"Добавление в Список 2..."}\n'
+			;;
+		list2_del)
+			check_token "$token"
+			_host=$(echo "$QUERY_STRING" | sed 's/.*host=//; s/&.*//')
+			_host=$(printf '%s' "$_host" | sed 's/%2[fF]/\//g; s/%20/ /g; s/+/ /g')
+			[ -z "$_host" ] && json_error "host required"
+			rm -f /tmp/kvas_list2_del.lock /tmp/kvas_list2_del.rc /tmp/kvas_list2_del.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_list2_del.lock
+				{
+					out=$($KVAS_BIN list2 del "$_host" 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_list2_del.rc
+				} > /tmp/kvas_list2_del.log 2>&1
+				rm -f /tmp/kvas_list2_del.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"list2_del","msg":"Удаление из Списка 2..."}\n'
+			;;
+		list2_tunnel)
+			check_token "$token"
+			_tun=$(echo "$QUERY_STRING" | sed 's/.*tunnel=//; s/&.*//')
+			case "$_tun" in current|vless|hysteria|awg) ;; *) json_error "bad tunnel" ;; esac
+			out=$($KVAS_BIN list2 tunnel "$_tun" 2>&1)
+			rc=$?
+			[ $rc -ne 0 ] && json_error "$(printf '%s' "$out" | head -3)"
+			json_ok "$out"
 			;;
 		route_devices)
 			check_token "$token"
@@ -1754,12 +1895,22 @@ adblock_off)
 			;;
 		kvas_test)
 			check_token "$token"
-			_out=$(echo | $KVAS_BIN test upgrade 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			# Telegram P.8: test_err при проблемах в выводе
-			if printf '%s' "$_out" | grep -qE 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ'; then
-				tg_notify test_err "kvas test: $(printf '%s' "$_out" | grep -E 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ' | head -1 | cut -c1-120)"
-			fi
-			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			# kvas test — 10-30с: фоном + vpn_progress (task=kvas_test)
+			rm -f /tmp/kvas_test.lock /tmp/kvas_test.rc /tmp/kvas_test.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_test.lock
+				{
+					out=$(echo | $KVAS_BIN test upgrade 2>&1); rc=$?
+					echo "$out"
+					# Telegram P.8: test_err при проблемах в выводе
+					if printf '%s' "$out" | grep -qE 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ'; then
+						tg_notify test_err "kvas test: $(printf '%s' "$out" | grep -E 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ' | head -1 | cut -c1-120)"
+					fi
+					echo $rc > /tmp/kvas_test.rc
+				} > /tmp/kvas_test.log 2>&1
+				rm -f /tmp/kvas_test.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"kvas_test","msg":"Запуск kvas test..."}\n'
 			;;
 		tg_get)
 			check_token "$token"
@@ -1875,18 +2026,46 @@ adblock_off)
 			;;
 		kvas_debug)
 			check_token "$token"
-			_out=$($KVAS_BIN debug 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			# kvas debug — 5-20с: фоном + vpn_progress (task=kvas_debug)
+			rm -f /tmp/kvas_debug.lock /tmp/kvas_debug.rc /tmp/kvas_debug.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_debug.lock
+				{
+					out=$($KVAS_BIN debug 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_debug.rc
+				} > /tmp/kvas_debug.log 2>&1
+				rm -f /tmp/kvas_debug.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"kvas_debug","msg":"Сбор отладочной информации..."}\n'
 			;;
 		kvas_debug_dns)
 			check_token "$token"
-			_out=$($KVAS_BIN debug dns 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			rm -f /tmp/kvas_debug_dns.lock /tmp/kvas_debug_dns.rc /tmp/kvas_debug_dns.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_debug_dns.lock
+				{
+					out=$($KVAS_BIN debug dns 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_debug_dns.rc
+				} > /tmp/kvas_debug_dns.log 2>&1
+				rm -f /tmp/kvas_debug_dns.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"kvas_debug_dns","msg":"Диагностика DNS..."}\n'
 			;;
 		kvas_debug_iptables)
 			check_token "$token"
-			_out=$($KVAS_BIN debug iptables 2>&1 | tr -d '\033\r' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g' | sed 's/\t/ /g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			printf '{"ok":true,"output":"%s"}\n' "$_out"
+			rm -f /tmp/kvas_debug_ipt.lock /tmp/kvas_debug_ipt.rc /tmp/kvas_debug_ipt.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_debug_ipt.lock
+				{
+					out=$($KVAS_BIN debug iptables 2>&1); rc=$?
+					echo "$out"
+					echo $rc > /tmp/kvas_debug_ipt.rc
+				} > /tmp/kvas_debug_ipt.log 2>&1
+				rm -f /tmp/kvas_debug_ipt.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"kvas_debug_iptables","msg":"Диагностика iptables..."}\n'
 			;;
 		tunnel_test_site)
 			check_token "$token"

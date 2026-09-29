@@ -492,6 +492,9 @@ rm_previous_version_files() {
 clear_previous_version_net_rules() {
 	ip4__rule__delete_mark_to_table
 	ip4__route__flush_table
+	# Список 2 (вторая полоса)
+	ip4__rule2__delete_mark_to_table
+	ip4__route2__flush_table
 
 	ip4__chain__delete_jump 'nat'    'KVAS_DNS'
 	ip4__chain__delete      'nat'    'KVAS_DNS'
@@ -499,6 +502,8 @@ clear_previous_version_net_rules() {
 	#24-12-21 7791b886b2f233a71447c985ec8dfe57c53cab40
 	ip4__chain__delete_jump 'mangle' 'KVAS_MARK'
 	ip4__chain__delete      'mangle' 'KVAS_MARK'
+	ip4__chain__delete_jump 'mangle' 'KVAS_MARK2'
+	ip4__chain__delete      'mangle' 'KVAS_MARK2'
 	#24-11-27 7bda08de3472da3a8e6f17903f65ff10c899ceb7
 	ip4__chain__delete_jump 'mangle' 'KVAS_MARK_TO_TABLE'
 	ip4__chain__delete      'mangle' 'KVAS_MARK_TO_TABLE'

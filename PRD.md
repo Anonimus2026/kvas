@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-611
+**Версия:** 1.1.9_beta-10-612
 **Дата:** 28.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 611)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 612)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, **611** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, **612** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v611)
+## 4. Текущий статус (v612)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -54,6 +54,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | kvas upgrade (force-reinstall + rollback) | ✓ |
 | Adblock + parental control | ✓ |
 | Закваски tags (add/del/edit, web + CLI) | ✓ |
+| **Список 2 — вторая полоса (kvas2.list → KVAS_LIST2 → mark 0xd1001 → table 201)** | ✓ v612 |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -67,7 +68,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). 608/609/610 — рабочие. Следующий = **612**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике). 608/609/610/611 — рабочие. Следующий = **613**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -85,7 +86,16 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Пакет v611 (Web UI закваски: фикс «Failed to fetch»):**
   - **`tags_add`/`tags_del` асинхронны** (тот же паттерн adguard_on/vless_new из v609): CGI только валидирует тег и запускает `tags add-protect`/`del-protect` + пересборку dnsmasq/ipset фоном (лок/rc/log `/tmp/kvas_tags_add.*`, `/tmp/kvas_tags_del.*`), отвечает `{"pending":true,"task":...}` немедленно. Причина бага: синхронный `del-protect` (домены по одному + `cmd_kvas_init`) длился дольше таймаута httpd — соединение рвалось на стороне сервера, браузер показывал «Failed to fetch», таймаут клиента 180с (v609) не спасал.
   - **`vpn_progress` расширен** задачами `tags_add`/`tags_del` (whitelist case в manage.sh); JS `vpnPoll` обобщён: опциональный `opts.msgEl` (по умолчанию `vpnSetupMsg`) и `opts.done` (по умолчанию `loadSystemStatus(); loadVpnInterfaces()`) — vless/hysteria-вызовы без 5-го аргумента работают как раньше.
-  - **`tagsAdd`/`tagsDel` (index.html):** при `pending` стартует `vpnPoll(..., {msgEl:'tagsMsg', done:loadTags})` с прогрессом «Удаление «X» из тоннеля… (N×4с)» в `tagsMsg`; таймаут начального запроса 60с (сейчас ответ мгновенный).
+   - **`tagsAdd`/`tagsDel` (index.html):** при `pending` стартует `vpnPoll(..., {msgEl:'tagsMsg', done:loadTags})` с прогрессом «Удаление «X» из тоннеля… (N×4с)» в `tagsMsg`; таймаут начального запроса 60с (сейчас ответ мгновенный).
+- **Пакет v612 (Список 2 — вторая полоса; async Web UI; JSON-фикс монитора):**
+  - **Список 2 (lane2):** файл `/opt/etc/kvas2.list` (`KVAS_LIST2_FILE`) → ipset `KVAS_LIST2` (`IPSET_TABLE2_NAME`) → mark `0xd1001` (`MARK2_NUM`) → цепочка `KVAS_MARK2` (`CHAIN_MARK2`, копия KVAS_MARK с исключением mark'ов lane1: `-m mark --mark 0xd1000 -j RETURN`; в цепочке lane1 — `-m mark --mark 0xd1001 -j RETURN` после restore, чтобы double-listed домены не перетирали mark) → ip rule 1777 `fwmark 0xd1001/0xd1001 lookup 201` (вставляется `-I PREROUTING` ПЕРЕД первым правилом `-j KVAS_MARK`) + fallback 1779 `lookup 200` (маска-семантика: 0xd1001 матчится и правилом 1778, поэтому трафик lane2 при легнутом тоннеле уходит в таблицу 200 и без 1779; правило 1779 — страховка при отсутствии 1778). Таблица 201 (`ROUTE_TABLE2_ID`): `default dev <iface>` (+ gateway-net и копия direct-роутов), via `ADDR_MAN` только для `current`; при отсутствии/down интерфейса lane2 таблица 201 **flush'ится** (`ip4__lane2__is_iface_up`: `ip -o link show | grep '<[^>]*UP'`). Тоннели: `LANE2_TUNNEL` (current|vless|hysteria|awg, default current), iface из `inface_equals` (`Proxy21|t2s21|vless` — по клиенту тоннеля: Proxy21/41/42). Телеметрия: `kvas list2 status` → `tunnel=/iface=/iface_up=/available=/entries=/mark=/table=`.
+  - **CLI:** новый lib `bin/libs/list2` (`cmd_list2_*`: add/del/list/tunnel/tunnel-list/status + нормализация, валидация домен/IP/CIDR через `get_regexp_ip_or_range`, резолв доменов в ipset через `dns__get_ips_by_domain`, регенерация dnsmasq `ipset=/domain/KVAS_LIST2` + HUP); dispatch `list2)` в `bin/kvas` (bare → status); справка в `kvas.help` (раздел МАРШРУТИЗАЦИЯ + примеры).
+  - **Интеграция:** `main/ipset` — вторая проходка из kvas2.list (с `-exist create`); `main/dnsmasq` — второй awk-пасс в `ipset_file`; `main/setup` — teardown lane2 в `clear_previous_version_net_rules`; ndm: `ip4__mark2__create_chain`/`ip4__mark2__add_routing_for_home`/`ip4__route2__add_table`/`ip4__rule2__*`/`ip4__rule2_fallback__*`/`ip4__ipset__create_list2|destroy_list2`/`ip4__lane2__*`, вызовы в `ip4_mark_vpn_network` (create+insert), `ip4__dns__add_routing_for_home` (+create_list2), `ip4_firewall_flush_vpn_rules` (jump KVAS_MARK2), `ip4__flush` (все 4 части — table/chain/jump/ipset); `etc/ndm/ndm` — бинарно идентичен `bin/libs/ndm`.
+  - **Backup/Restore:** `kvas backup` копирует `kvas2.list`, `restore` возвращает его в `/opt/etc/kvas2.list` (+ пересборка через `cmd_kvas_init`).
+  - **Async Web UI (10 кнопок):** `xray_install`, `awg_new` (link → `/tmp/kvas_awg_link.data`), `awg_new_b64` (decode sync → `/tmp/kvas_awg_b64.data`, bg `awg new`), `restore`, `adblock_on` (конфиг sync, `adblock`+`parental_regen`+restart — фоном), `route_refresh`, `kvas_test` (с `tg_notify` в bg), `kvas_debug`/`kvas_debug_dns`/`kvas_debug_iptables` — паттерн tags_add (touch lock → bg-команда → rc/log → `{"pending":true,"task":...}`), `vpn_progress` whitelist расширен на `list2_add`/`list2_del` + эти 10 задач; JS: pending → `vpnPoll(d.task, 0, btn, title, {msgEl, done})` с корректным `done`-колбэком (xray→xray+system status, adblock→adblock+parental, restore→system, refresh→route lists).
+  - **JSON-фикс монитора:** `data.sh json_escape` (control-chars `\000-\010\013\015-\037\177`), экранирование вывода `test_resolve`; `manage.sh json_str` — тот же tr + awk-экранирование `\n` (multiline-вывод больше не рвёт JSON).
+  - **Web UI (вкладка «Маршрутизация»):** карточка «Список 2 — вторая полоса» (селект тоннеля из `available`, статус iface/up/метка, ввод домен/IP/CIDR, список с ✕, `l2Msg`), JS `loadList2/list2Add/list2Del/list2Tunnel`, `showMain → loadList2()`; эндпоинты `list2_status/list2_list/list2_add/list2_del/list2_tunnel`.
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-612`, postinst fallback `_rel=612`; `etc/conf/kvas2.list` **не шиппится** (создаётся пустым при первом обращении, chmod 666).
 
 ## 5. Сетевая конфигурация
 
@@ -96,6 +106,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | AWG (wireproxy) | Proxy42 | 127.0.0.1:10818 | userspace SOCKS5 |
 
 `RULE_PRIORITY=1778` (оригинал; значение 99 ломало Keenetic WG). Routing table = 200. fwmark kvas = 0xd1000.
+Список 2 (lane2, v612): `RULE_PRIORITY2=1777` (fwmark 0xd1001 → table 201), `RULE_PRIORITY2_FALLBACK=1779` (fwmark 0xd1001 → table 200), цепочка `KVAS_MARK2`, table 201 flush'ится при down тоннеля lane2.
 
 ## 6. Структура пакета
 
@@ -173,6 +184,16 @@ kvas xray [core [версия]]
 ## 12. Идея (не реализовано): Per-domain routing
 
 Направлять разные домены через разные туннели (VLESS/AWG/Hysteria): несколько ipset + fwmark + table + правила KVAS_MARK, `kvas add x --tunnel awg`, колонка в web UI. Оценка рисков — iptables сложность, perf, MASQUERADE per-interface, HUP при смене туннеля домена.
+
+**29.09.2026 — «тоннель per-закваске» (dropdown у каждой закваски) отклонён пользователем:** ненадёжно/непредсказуемо — расщепление закваски между тоннелями (домены через один, IP/CIDR из общего списка через другой), CONNMARK-старые сессии, порядок match-set в PREROUTING, миграция членов ipset. Не делать.
+
+**29.09.2026 — принято вместо этого: «Список 2» (вторая полоса) — РЕАЛИЗОВАНО в v612:**
+- Файл `/opt/etc/kvas2.list` — формат как kvas.list (домены + IP/CIDR, полный контроль); CLI `kvas list2 add|del|list|tunnel|tunnel-list|status`.
+- ipset `KVAS_LIST2` → mark `0xd1001` → цепочка `KVAS_MARK2` (копия KVAS_MARK) → ip rule `fwmark 0xd1001/0xd1001 lookup 1777→201` + **fallback** `lookup 200` (тоннель лег → текущий, без утечки; два правила вместо `lookup 201 200` — совместимо с busybox `ip`).
+- Тоннель lane2 **выбирается без привязки**: селект из настроенных тоннелей (`inface_equals` → Proxy21/41/42), ключ `LANE2_TUNNEL` в kvas.conf (default `current`); table 201 = `default dev <iface>`; при down тоннеля table 201 flush → fallback в 200.
+- dnsmasq-генератор: домены списка 2 → `ipset=/domain/KVAS_LIST2`; `main/ipset` грузит IP/CIDR списка 2 в `KVAS_LIST2`.
+- Web UI: **вкладка «Маршрутизация»**, карточка «Список 2 — вторая полоса» (селект тоннеля + список + add/del, всё async через `vpn_progress`).
+- Закваски/список 1 не трогаются (lane1 = текущее поведение 1:1; двойные члены исключены RETURN-правилами в обеих цепочках). Открытых вопросов нет (решения 29.09.2026).
 
 ## 12.1. Идеи по улучшению (roadmap; решение пользователя 22.09.2026)
 

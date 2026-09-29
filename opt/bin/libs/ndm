@@ -22,6 +22,11 @@
 ROUTE_TABLE_ID=200
 RULE_PRIORITY=1778
 MARK_NUM=0xd1000
+# Список 2 — вторая полоса через выбранный тоннель
+ROUTE_TABLE2_ID=201
+RULE_PRIORITY2=1777
+RULE_PRIORITY2_FALLBACK=1779
+MARK2_NUM=0xd1001
 DNS_PORT=9753
 
 IPSET_DESTINATION_EXCLUDED=KVAS_DESTINATION_EXCLUDED
@@ -30,6 +35,7 @@ CHAIN_DNS=KVAS_DNS
 TABLE_DNS=nat
 
 CHAIN_MARK=KVAS_MARK
+CHAIN_MARK2=KVAS_MARK2
 TABLE_MARK=mangle
 
 CHAIN_DNAT_TO_PORT=KVAS_DNAT_TO_PORT
@@ -271,6 +277,11 @@ ip4__ipset__create_list() {
 	ip4__ipset__create "${IPSET_TABLE_NAME}" "$(get_config_value LIST_IPSET_TTL)"
 }
 
+# Для списка 2 (вторая полоса)
+ip4__ipset__create_list2() {
+	ip4__ipset__create "${IPSET_TABLE2_NAME}" "$(get_config_value LIST_IPSET_TTL)"
+}
+
 #ToDo: сменить в других файлах обращение на новую обёртку
 ip4set_create_table() {
 	ip4__ipset__create_list
@@ -333,6 +344,11 @@ ip4__ipset__destroy() {
 # Для списка условной маршрутизации
 ip4__ipset__destroy_list() {
 	ip4__ipset__destroy "${IPSET_TABLE_NAME}"
+}
+
+# Для списка 2 (вторая полоса)
+ip4__ipset__destroy_list2() {
+	ip4__ipset__destroy "${IPSET_TABLE2_NAME}"
 }
 
 # Для постоянного списка исключаемых сетей
@@ -547,17 +563,57 @@ ip4__mark__create_chain() {
 			log_warning 'Включение маркировки VLESS'
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -p icmp -j RETURN
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -j CONNMARK --restore-mark
+			# Список 2 обрабатывается в своей цепочке — не перехватывать
+			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -m mark --mark ${MARK2_NUM} -j RETURN
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -m mark --mark ${MARK_NUM} -j RETURN
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -m conntrack ! --ctstate NEW -j RETURN
 		else
 			log_warning 'Включение маркировки VPN'
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -j CONNMARK --restore-mark
+			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -m mark --mark ${MARK2_NUM} -j RETURN
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -m mark --mark ${MARK_NUM} -j RETURN
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -m conntrack ! --ctstate NEW -j RETURN
 		fi
 		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -j MARK --set-mark ${MARK_NUM}
 		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK}" -j CONNMARK --save-mark
 	} &>/dev/null || error "[${FUNCNAME}] Возникли ошибки во время маркировки трафика для VPN"
+}
+
+# Цепочка Списка 2: трафик из KVAS_LIST2 получает MARK2 и уходит в таблицу 201
+ip4__mark2__create_chain() {
+	{
+		if ! ip4__chain__is_exist "${TABLE_MARK}" "${CHAIN_MARK2}" ; then
+			/opt/sbin/iptables -w -t "${TABLE_MARK}" -N "${CHAIN_MARK2}" 2>/dev/null
+		elif save_iptables | grep -F -- "-A ${CHAIN_MARK2}" | grep -qF -- "--set-mark"; then
+			# chain already populated — skip re-append
+			return 0
+		else
+			# chain exists but empty/incomplete — flush and rebuild
+			/opt/sbin/iptables -w -t "${TABLE_MARK}" -F "${CHAIN_MARK2}" 2>/dev/null
+		fi
+
+		# базовые правила цепочки (исключения по источнику, исключённые назначения, DNS)
+		ip4__chain__exclude_source_by_config "${TABLE_MARK}" "${CHAIN_MARK2}"
+		ip4__ipset__fill_destination_excluded
+		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -m set --match-set "${IPSET_DESTINATION_EXCLUDED}" dst -j RETURN 2>/dev/null
+		IFS=' '
+		for protocol in udp tcp ; do
+			/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -p "${protocol}" --dport 53 -j RETURN 2>/dev/null
+		done
+
+		ip4__route2__add_table
+		ip4__rule2__add_mark_to_table
+		ip4__rule2_fallback__add_mark_to_table
+
+		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -p icmp -j RETURN
+		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -j CONNMARK --restore-mark
+		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -m mark --mark ${MARK2_NUM} -j RETURN
+		# уже принадлежащий полосе lane1 — не перехватывать (пересечение списков)
+		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -m mark --mark ${MARK_NUM} -j RETURN
+		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -m conntrack ! --ctstate NEW -j RETURN
+		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -j MARK --set-mark ${MARK2_NUM}
+		/opt/sbin/iptables -w -t "${TABLE_MARK}" -A "${CHAIN_MARK2}" -j CONNMARK --save-mark
+	} &>/dev/null || error "[${FUNCNAME}] Возникли ошибки во время маркировки трафика Списка 2"
 }
 
 
@@ -576,6 +632,7 @@ ip4__dns__add_routing_for_home() {
 	# после включения редиректа DNS ipset начнёт заполняться
 	# нужно его создать автоматически для DNSMasq, если ещё нет
 	ip4__ipset__create_list
+	ip4__ipset__create_list2
 
 	ip4__dns__add_routing "-i $(get_local_inface)"
 }
@@ -618,6 +675,34 @@ ip4__shadowsocks__add_routing_for_home() {
 # VPN, VLESS
 ip4__mark__add_routing_for_home() {
 	ip4__add_routing_for_home "${TABLE_MARK}" "${CHAIN_MARK}" 'сетевого интерфейса'
+}
+
+# Список 2: вход в KVAS_MARK2 — строго ВЫШЕ правил lane1 (приоритет при пересечении списков)
+ip4__mark2__add_routing_for_home() {
+	local table="${TABLE_MARK}"
+	local chain="${CHAIN_MARK2}"
+	local net_interface=$(get_local_inface)
+
+	ip4__mark2__create_chain
+
+	# позиция первого правила lane1 в PREROUTING (любой -j KVAS_MARK, но не KVAS_MARK2)
+	local _lane1_num
+	_lane1_num=$(save_iptables -t "${table}" 2>/dev/null | grep -F -- '-A PREROUTING' \
+	 | grep -nE -- "-j ${CHAIN_MARK}\$" | head -n 1 | grep -oE '^[0-9]+')
+
+	if /opt/sbin/iptables -C PREROUTING -w -t "${table}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE2_NAME}" dst -j "${chain}" 2>/dev/null; then
+		return
+	fi
+
+	log_warning "Подключение перенаправления трафика Списка 2 для домашней сети в тоннель $(ip4__lane2__get_tunnel)"
+
+	if [ -n "${_lane1_num}" ]; then
+		# вставка вплотную перед первым правилом lane1
+		/opt/sbin/iptables -t "${table}" -w -I PREROUTING "${_lane1_num}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE2_NAME}" dst -j "${chain}" \
+		 || /opt/sbin/iptables -A PREROUTING -w -t "${table}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE2_NAME}" dst -j "${chain}"
+	else
+		/opt/sbin/iptables -A PREROUTING -w -t "${table}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE2_NAME}" dst -j "${chain}"
+	fi
 }
 
 
@@ -958,6 +1043,9 @@ ip4_mark_vpn_network() {
 		ip4__add_routing_for_ip_from_config
 		ip4__add_routing_by_list_for_net_from_config
 		ip4__mark__add_routing_for_home
+		# Список 2 (вторая полоса): цепочка, правила и вход выше lane1
+		ip4__mark2__create_chain
+		ip4__mark2__add_routing_for_home
 		# MASQUERADE for VPN interface — needed for tun devices (OpenConnect, WG, AWG)
 		# SOCKS interfaces (t2s21, ezcfg0) are unaffected — traffic doesn't go through them directly
 		local _ent=$(get_config_value 'INFACE_ENT')
@@ -1066,6 +1154,8 @@ ip4_firewall_flush_vpn_rules() {
 
 		# достаточно удалять правила для br0, но на всякий случай
 		ip4__chain__delete_jump "${TABLE_MARK}" "${CHAIN_MARK}"
+		# Список 2 (вторая полоса)
+		ip4__chain__delete_jump "${TABLE_MARK}" "${CHAIN_MARK2}"
 		# в бета 9 перехваты DNS не очищались, да и они универсальны меж подключениями
 		#ip4__chain__delete_jump "${TABLE_DNS}" "${CHAIN_DNS}"
 
@@ -1073,6 +1163,7 @@ ip4_firewall_flush_vpn_rules() {
 		# Достаточно убрать входы туда, что сделано выше
 		# По идее, нижеидущее нужно вызывать лишь при установке или удалении
 		#ip4__chain__delete "${TABLE_MARK}" "${CHAIN_MARK}"
+		#ip4__chain__delete "${TABLE_MARK}" "${CHAIN_MARK2}"
 		#ip4__chain__delete "${TABLE_DNS}" "${CHAIN_DNS}"
 	} &>/dev/null
 }
@@ -1124,6 +1215,8 @@ ip4__flush() {
 	if echo "${parts}" | grep -Fq ' table ' ; then
 		ip4__rule__delete_mark_to_table
 		ip4__route__flush_table
+		ip4__rule2__delete_mark_to_table
+		ip4__route2__flush_table
 	fi
 
 	if echo "${parts}" | grep -Fq ' chain ' ; then
@@ -1136,6 +1229,8 @@ ip4__flush() {
 		ip4__chain__delete      "${TABLE_DNAT_TO_PORT}" "${CHAIN_DNAT_TO_PORT}"
 		ip4__chain__delete_jump "${TABLE_MARK}" "${CHAIN_MARK}"
 		ip4__chain__delete      "${TABLE_MARK}" "${CHAIN_MARK}"
+		ip4__chain__delete_jump "${TABLE_MARK}" "${CHAIN_MARK2}"
+		ip4__chain__delete      "${TABLE_MARK}" "${CHAIN_MARK2}"
 
 		# если привязана к какой-то исторической цепочке, может упасть
 		ip4__ipset__destroy_destination_excluded
@@ -1146,10 +1241,12 @@ ip4__flush() {
 		# но тогда нужно переписать код в смене интерфейса
 		ip4__chain__delete_jump "${TABLE_DNAT_TO_PORT}" "${CHAIN_DNAT_TO_PORT}"
 		ip4__chain__delete_jump "${TABLE_MARK}"         "${CHAIN_MARK}"
+		ip4__chain__delete_jump "${TABLE_MARK}"         "${CHAIN_MARK2}"
 	fi
 
 	if echo "${parts}" | grep -Fq ' ipset ' ; then
 		ip4__ipset__destroy_list
+		ip4__ipset__destroy_list2
 	fi
 }
 
@@ -1274,6 +1371,195 @@ ip4__route__flush_table() {
 	}
 
 	ip4__route__flush_cache
+}
+
+
+# ------------------------------------------------------------------------------------------
+#
+# Список 2 (вторая полоса): выбор тоннеля, таблица 201 и правила маршрутизации
+#
+# ------------------------------------------------------------------------------------------
+
+# выбранный тоннель Списка 2 (current = как у lane1)
+ip4__lane2__get_tunnel() {
+	local lane2_tun
+	lane2_tun=$(get_config_value 'LANE2_TUNNEL')
+	case "${lane2_tun}" in
+		vless|hysteria|awg) echo "${lane2_tun}" ;;
+		*) echo 'current' ;;
+	esac
+}
+
+# системное имя интерфейса тоннеля lane2 (пусто — тоннель не настроен)
+ip4__lane2__get_iface() {
+	local lane2_tun="${1:-$(ip4__lane2__get_tunnel)}"
+	if [ "${lane2_tun}" = 'current' ]; then
+		get_config_value 'INFACE_ENT'
+		return
+	fi
+	local cli_name
+	case "${lane2_tun}" in
+		vless)    cli_name='Proxy21' ;;
+		hysteria) cli_name='Proxy41' ;;
+		awg)      cli_name='Proxy42' ;;
+		*)        return ;;
+	esac
+	grep "^${cli_name}|" "${INFACE_NAMES_FILE}" 2>/dev/null | head -1 | cut -d'|' -f2
+}
+
+# интерфейс поднят (administratively UP)?
+ip4__lane2__is_iface_up() {
+	local net_interface="${1}"
+	[ -n "${net_interface}" ] || return 1
+	/opt/sbin/ip -o link show dev "${net_interface}" 2>/dev/null | grep -q '<[^>]*UP'
+}
+
+ip4__route2__flush_table() {
+	if ! ip4__route__is_exist_table "${ROUTE_TABLE2_ID}" ; then
+		return
+	fi
+
+	log_warning "Очистка таблицы маршрутизации ${ROUTE_TABLE2_ID}"
+
+	/opt/sbin/ip route flush table "${ROUTE_TABLE2_ID}" &>/dev/null || true
+
+	ip4__route__flush_cache
+}
+
+# Таблица 201 Списка 2. Если тоннель lane2 недоступен — таблица очищается,
+# и пакеты с меткой 0xd1001 уходят в таблицу 200 по правилу фоллбэка.
+ip4__route2__add_table() {
+	local lane2_tun=$(ip4__lane2__get_tunnel)
+	local net_interface=$(ip4__lane2__get_iface "${lane2_tun}")
+
+	if [ -z "${net_interface}" ] || ! ip4__lane2__is_iface_up "${net_interface}" ; then
+		ip4__route2__flush_table
+		return 0
+	fi
+
+	# for current tunnel mirror lane1 semantics (via ADDR_MAN if set)
+	local gateway_ip=''
+	if [ "${lane2_tun}" = 'current' ] ; then
+		gateway_ip=$(get_config_value 'ADDR_MAN')
+	fi
+	if [ -n "${gateway_ip}" ] ; then
+		local subroute="default via ${gateway_ip} dev ${net_interface}"
+		local submessage="таблицы маршрутизации ${ROUTE_TABLE2_ID} для ${net_interface} через ${gateway_ip}"
+	else
+		local subroute="default dev ${net_interface}"
+		local submessage="таблицы маршрутизации ${ROUTE_TABLE2_ID} для ${net_interface}"
+	fi
+
+	local is_need_flush=''
+	local route_show=$(ip4__route__show_table "${ROUTE_TABLE2_ID}")
+	if [ -n "${route_show}" ] && ! echo "${route_show}" | grep -Fq "${subroute}" ; then
+		log_warning "Очистка таблицы маршрутизации ${ROUTE_TABLE2_ID} из-за отсутствия ${subroute}"
+		/opt/sbin/ip route flush table "${ROUTE_TABLE2_ID}" &>/dev/null
+
+		is_need_flush='1'
+		route_show=$(ip4__route__show_table "${ROUTE_TABLE2_ID}")
+	fi
+
+	if [ -z "${route_show}" ] ; then
+		log_warning "Добавление ${submessage}"
+
+		/opt/sbin/ip route add table "${ROUTE_TABLE2_ID}" $(echo "${subroute}") \
+		 || {
+			error "[${FUNCNAME}] Ошибка при добавлении ${submessage}"
+		}
+
+		is_need_flush='2'
+	fi
+
+	# если не gateway, то нужны 2 роута
+	if [ -z "${gateway_ip}" ] ; then
+		gateway_ip=$(get_ip_by_inface "${net_interface}")
+		if [ -n "${gateway_ip}" ] ; then
+			local gateway_net=$(get_net_by_ip "${gateway_ip}")
+			subroute="${gateway_net} via ${gateway_ip}"
+			submessage="в таблицу маршрутизации ${ROUTE_TABLE2_ID} для ${gateway_net} через ${gateway_ip}"
+
+			if ! echo "${route_show}" | grep -Fq "${subroute}" ; then
+				log_warning "Добавление ${submessage}"
+
+				/opt/sbin/ip route add $(echo "${subroute}") table "${ROUTE_TABLE2_ID}" 2>/dev/null || true
+
+				is_need_flush='3'
+			fi
+		fi
+	fi
+
+	# Превентивная защита от петли: копируем прямые маршруты к VPN-серверам
+	# из main таблицы в таблицу 201
+	/opt/sbin/ip route show 2>/dev/null | grep -E 'via.*dev' | grep -v '^default' | while IFS= read -r _route; do
+		/opt/sbin/ip route add table "${ROUTE_TABLE2_ID}" $_route 2>/dev/null || true
+	done
+
+	if [ -n "${is_need_flush}" ] ; then
+		ip4__route__flush_cache
+	fi
+}
+
+
+# ------------------------------------------------------------------------------------------
+#
+# Список 2: ip rule (правило 1777 строго выше lane1 — 1778, фоллбэк — 1779)
+#
+# ------------------------------------------------------------------------------------------
+
+ip4__rule2__get_sub() {
+	echo "fwmark ${MARK2_NUM}/${MARK2_NUM} lookup ${ROUTE_TABLE2_ID}"
+}
+
+ip4__rule2__get_submessage() {
+	echo "правила ${RULE_PRIORITY2} отправки пакетов с меткой ${MARK2_NUM} в таблицу ${ROUTE_TABLE2_ID}"
+}
+
+ip4__rule2__add_mark_to_table() {
+	local subrule="$(ip4__rule2__get_sub)"
+	if /opt/sbin/ip rule show | grep -Fq "${subrule}" ; then
+		return
+	fi
+
+	local submessage="$(ip4__rule2__get_submessage)"
+	log_warning "Добавление ${submessage}"
+
+	/opt/sbin/ip rule add $(echo "${subrule}") priority "${RULE_PRIORITY2}" \
+	 || {
+		error "[${FUNCNAME}] Ошибка при добавлении ${submessage}"
+	}
+}
+
+ip4__rule2_fallback__get_sub() {
+	echo "fwmark ${MARK2_NUM}/${MARK2_NUM} lookup ${ROUTE_TABLE_ID}"
+}
+
+ip4__rule2_fallback__add_mark_to_table() {
+	local subrule="$(ip4__rule2_fallback__get_sub)"
+	if /opt/sbin/ip rule show | grep -Fq "${subrule}" ; then
+		return
+	fi
+
+	local submessage="правила ${RULE_PRIORITY2_FALLBACK} отправки пакетов с меткой ${MARK2_NUM} в таблицу ${ROUTE_TABLE_ID} (фоллбэк Списка 2)"
+	log_warning "Добавление ${submessage}"
+
+	/opt/sbin/ip rule add $(echo "${subrule}") priority "${RULE_PRIORITY2_FALLBACK}" \
+	 || {
+		error "[${FUNCNAME}] Ошибка при добавлении ${submessage}"
+	}
+}
+
+ip4__rule2__delete_mark_to_table() {
+	local subrule="$(ip4__rule2__get_sub)"
+	if /opt/sbin/ip rule show | grep -Fq "${subrule}" ; then
+		log_warning "Удаление $(ip4__rule2__get_submessage)"
+		/opt/sbin/ip rule del $(echo "${subrule}") priority "${RULE_PRIORITY2}" 2>/dev/null || true
+	fi
+
+	local subrule_fallback="$(ip4__rule2_fallback__get_sub)"
+	if /opt/sbin/ip rule show | grep -Fq "${subrule_fallback}" ; then
+		/opt/sbin/ip rule del $(echo "${subrule_fallback}") priority "${RULE_PRIORITY2_FALLBACK}" 2>/dev/null || true
+	fi
 }
 
 #ToDo: сменить в других файлах обращение на новую обёртку

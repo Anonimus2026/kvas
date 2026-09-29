@@ -30,6 +30,7 @@ PROGRESS_BAR_WIDTH=$((LENGTH-5))  # progress bar length in characters
 
 KVAS_BACKUP_PATH=/opt/etc/.kvas/backup
 IPSET_TABLE_NAME=KVAS_LIST
+IPSET_TABLE2_NAME=KVAS_LIST2
 SSR_NAME=ss-redir
 SSR_CMD=/opt/bin/${SSR_NAME}
 # ssr_run()(/opt/bin/sslocal --protocol redir -c /opt/etc/shadowsocks.json ${@}) )
@@ -39,6 +40,7 @@ save_iptables(){ /opt/sbin/iptables-save "$@"; }
 
 KVAS_CONF_FILE=/opt/etc/kvas.conf
 KVAS_LIST_FILE=/opt/etc/kvas.list
+KVAS_LIST2_FILE=/opt/etc/kvas2.list
 # Telegram-уведомления (P.8): tg_notify всем, кто грузит main
 if ! . /opt/apps/kvas/bin/libs/tgq 2>/dev/null; then tg_notify(){ :; }; fi
 TAGS_LIST_FILE=/opt/etc/tags.list

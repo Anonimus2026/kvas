@@ -1,0 +1,224 @@
+#!/bin/sh
+# ------------------------------------------------------------------------------------------
+#
+#	Список 2 — вторая полоса маршрутизации (beta-10, v612)
+#
+#	Домены и IP/CIDR из /opt/etc/kvas2.list идут через выбранный тоннель
+#	(LANE2_TUNNEL: current|vless|hysteria|awg), минуя основной список:
+#	PREROUTING → KVAS_MARK2 → mark 0xd1001 → ip rule 1777 → таблица 201.
+#	При недоступности тоннеля таблица 201 очищается — трафик уходит
+#	в таблицу 200 (правило фоллбэка 1779).
+#
+#	Команды: kvas list2 [add|del|list|tunnel|tunnel-list|status] [значение]
+#
+# ------------------------------------------------------------------------------------------
+
+# файл списка создаётся при первом обращении
+cmd_list2__ensure_file() {
+	[ -f "${KVAS_LIST2_FILE}" ] && return
+	mkdir -p "$(dirname "${KVAS_LIST2_FILE}")" 2>/dev/null
+	touch "${KVAS_LIST2_FILE}" 2>/dev/null
+	chmod 666 "${KVAS_LIST2_FILE}" 2>/dev/null
+}
+
+cmd_list2__ensure_ipset() {
+	/opt/sbin/ipset -exist create "${IPSET_TABLE2_NAME}" hash:net family inet &>/dev/null || true
+}
+
+# одно значение: домен, IP, диапазон или CIDR (без пробелов)
+cmd_list2__normalize() {
+	local host="$1"
+	host=$(echo "${host}" | sed 's/#.*$//g' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+	echo "${host}"
+}
+
+cmd_list2__is_static() {
+	echo "${1}" | grep -qE -- "$(get_regexp_ip_or_range)"
+}
+
+cmd_list2__is_domain() {
+	echo "${1}" | grep -qE '^[A-Za-z0-9*][A-Za-z0-9.*_-]*(\.[A-Za-z0-9*_-]+)+$'
+}
+
+# список настроенных тоннелей lane2 (current всегда доступен)
+cmd_list2__available() {
+	local out="current"
+	grep -q "^Proxy21|" "${INFACE_NAMES_FILE}" 2>/dev/null && out="${out} vless"
+	grep -q "^Proxy41|" "${INFACE_NAMES_FILE}" 2>/dev/null && out="${out} hysteria"
+	grep -q "^Proxy42|" "${INFACE_NAMES_FILE}" 2>/dev/null && out="${out} awg"
+	echo "${out}"
+}
+
+cmd_list2__count() {
+	cmd_list2__ensure_file
+	local c
+	c=$(grep -cvE '^[[:space:]]*(#|$)' "${KVAS_LIST2_FILE}" 2>/dev/null)
+	echo "${c:-0}"
+}
+
+# быстрый резолв домена в ipset Списка 2 (dnsmasq сделает это и впредь)
+cmd_list2__fill_domain() {
+	local host="${1//\*/}"
+	local ip_list=$(dns__get_ips_by_domain "${host}")
+	[ -z "${ip_list}" ] && return
+	cmd_list2__ensure_ipset
+	IFS=$'\n'
+	for domain_ip in ${ip_list}; do
+		/opt/sbin/ipset -exist add "${IPSET_TABLE2_NAME}" "${domain_ip}" 2>/dev/null || true
+	done
+}
+
+cmd_list2__drop_domain() {
+	local host="${1//\*/}"
+	local ip_list=$(dns__get_ips_by_domain "${host}")
+	[ -z "${ip_list}" ] && return
+	IFS=$'\n'
+	for domain_ip in ${ip_list}; do
+		/opt/sbin/ipset del "${IPSET_TABLE2_NAME}" "${domain_ip}" 2>/dev/null || true
+	done
+}
+
+# пересборка dnsmasq-директив ipset=/домен/KVAS_LIST2 + HUP
+cmd_list2__regen_dns() {
+	/opt/apps/kvas/bin/main/dnsmasq >/dev/null 2>&1
+	kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+}
+
+# применить Список 2 целиком: ipset, dns, цепочка, вход, таблица 201
+cmd_list2__apply() {
+	cmd_list2__ensure_file
+	cmd_list2__ensure_ipset
+	/opt/apps/kvas/bin/main/ipset >/dev/null 2>&1
+	cmd_list2__regen_dns
+	ip4__mark2__create_chain
+	ip4__mark2__add_routing_for_home
+	ip4__route2__add_table
+}
+
+cmd_list2_list() {
+	local search="${1}"
+	cmd_list2__ensure_file
+	if [ ! -s "${KVAS_LIST2_FILE}" ] ; then
+		echo "Список 2 пуст. Добавить: kvas list2 add <домен|IP/CIDR>"
+		return
+	fi
+	if [ -n "${search}" ] ; then
+		grep "${search}" "${KVAS_LIST2_FILE}" || echo "Совпадений нет."
+	else
+		echo "Список 2 (вторая полоса, тоннель: $(ip4__lane2__get_tunnel)):"
+		grep -vE '^[[:space:]]*(#|$)' "${KVAS_LIST2_FILE}" 2>/dev/null
+	fi
+}
+
+cmd_list2_add() {
+	local host=$(cmd_list2__normalize "${1}")
+	if [ -z "${host}" ] ; then
+		error "Не указано значение для добавления в Список 2"
+		return 1
+	fi
+	if ! cmd_list2__is_static "${host}" && ! cmd_list2__is_domain "${host}" ; then
+		error "Некорректное значение '${host}'. Ожидается домен, IP, диапазон или CIDR."
+		return 1
+	fi
+
+	cmd_list2__ensure_file
+	if grep -Fxq "${host}" "${KVAS_LIST2_FILE}" 2>/dev/null ; then
+		warning "'${host}' уже есть в Списке 2"
+		return 0
+	fi
+
+	echo "${host}" >> "${KVAS_LIST2_FILE}"
+	chmod 666 "${KVAS_LIST2_FILE}" 2>/dev/null
+	echo "Добавлено в Список 2: ${host}"
+
+	if cmd_list2__is_static "${host}" ; then
+		cmd_list2__ensure_ipset
+		/opt/sbin/ipset -exist add "${IPSET_TABLE2_NAME}" "${host}" timeout 0 2>/dev/null \
+		 || error "Не удалось добавить ${host} в ipset ${IPSET_TABLE2_NAME}"
+	else
+		cmd_list2__fill_domain "${host}"
+		cmd_list2__regen_dns
+	fi
+}
+
+cmd_list2_del() {
+	local host=$(cmd_list2__normalize "${1}")
+	if [ -z "${host}" ] ; then
+		error "Не указано значение для удаления из Списка 2"
+		return 1
+	fi
+
+	cmd_list2__ensure_file
+	if ! grep -Fxq "${host}" "${KVAS_LIST2_FILE}" 2>/dev/null ; then
+		if ! grep -Fxq "*.${host}" "${KVAS_LIST2_FILE}" 2>/dev/null ; then
+			warning "'${host}' не найден в Списке 2"
+			return 1
+		fi
+		host="*.${host}"
+	fi
+
+	grep -Fxv "${host}" "${KVAS_LIST2_FILE}" > "${KVAS_LIST2_FILE}.tmp" 2>/dev/null \
+	 && mv "${KVAS_LIST2_FILE}.tmp" "${KVAS_LIST2_FILE}"
+	chmod 666 "${KVAS_LIST2_FILE}" 2>/dev/null
+	echo "Удалено из Списка 2: ${host}"
+
+	if cmd_list2__is_static "${host}" ; then
+		/opt/sbin/ipset del "${IPSET_TABLE2_NAME}" "${host}" 2>/dev/null || true
+	else
+		cmd_list2__drop_domain "${host}"
+		cmd_list2__regen_dns
+	fi
+}
+
+cmd_list2_tunnel_list() {
+	local current=$(ip4__lane2__get_tunnel)
+	local tun iface
+	for tun in $(cmd_list2__available) ; do
+		iface=$(ip4__lane2__get_iface "${tun}")
+		if [ "${tun}" = "${current}" ] ; then
+			echo "* ${tun} (интерфейс: ${iface:-—}) — выбран"
+		else
+			echo "  ${tun} (интерфейс: ${iface:-—})"
+		fi
+	done
+}
+
+cmd_list2_tunnel() {
+	local tun="$1"
+	if [ -z "${tun}" ] ; then
+		cmd_list2_tunnel_list
+		return
+	fi
+	case "${tun}" in
+		current|vless|hysteria|awg) ;;
+		*)
+			error "Неизвестный тоннель '${tun}'. Доступно: $(cmd_list2__available)"
+			return 1
+			;;
+	esac
+	if ! echo " $(cmd_list2__available) " | grep -q " ${tun} " ; then
+		error "Тоннель '${tun}' не настроен"
+		return 1
+	fi
+
+	set_config_value 'LANE2_TUNNEL' "${tun}"
+	ip4__route2__add_table
+	ip4__route__flush_cache
+	echo "Тоннель Списка 2: ${tun} (интерфейс: $(ip4__lane2__get_iface "${tun}"))"
+}
+
+# статус в формате key=value (читает Web UI)
+cmd_list2_status() {
+	cmd_list2__ensure_file
+	local tun=$(ip4__lane2__get_tunnel)
+	local iface=$(ip4__lane2__get_iface "${tun}")
+	local up=no
+	ip4__lane2__is_iface_up "${iface}" && up=yes
+	echo "tunnel=${tun}"
+	echo "iface=${iface}"
+	echo "iface_up=${up}"
+	echo "available=$(cmd_list2__available)"
+	echo "entries=$(cmd_list2__count)"
+	echo "mark=${MARK2_NUM}"
+	echo "table=${ROUTE_TABLE2_ID}"
+}

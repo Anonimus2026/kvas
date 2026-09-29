@@ -144,6 +144,12 @@ kvas route del full <IP>     - убрать из "всё в тоннель"
 kvas route del list <IP>     - убрать из "по списку"
 kvas route del exclude <IP>  - убрать из исключённых
 kvas route refresh           - применить изменения
+kvas list2                   - статус Списка 2 (вторая полоса)
+kvas list2 list              - записи Списка 2
+kvas list2 add <домен|IP>    - добавить в Список 2
+kvas list2 del <домен|IP>    - удалить из Списка 2
+kvas list2 tunnel [имя]      - показать/сменить тоннель Списка 2
+kvas list2 tunnel-list       - доступные тоннели
 
 == ДИАГНОСТИКА ==
 
@@ -195,4 +201,6 @@ kvas failover on            - включить автопереключение
 kvas route add full 1.2.3.4 - всё от 1.2.3.4 в тоннель
 kvas route exclude 5.6.7.8  - исключить 5.6.7.8
 kvas route refresh          - применить маршруты
+kvas list2 add example.com  - второй тоннель для example.com
+kvas list2 tunnel hysteria  - Список 2 через Hysteria
 kvas test                   - проверить работу пакета

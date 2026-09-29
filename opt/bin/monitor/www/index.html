@@ -434,6 +434,23 @@ window.addEventListener('error', function(e){
   </div>
 
   <div class="card">
+    <h3>Список 2 — вторая полоса</h3>
+    <div class="card-row"><label>Тоннель:</label><span class="value" id="l2Iface">-</span></div>
+    <div class="card-row" style="flex-wrap:wrap;gap:8px;">
+      <select id="l2TunnelSel" onchange="list2Tunnel(this)" style="padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
+        <option value="">загрузка...</option>
+      </select>
+      <span id="l2Status" style="font-size:11px;color:#8b949e;"></span>
+    </div>
+    <div class="card-row" style="flex-wrap:wrap;gap:8px;">
+      <input type="text" id="l2Input" placeholder="домен, IP или CIDR" style="flex:1;min-width:200px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;" onkeydown="if(event.key==='Enter')list2Add(null);">
+      <button class="btn btn-sm primary" onclick="list2Add(this)">Добавить</button>
+    </div>
+    <div id="l2List" class="host-list" style="max-height:150px;"><div class="status">Загрузка...</div></div>
+    <div id="l2Msg" class="msg"></div>
+  </div>
+
+  <div class="card">
     <h3>Известные устройства</h3>
     <div id="routeDevices" class="host-list" style="max-height:150px;"><div class="status">Загрузка...</div></div>
   </div>
@@ -728,6 +745,7 @@ function showMain() {
   loadVpnInterfaces();
   loadHosts();
   loadRouteLists();
+  loadList2();
   loadParentalList();
   loadAdblockStatus();
   loadAdguardStatus();
@@ -1822,8 +1840,10 @@ function kvasTest(btn) {
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, 60000);
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
+    clearTimeout(timer);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok && d.pending) { vpnPoll(d.task, 0, btn, 'Выполнение диагностики', { msgEl: 'diagOutput', done: function(){} }); return; }
+    loadingBtn(btn, false);
     if (d.ok) { el.textContent = d.output || 'нет вывода'; }
     else { el.textContent = 'Ошибка: ' + (d.error || 'неизвестная'); }
   }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
@@ -1837,8 +1857,10 @@ function kvasDebug(btn) {
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, 60000);
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
+    clearTimeout(timer);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok && d.pending) { vpnPoll(d.task, 0, btn, 'Выполнение диагностики', { msgEl: 'diagOutput', done: function(){} }); return; }
+    loadingBtn(btn, false);
     if (d.ok) { el.textContent = d.output || 'нет вывода'; }
     else { el.textContent = 'Ошибка: ' + (d.error || 'неизвестная'); }
   }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
@@ -1852,8 +1874,10 @@ function kvasDebugDns(btn) {
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, 60000);
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
+    clearTimeout(timer);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok && d.pending) { vpnPoll(d.task, 0, btn, 'Выполнение диагностики', { msgEl: 'diagOutput', done: function(){} }); return; }
+    loadingBtn(btn, false);
     if (d.ok) { el.textContent = d.output || 'нет вывода'; }
     else { el.textContent = 'Ошибка: ' + (d.error || 'неизвестная'); }
   }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
@@ -1867,8 +1891,10 @@ function kvasDebugIptables(btn) {
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, 60000);
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
+    clearTimeout(timer);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok && d.pending) { vpnPoll(d.task, 0, btn, 'Выполнение диагностики', { msgEl: 'diagOutput', done: function(){} }); return; }
+    loadingBtn(btn, false);
     if (d.ok) { el.textContent = d.output || 'нет вывода'; }
     else { el.textContent = 'Ошибка: ' + (d.error || 'неизвестная'); }
   }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.textContent = 'Ошибка: ' + e.message; });
@@ -2262,8 +2288,10 @@ function awgNew(btn) {
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, 60000);
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
+    clearTimeout(timer);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok && d.pending) { vpnPoll(d.task, 0, btn, 'Настройка AmneziaWG', { msgEl: 'vpnSetupMsg', done: function(){ loadSystemStatus(); loadVpnInterfaces(); } }); return; }
+    loadingBtn(btn, false);
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.output || 'AmneziaWG настроен'; loadVpnInterfaces(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
     loadSystemStatus(); loadVpnInterfaces();
@@ -2373,8 +2401,10 @@ function xrayInstall(btn) {
   var ctrl = new AbortController();
   var timer = setTimeout(function() { ctrl.abort(); }, 120000);
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
-    clearTimeout(timer); loadingBtn(btn, false);
+    clearTimeout(timer);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
+    if (d.ok && d.pending) { vpnPoll(d.task, 0, btn, 'Установка xray ' + ver, { msgEl: 'xrayMsg', done: function(){ loadXrayStatus(); loadSystemStatus(); } }); return; }
+    loadingBtn(btn, false);
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.output || 'Установлено';
@@ -2417,6 +2447,12 @@ function doRestore(btn) {
   if (!confirm('Восстановить настройки из последнего бэкапа?')) return;
   apiBtn('/cgi-bin/manage.sh?action=restore', btn, function(d){
     var el = document.getElementById('sysMsg');
+    if (d.ok && d.pending) {
+      // restore выполняется в фоне — опрашиваем vpn_progress
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task, 0, btn, 'Восстановление из бэкапа', { msgEl: 'sysMsg', done: function(){ loadSystemStatus(); } });
+      return;
+    }
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; }
     else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
   });
@@ -2725,6 +2761,12 @@ function loadAdblockStatus() {
 
 function adblockOn(btn) {
   apiBtn('/cgi-bin/manage.sh?action=adblock_on', btn, function(d){
+    if (d.ok && d.pending) {
+      // загрузка списков в фоне — опрашиваем vpn_progress
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task, 0, btn, 'Включение Adblock', { msgEl: 'parentalMsg', done: function(){ loadAdblockStatus(); loadParentalList(); } });
+      return;
+    }
     loadAdblockStatus();
     loadParentalList();
   }, 120000);
@@ -2860,6 +2902,12 @@ function routeAction(action, btn) {
   api('/cgi-bin/manage.sh?action=route_' + action + '&token=' + AUTH_TOKEN, function(d) {
     if (btn) loadingBtn(btn, false);
     var el = document.getElementById('routeMsg');
+    if (d.ok && d.pending) {
+      // refresh выполняется в фоне — опрашиваем vpn_progress
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task, 0, btn, 'Обновление маршрутов', { msgEl: 'routeMsg', done: function(){ loadRouteLists(); } });
+      return;
+    }
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.msg || 'OK';
@@ -2928,6 +2976,100 @@ function loadRouteLists() {
       opt.value = ''; opt.textContent = 'Нет доступных сетей'; sel.appendChild(opt);
     }
   });
+}
+
+/* ========== СПИСОК 2 (вторая полоса) ========== */
+function loadList2() {
+  var sel = document.getElementById('l2TunnelSel');
+  if (!sel) return;
+  api('/cgi-bin/manage.sh?action=list2_status', function(d) {
+    var st = document.getElementById('l2Status');
+    var ifc = document.getElementById('l2Iface');
+    if (!d.ok) { if (st) st.textContent = d.error || 'нет связи'; return; }
+    var avail = (d.available || 'current').split(/\s+/).filter(Boolean);
+    var labels = { current: 'текущий', vless: 'vless', hysteria: 'hysteria', awg: 'AmneziaWG' };
+    sel.innerHTML = '';
+    avail.forEach(function(t) {
+      var o = document.createElement('option');
+      o.value = t;
+      o.textContent = (labels[t] || t) + (t === d.tunnel ? ' — выбран' : '');
+      if (t === d.tunnel) o.selected = true;
+      sel.appendChild(o);
+    });
+    if (ifc) ifc.textContent = (d.iface || '—') + (d.iface_up === 'yes' ? ' (поднят)' : ' (недоступен)');
+    if (st) st.textContent = 'метка 0xd1001 → таблица ' + (d.table || '201') + ', записей: ' + d.entries;
+  });
+  api('/cgi-bin/manage.sh?action=list2_list', function(d) {
+    var el = document.getElementById('l2List');
+    if (!el) return;
+    if (!d.ok || !d.entries || !d.entries.length) {
+      el.innerHTML = '<div class="status" style="color:#8b949e;">Список пуст — добавьте домены или IP выше</div>';
+      return;
+    }
+    el.innerHTML = '';
+    d.entries.forEach(function(h) {
+      var div = document.createElement('div');
+      div.className = 'host-item';
+      div.style.cssText = 'display:flex;gap:6px;align-items:center;';
+      div.innerHTML = '<span style="color:#58a6ff;flex:1;word-break:break-all;">' + h + '</span>' +
+        '<button class="btn btn-sm danger" style="padding:1px 8px;font-size:11px;" onclick="list2Del(this)">✕</button>';
+      div.querySelector('button').setAttribute('data-host', h);
+      el.appendChild(div);
+    });
+  });
+}
+
+function list2Add(btn) {
+  var inp = document.getElementById('l2Input');
+  var v = (inp ? inp.value : '').trim();
+  if (!v) { alert('Введите домен, IP или CIDR'); return; }
+  var el = document.getElementById('l2Msg');
+  el.className = '';
+  el.innerHTML = '<span style="color:#8b949e;">Добавление в Список 2...</span>';
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=list2_add&host=' + encodeURIComponent(v), function(d) {
+    if (d.ok && d.pending) {
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task, 0, btn, 'Добавление в Список 2', { msgEl: 'l2Msg', done: function() {
+        if (inp) inp.value = '';
+        loadList2();
+      }});
+      return;
+    }
+    if (btn) loadingBtn(btn, false);
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Добавлено'; if (inp) inp.value = ''; loadList2(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+  }, 60000);
+}
+
+function list2Del(btn) {
+  var host = btn && btn.getAttribute ? btn.getAttribute('data-host') : '';
+  if (!host) return;
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=list2_del&host=' + encodeURIComponent(host), function(d) {
+    if (d.ok && d.pending) {
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task, 0, btn, 'Удаление из Списка 2', { msgEl: 'l2Msg', done: loadList2 });
+      return;
+    }
+    if (btn) loadingBtn(btn, false);
+    var el = document.getElementById('l2Msg');
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Удалено'; loadList2(); }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+  }, 60000);
+}
+
+function list2Tunnel(sel) {
+  var t = sel.value;
+  if (!t) return;
+  var el = document.getElementById('l2Msg');
+  el.className = '';
+  el.innerHTML = '<span style="color:#8b949e;">Смена тоннеля Списка 2...</span>';
+  api('/cgi-bin/manage.sh?action=list2_tunnel&tunnel=' + encodeURIComponent(t), function(d) {
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Тоннель изменён'; }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+    loadList2();
+  }, 30000);
 }
 
 function routeAdd() {
