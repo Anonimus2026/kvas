@@ -1,7 +1,7 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-618
-**Дата:** 29.09.2026
+**Версия:** 1.1.9_beta-10-619
+**Дата:** 30.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
 **Оригинал:** https://github.com/qzeleza/kvas
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 618)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 619)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, **618** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, **619** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v618)
+## 4. Текущий статус (v619)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -56,6 +56,8 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | Закваски tags (add/del/edit, web + CLI) | ✓ |
 | **Список 2 — вторая полоса (kvas2.list → KVAS_LIST2 → mark 0xd1001 → table 201)** | ✓ v612 + Keenetic-native tunnels (v614), labels/delete fix (v615), ipset rebuild + conntrack flush (v616), tg update button (v617), fill_domain add revert (v618) |
 | **kvas del: удаление статики IP/CIDR из ipset + ct-flush (баг lane1-остатков)** | ✓ v618 |
+| **Failover: фикс флапа при ручном AWG (рассинхрон desc/токен) + авто-миграция conf (вариант B) + дедуп TERTIARY** | ✓ v619 |
+| **Telegram-бот: выбор тоннеля (Tunnels-меню, паритет с Web UI)** | ✓ v619 |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -66,10 +68,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Конфиг:** `TG_ENABLED`, `TG_BOT_TOKEN`, `TG_CHAT_ID`, `TG_QUIET_START/END` (тихие часы), whitelist событий `failover|update_found|upgrade|tunnel|health|parental_expire` (v606: +`upgrade` — иначе «Обновление выполнено» из CLI/WebUI не доходило).
 - **Сеть:** Telegram только через `tg_curl`/`tg_curl_to` (socks5h, порт из `tg_socks_port`, default 1097). long-poll getUpdates `timeout=25`, sendMessage fire-and-forget, RC=0 только при `"ok":true`.
 - **Singleton:** atomic `mkdir` lock + pid re-verify + `kill -9` чужих; один EXIT-trap; TERM/INT/HUP → `exit 0`. Keepalive: `tg_sender` стартует бота, только если lock-каталога нет и 0 инстансов.
-- **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
+- **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617 — рабочие. Следующий = **619**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619 — рабочие. Следующий = **620**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -129,6 +131,37 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Баг `kvas del` (основной список):** ветка удаления всегда шла через `dns__get_ips_by_domain` — на IP-литерал kdig A-запрос возвращает пусто → `ipset del` не выполнялся: строка из `kvas.list` удалялась, а член `KVAS_LIST` с `timeout 0` (бессрочный, статика) оставался навсегда; conntrack не сбрасывался вообще. Следствие: пока домен был в Списке 2, цепочка KVAS_MARK2 перекрывала lane1; после удаления из Списка 2 PREROUTING матчил остаточный член → mark 0xd1000 → правило 1778 → таблица 200 → трафик «попадал в основной тоннель» при чистом kvas.list (диагностика: `ipset list KVAS_LIST` → `116.202.113.61 timeout 0`, файл по имени чист). Фикс: IP/диапазон/CIDR (по `get_regexp_ip_or_range`) удаляются напрямую `ipset -exist del` + `ct__flush_ips` — чистка идёт даже если строки в файле уже нет (застрявший член); для доменов добавлен ct-flush срезолвленных IP. Общий `ct__flush_ips()` вынесен в `libs/main` (`cmd_list2__flush_ct` делегирует).
   - **Отладка v618 (роутер, подтверждено пользователем):** dnscrypt и conntrack в порядке — не фактор; `KVAS_LIST` создан с `timeout 86400` (доменные члены самоистекают ≤24 ч, `timeout 0` — нет); ручная чистка `ipset del KVAS_LIST 116.202.113.61` + ct-flush → после удаления из Списка 2 exit-IP = провайдер (напрямую) — причина доказана вживую.
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-618`, postinst fallback `_rel=618`; изменённые файлы: `bin/libs/list2`, `bin/libs/main`, `bin/kvas`, `postinst`.
+- **Пакет v619 (фикс флапа failover при ручном AWG + бот «Tunnels»):**
+  - **Баг (диагноз §4.2 подтверждён данными роутера):** ручной выбор AWG писал в `kvas.failover.conf` desc `PRIMARY=Kvas-proxy-awg`, а `get_active_iface` для `Proxy42` жёстко возвращает токен `awg` → `active≠PRIMARY` навсегда → `awg==TERTIARY` → ветка tertiary каждые 30с: «восстановлен» → `switch_to` на тот же Proxy42 → «Демон запущен» → повтор (без FAIL_THRESHOLD/anti-flap в secondary/tertiary-ветках). Плюс `check_awg` не source'ил `$AWG_ENV` (127.0.0.1:10818 не подхватывались → проба могла всегда падать) и токен `awg` не принимался в `kvas vpn set`.
+  - **Фиксы:** (1) `bin/kvas`: case `_new_primary` += `*Proxy42*|*t2s42*) _new_primary="awg"`; `vpn set` принимает `vless|hysteria|awg` — ветка awg: `iface_cli="${PROXY_AWG_NAME:-Proxy42}"` (lookup из `inface_equals`), старт `S99awg` зеркально hysteria, `PRIMARY="$proto"` → `awg`; XRAY_INIT-подмена сохраняется. (2) `libs/awg check_awg`: `[ -f "$AWG_ENV" ] && . "$AWG_ENV"` + guard `[ -z IP ] || [ -z PORT ] && return 1` (стиль `check_hysteria`). (3) `libs/failover`: `_fo_canon()` — awk-lookup desc (field3, с кавычками → без) в `inface_equals` → cli → токен `Proxy21→vless`, `Proxy41→hysteria`, `Proxy42→awg`, иначе значение как есть; применяется к PRIMARY/SECONDARY/TERTIARY в `load_failover_conf` (**вариант B** — существующий conf пользователя чинится автоматически при каждом чтении) + дедуп `TERTIARY==PRIMARY/SECONDARY → ""` в load и save (дропдауны UI не валидируют).
+  - **Фича — Telegram-бот «Tunnels» (паритет с Web UI, по заявке пользователя):** `KB_MAIN` += `Tunnels`; `tb_show_tunnels` (шапка «current: <friendly>», кнопки из `tb_tunnel_lines`, `tb_state_set tunnels`); state `tunnels`: валидация выбора по списку (`grep -qxF`), `_tb_cli_of` (vless→Proxy21, hysteria→Proxy41, AmneziaWG/awg→Proxy42, иначе as-is), «Already active» при совпадении с `INFACE_CLI` из `kvas.conf`, иначе `tb_state_clear` + `tb_job vpn <cli>`; `tg_job.sh` mode `vpn` → `kvas vpn set <iface>` → результат (`tbf_strip`/tail 1500) с friendly-именем; команда `/tunnels`, `Back` из state → меню, help обновлён.
+  - **Тест:** `test619.sh` — реальные вырезки `_fo_canon`/`load_failover_conf`/`check_awg`/`_tb_cli_of` из SOT (desc→канон в т.ч. legacy conf, дедуп tertiary, env-guard check_awg, маппинг бота) + структурные маркеры = **28/28, `TEST_RC=0`**; `PRECHECK_RC=0` (75 маркеров); `VERIFY_DONE`/`VERIFY_EXIT=0` (один проход).
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-619`, postinst fallback `_rel=619`; sha256 `6f30fa20b6cceede7a5c47c0bfdb5eb3533255b4364a83c783e33a69780e9114` (313 134 B); изменённые файлы: `bin/kvas`, `bin/libs/awg`, `bin/libs/failover`, `bin/tg_bot.sh`, `bin/tg_job.sh`, `postinst`.
+
+### 4.2. Баг v619: флап failover при ручном AWG — диагноз ПОДТВЕРЖДЁН, ФИКС ВНЕСЁН (29.09.2026 → v619, 30.09.2026)
+
+**Симптом (пользователь):** при принудительном выборе AWG socks5 (`t2s42`) при включённом failover — «автоматом переключает на vless, в итоге vless упал, помог `kvas init`»; затем — постоянные автопереключения каждые секунды, «файловер отключил и остался на одном» (vless «упал» один раз, воспроизводимость эпизодов `awg→vless` неясна — secondary менялся руками).
+
+**Подтверждённые данные (роутер):**
+- `inface_equals`: `Proxy42|t2s42|"Kvas-proxy-awg"` (пара `Proxy21|t2s21|"Kvas-proxy-vless"`, `Proxy41|t2s41|"Kvas-proxy-hysteria"`); `kvas.conf`: `INFACE_CLI=Proxy42`, `INFACE_ENT=t2s42`.
+- `kvas.failover.conf`: `PRIMARY=Kvas-proxy-awg` (desc!), `SECONDARY=hysteria`, `TERTIARY=awg` (токен из available) — задано руками.
+- Лог циклом: `Активен awg (второй резерв). Проверяем выше...` → `Kvas-proxy-awg восстановлен. Возврат.` → `SWITCH: awg -> Kvas-proxy-awg` → `Демон запущен` → повтор (история: непрерывный флап `awg→Kvas-proxy-awg`, `awg→hysteria`).
+
+**Диагноз (код подтверждает гипотезу пользователя: «awg не учли в логике ручного указания»):**
+1. **Рассинхрон имён одного канала:** ручной выбор/`failover set primary` в ветке `*` (`bin/kvas:595-602`) маппит только `Proxy21→vless`, `Proxy41→hysteria`, а для `Proxy42` пишет **desc `Kvas-proxy-awg`** (lookup `:599`); `get_active_iface` (`libs/failover:229-231`) для `Proxy42` возвращает **`awg`** (жёстко, перекрывая desc-ветку `:233-238`). → `PRIMARY=Kvas-proxy-awg` ≠ `Активный: awg` навсегда.
+2. **Флап-цикл:** `active("awg") == TERTIARY("awg")` → ветка tertiary (`failover:478-490`) → «восстановлен» → `switch_to Kvas-proxy-awg` → `kvas vpn set` реально переключает на тот же Proxy42/t2s42 → активный снова `awg` → повтор. В ветках secondary/tertiary нет ни `FAIL_THRESHOLD`, ни anti-flap. Пробы primary идут через `check_tun_interface(t2s42)` (работает — «восстановлен»), эпизоды `awg→hysteria` — та же ветка при упавшей пробе.
+3. **Путь Web UI:** селект шлёт `vpn_set&iface=t2s42` (`index.html:1612` — `opt.value` = ent) → та же ветка `*` → тот же рассинхрон; `proto=vless|hysteria` — отдельные кнопки, для AWG их нет.
+4. **Побочный дефект:** `check_awg` (`libs/awg:497`) использует `PROXY_LOCAL_IP`/`PROXY_LOCAL_PORT_SOCKS`, но **не source'ит `$AWG_ENV`** (значения в `awg/etc/conf/env.sh`: 127.0.0.1:10818) — при `PRIMARY=awg` проба может всегда падать → вечный увод на hysteria. `check_hysteria` в том же lib env читает (`failover:266-269`) — аwg-нет.
+5. **Мостик для switch:** токен `awg` в `kvas vpn set` не обрабатывается (ветка только `vless|hysteria`, `bin/kvas:489`) → после фикса (1) `switch_to awg` завершился бы ошибкой «Интерфейс 'awg' не найден» — нужен маппинг `awg→Proxy42` (как `vless→Proxy21`, `hysteria→Proxy41`).
+
+**Фикс v619 (ВНЕСЁН — все 5 пунктов, см. «Пакет v619»):**
+1. `bin/kvas` ветка `*`: case-ветка `_new_primary` += `*Proxy42*|*t2s42*) _new_primary="awg" ;;` (параллельно Proxy21/41).
+2. `bin/kvas vpn set`: расширить `vless|hysteria` → `vless|hysteria|awg` (ветка `awg`: cli=Proxy42 lookup из `inface_equals`, старт `S99awg` зеркально hysteria; XRAIN_INIT-подмена сохраняется).
+3. `libs/awg check_awg`: `. "$AWG_ENV"` + guard непустоты порта (как check_hysteria).
+4. **Опция A (без миграции):** после обновления руками `kvas failover set primary awg`. **Опция B (рекомендуется):** нормализация desc→канон в `load_failover_conf` (desc из `inface_equals` для Proxy21/41/42 → vless/hysteria/awg) — чинит существующий conf пользователя автоматически.
+5. Тест: precheck/verify grep-маркеры + функциональный тест (get_active_iface/canonical + check_awg c фейк-env).
+
+**Фича-запрос пользователя:** в Telegram-боте нет выбора тоннеля (в Web UI есть) — хотелось бы выбирать тоннели из бота. **Вшита в v619** (Tunnels-меню, см. «Пакет v619»).
 
 ## 5. Сетевая конфигурация
 

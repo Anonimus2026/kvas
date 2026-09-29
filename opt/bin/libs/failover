@@ -30,6 +30,23 @@ EOF
     fi
 }
 
+# канон имени канала: desc из inface_equals (поле 3, может быть в кавычках) →
+# токен, как его отдаёт get_active_iface (vless/hysteria/awg); иначе как есть.
+# Чинит старые conf, где primary/secondary/tertiary = desc (Kvas-proxy-awg и т.п.)
+# и активный канал (awg) с ним не совпадал → флап «возврат на primary».
+_fo_canon() {
+    local _c=""
+    [ -n "$1" ] || return 0
+    _c=$(awk -F'|' -v d="\"$1\"" '$3==d {print $1; exit}' "${INFACE_NAMES_FILE}" 2>/dev/null)
+    [ -z "$_c" ] && _c=$(awk -F'|' -v d="$1" '$3==d {print $1; exit}' "${INFACE_NAMES_FILE}" 2>/dev/null)
+    case "$_c" in
+        Proxy21) printf 'vless' ;;
+        Proxy41) printf 'hysteria' ;;
+        Proxy42) printf 'awg' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
 load_failover_conf() {
     init_failover_conf
     # Не используем source — имена каналов могут содержать спецсимволы (скобки и т.д.)
@@ -40,6 +57,9 @@ load_failover_conf() {
     CHECK_INTERVAL=$(grep "^CHECK_INTERVAL=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
     FAIL_THRESHOLD=$(grep "^FAIL_THRESHOLD=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
     AUTO_START=$(grep "^AUTO_START=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    PRIMARY=$(_fo_canon "$PRIMARY")
+    SECONDARY=$(_fo_canon "$SECONDARY")
+    TERTIARY=$(_fo_canon "$TERTIARY")
 }
 
 save_failover_conf() {
@@ -49,6 +69,9 @@ save_failover_conf() {
         SECONDARY=""
     fi
     [ -z "$SECONDARY" ] && SECONDARY="manual"
+    # TERTIARY не должен дублировать primary/secondary (дропдауны UI не валидируют)
+    [ "$TERTIARY" = "$PRIMARY" ] && TERTIARY=""
+    [ "$TERTIARY" = "$SECONDARY" ] && TERTIARY=""
     cat > "$FAILOVER_CONF" << EOF
 FAILOVER_MODE=${FAILOVER_MODE:-failover}
 PRIMARY=${PRIMARY:-vless}

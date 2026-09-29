@@ -486,7 +486,7 @@ case "${1}" in
 		case "${2}" in
 			set)
 				case "${3}" in
-					vless|hysteria)
+					vless|hysteria|awg)
 						LOG="/tmp/kvas-vpn-set.log"
 						: > "$LOG"
 						
@@ -505,6 +505,13 @@ case "${1}" in
 							_t=$(_ts); echo "[KVAS_SET] $_t Определение iface для vless" >&2; echo "[KVAS_SET] $_t Определение iface для vless" >> "$LOG"
 							iface_cli="${PROXY_VLESS_NAME:-Proxy21}"
 							_t=$(_ts); echo "[KVAS_SET] $_t PROXY_VLESS_NAME=[${PROXY_VLESS_NAME}]" >&2; echo "[KVAS_SET] $_t PROXY_VLESS_NAME=[${PROXY_VLESS_NAME}]" >> "$LOG"
+							iface_ent=$(grep "^${iface_cli}|" "${INFACE_NAMES_FILE}" 2>/dev/null | cut -d'|' -f2)
+							_t=$(_ts); echo "[KVAS_SET] $_t grep из INFACE_NAMES_FILE: iface_ent=[$iface_ent]" >&2; echo "[KVAS_SET] $_t grep из INFACE_NAMES_FILE: iface_ent=[$iface_ent]" >> "$LOG"
+							[ -z "$iface_ent" ] && iface_ent="$iface_cli" && _t=$(_ts); echo "[KVAS_SET] $_t iface_ent пуст, использую iface_cli=$iface_cli" >&2; echo "[KVAS_SET] $_t iface_ent пуст, использую iface_cli=$iface_cli" >> "$LOG"
+						elif [ "$proto" = "awg" ]; then
+							_t=$(_ts); echo "[KVAS_SET] $_t Определение iface для awg" >&2; echo "[KVAS_SET] $_t Определение iface для awg" >> "$LOG"
+							iface_cli="${PROXY_AWG_NAME:-Proxy42}"
+							_t=$(_ts); echo "[KVAS_SET] $_t PROXY_AWG_NAME=[${PROXY_AWG_NAME}]" >&2; echo "[KVAS_SET] $_t PROXY_AWG_NAME=[${PROXY_AWG_NAME}]" >> "$LOG"
 							iface_ent=$(grep "^${iface_cli}|" "${INFACE_NAMES_FILE}" 2>/dev/null | cut -d'|' -f2)
 							_t=$(_ts); echo "[KVAS_SET] $_t grep из INFACE_NAMES_FILE: iface_ent=[$iface_ent]" >&2; echo "[KVAS_SET] $_t grep из INFACE_NAMES_FILE: iface_ent=[$iface_ent]" >> "$LOG"
 							[ -z "$iface_ent" ] && iface_ent="$iface_cli" && _t=$(_ts); echo "[KVAS_SET] $_t iface_ent пуст, использую iface_cli=$iface_cli" >&2; echo "[KVAS_SET] $_t iface_ent пуст, использую iface_cli=$iface_cli" >> "$LOG"
@@ -553,7 +560,12 @@ case "${1}" in
 						if [ "$proto" = "hysteria" ]; then
 							_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> service_action S99hysteria start" >&2; echo "[KVAS_SET] $_t >>> service_action S99hysteria start" >> "$LOG"
 							service_action S99hysteria start > /dev/null 2>&1
-							_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< service_action S99hysteria start (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< service_action S99hysteria start (${_d}s)" >> "$LOG"
+							_d=$(( $(_sec) - $(_s) )); _t=$(_ts); echo "[KVAS_SET] $_t <<< service_action S99hysteria start (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< service_action S99hysteria start (${_d}s)" >> "$LOG"
+						fi
+						if [ "$proto" = "awg" ]; then
+							_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> service_action S99awg start" >&2; echo "[KVAS_SET] $_t >>> service_action S99awg start" >> "$LOG"
+							service_action S99awg start > /dev/null 2>&1
+							_d=$(( $(_sec) - $(_s) )); _t=$(_ts); echo "[KVAS_SET] $_t <<< service_action S99awg start (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< service_action S99awg start (${_d}s)" >> "$LOG"
 						fi
 						
 						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> load_failover_conf + save" >&2; echo "[KVAS_SET] $_t >>> load_failover_conf + save" >> "$LOG"
@@ -595,6 +607,7 @@ case "${1}" in
 								case "${_found_cli}" in
 									*Proxy21*) _new_primary="vless" ;;
 									*Proxy41*) _new_primary="hysteria" ;;
+									*Proxy42*|*t2s42*) _new_primary="awg" ;;
 									*)
 										_new_primary=$(grep "|${_found_ent}|" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f3 | sed 's/^"//; s/"$//')
 										[ -n "$_new_primary" ] || _new_primary="${3}"

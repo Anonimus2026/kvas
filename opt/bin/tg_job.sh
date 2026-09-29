@@ -2,7 +2,7 @@
 # Задачи бота KVAS с ответом в Telegram (P.8+).
 # Копируется в /tmp: пакет перезаписывается opkg во время работы.
 # Аргументы: $1=chat_id $2=mode [args...]
-# modes: update|rollback|test|debug|init|site <iface> <site>|speed <iface>
+# modes: update|rollback|test|debug|init|vpn <iface>|site <iface> <site>|speed <iface>
 . /opt/apps/kvas/bin/libs/tgq 2>/dev/null || exit 0
 
 # friendly display name (same as bot tb_friendly)
@@ -91,6 +91,18 @@ ${_out:-нет вывода}"
 		_out=$(tbj_strip <"${_outf}" 2>/dev/null | tail -c 2500)
 		rm -f "${_outf}"
 		tbj_send "Перезагрузка KVAS (код ${_rc}):
+${_out:-нет вывода}"
+		;;
+
+	vpn)
+		_iface="$1"
+		[ -n "${_iface}" ] || { tbj_send "vpn: нужен iface"; exit 1; }
+		_outf=/tmp/.tgjob.out.$$
+		sh /opt/apps/kvas/bin/kvas vpn set "${_iface}" >"${_outf}" 2>&1
+		_rc=$?
+		_out=$(tbj_strip <"${_outf}" 2>/dev/null | tail -c 1500)
+		rm -f "${_outf}"
+		tbj_send "Переключение на $(tb_friendly "${_iface}") (код ${_rc}):
 ${_out:-нет вывода}"
 		;;
 

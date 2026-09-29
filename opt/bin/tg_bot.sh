@@ -99,7 +99,7 @@ tb_kb() {
 	printf '{"keyboard":[%s],"resize_keyboard":true}' "${_rows}"
 }
 
-KB_MAIN() { tb_kb "Kvas.list|Tags" "Diagnostics|Help"; }
+KB_MAIN() { tb_kb "Kvas.list|Tags" "Tunnels|Diagnostics|Help"; }
 KB_LIST() { tb_kb "Add domains|Delete domains" "Show list" "Back"; }
 KB_ZK() { tb_kb "List tags" "Add to tunnel|Remove from tunnel" "Back"; }
 KB_DIAG() { tb_kb "Kvas test|Kvas debug" "Site test|Speed test" "Restart KVAS" "Back"; }
@@ -120,10 +120,11 @@ tb_help() {
 /list — full protected list
 /add <domains...> — add (multiple ok)
 /del <domains...> — remove (multiple ok)
+/tunnels — list and switch VPN tunnels
 /status — full status (tunnel + services)
 /update — update KVAS
 /rollback — rollback
-Menu: Kvas.list, Tags, Diagnostics."
+Menu: Kvas.list, Tags, Tunnels, Diagnostics."
 }
 
 # live tunnel state: state file (check_vpn/cron) → Keenetic API probe → ?
@@ -231,6 +232,7 @@ tb_job() { # $1=chat $2=mode [$3...] — из /tmp, чтобы opkg не пер�
 		test)     _label="Kvas test" ;;
 		debug)    _label="Kvas debug" ;;
 		init)     _label="Restart KVAS" ;;
+		vpn)      _label="Switch tunnel to $(tb_friendly "$1")" ;;
 		site)     _label="Site test ($1 -> $2)" ;;
 		speed)    _label="Inbound speed test ($1)" ;;
 		*) return 1 ;;
@@ -257,6 +259,31 @@ tb_tunnel_lines() {
 		esac
 		printf '%s\n' "$(tb_friendly "${_cli}")"
 	done < /opt/etc/inface_equals 2>/dev/null
+}
+
+# friendly → аргумент для kvas vpn set (vless/hysteria/awg — канон, остальное = cli)
+_tb_cli_of() {
+	case "$1" in
+		vless)       printf 'Proxy21' ;;
+		hysteria)    printf 'Proxy41' ;;
+		AmneziaWG|awg) printf 'Proxy42' ;;
+		*)           printf '%s' "$1" ;;
+	esac
+}
+
+# меню выбора тоннеля (кнопки = friendly, текущий — в шапке)
+tb_show_tunnels() {
+	_ch="$1"
+	_lines=$(tb_tunnel_lines)
+	if [ -z "${_lines}" ]; then
+		tb_send "${_ch}" "No tunnels available" "${_TB_KB}"
+		tb_state_clear
+		return
+	fi
+	_cur=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	_cur=$(tb_friendly "${_cur}"); [ -n "${_cur}" ] || _cur="?"
+	tb_state_set "tunnels"
+	tb_send "${_ch}" "Tunnels (current: ${_cur}). Choose to switch:" "$(printf '%s\n' "${_lines}" | tb_kb_lines)"
 }
 
 # динамическая клавиатура из строк stdin + «Back»
@@ -406,6 +433,7 @@ tb_reply_cmd() { # $1=chat $2=cmd $3=arg
 			tb_bulk_del "${_ch}" "${_arg}"
 			tb_send "${_ch}" "Menu:" "${_TB_KB}"
 			;;
+		/tunnels) tb_show_tunnels "${_ch}" ;;
 		/update)   tb_update_ask "${_ch}" ;;
 		/rollback) tb_job "${_ch}" rollback ;;
 		/*) tb_send "${_ch}" "Unknown command: ${_cmd}
@@ -436,7 +464,7 @@ tb_on_text() { # $1=chat $2=text
 				list_add|list_del) tb_show_list_menu "${_ch}" ;;
 				zk_add|zk_del)     tb_show_zk_menu "${_ch}" ;;
 				diag_site|diag_site_url|diag_speed) tb_show_diag_menu "${_ch}" ;;
-				list|zk|diag)      tb_show_main "${_ch}" ;;
+				list|zk|diag|tunnels) tb_show_main "${_ch}" ;;
 				*)                 tb_show_main "${_ch}" ;;
 			esac
 			return
@@ -447,6 +475,10 @@ tb_on_text() { # $1=chat $2=text
 			;;
 		Tags|*Tags*)
 			tb_show_zk_menu "${_ch}"
+			return
+			;;
+		Tunnels|*Tunnels*)
+			tb_show_tunnels "${_ch}"
 			return
 			;;
 		Diagnostics|*Diagnostics*)
@@ -533,6 +565,26 @@ tb_on_text() { # $1=chat $2=text
 			tb_bulk_del "${_ch}" "${_tx}"
 			tb_send "${_ch}" "List menu:" "$(KB_LIST)"
 			tb_state_set "list"
+			return
+			;;
+		tunnels)
+			case "${_tx}" in
+				Back) tb_show_main "${_ch}"; return ;;
+			esac
+			if ! printf '%s\n' "$(tb_tunnel_lines)" | grep -qxF "${_tx}"; then
+				tb_send "${_ch}" "Tunnel '${_tx}' not found. Choose from list." "$(KB_BACK)"
+				return
+			fi
+			_cli=$(_tb_cli_of "${_tx}")
+			_cur=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+			if [ "${_cli}" = "${_cur}" ]; then
+				tb_state_clear
+				tb_send "${_ch}" "Already active: ${_tx}" "${_TB_KB}"
+				return
+			fi
+			tb_state_clear
+			tb_job "${_ch}" vpn "${_cli}"
+			tb_send "${_ch}" "Menu:" "${_TB_KB}"
 			return
 			;;
 		zk)
