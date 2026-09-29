@@ -99,7 +99,8 @@ cmd_list2__fill_domain() {
 	cmd_list2__ensure_ipset
 	IFS=$'\n'
 	for domain_ip in ${ip_list}; do
-		/opt/sbin/ipset -exist add "${IPSET_TABLE2_NAME}" "${domain_ip}" 2>/dev/null || true
+		/opt/sbin/ipset del "${IPSET_TABLE2_NAME}" "${domain_ip}" 2>/dev/null || true
+		cmd_list2__flush_ct "${domain_ip}"
 	done
 }
 
@@ -119,6 +120,20 @@ cmd_list2__regen_dns() {
 	kill -HUP "$(pidof dnsmasq)" 2>/dev/null
 }
 
+# сброс conntrack для IP: марка полосы живёт в CONNMARK, цепочки метят только NEW —
+# без удаления записей действующие соединения продолжают идти по старой схеме
+cmd_list2__flush_ct() {
+	local ct_ip
+	command -v conntrack >/dev/null 2>&1 || return 0
+	for ct_ip in "$@" ; do
+		case "${ct_ip}" in
+			''|*/*|*-*|*' '*) continue ;;
+		esac
+		conntrack -D -d "${ct_ip}" >/dev/null 2>&1 || true
+		conntrack -D -s "${ct_ip}" >/dev/null 2>&1 || true
+	done
+}
+
 # применить Список 2 целиком: ipset, dns, цепочка, вход, таблица 201
 cmd_list2__apply() {
 	cmd_list2__ensure_file
@@ -128,6 +143,46 @@ cmd_list2__apply() {
 	ip4__mark2__create_chain
 	ip4__mark2__add_routing_for_home
 	ip4__route2__add_table
+}
+
+# полная пересборка ipset Списка 2 из kvas2.list (статика + резолв каждого домена)
+cmd_list2__rebuild() {
+	cmd_list2__ensure_file
+	cmd_list2__ensure_ipset
+	# старые участники: сбросить их conntrack, затем очистить набор —
+	# точечный ipset del промахивается, когда CDN отдаёт при удалении другие IP
+	local member
+	member=$(/opt/sbin/ipset -L "${IPSET_TABLE2_NAME}" 2>/dev/null | awk '/^Members:/{f=1;next} f && NF{print $1}')
+	if [ -n "${member}" ] ; then
+		cmd_list2__flush_ct ${member}
+	fi
+	# и всё ещё помеченные меткой полосы, но уже вычищенные из набора
+	# (бывает: запись успела уйти из ipset, а живое соединение держит CONNMARK)
+	if command -v conntrack >/dev/null 2>&1 ; then
+		local mark_hex="${MARK2_NUM:-0xd1001}"
+		mark_hex="${mark_hex#0x}"
+		local stale
+		stale=$(conntrack -L 2>/dev/null | awk -v m="${mark_hex}" 'index($0,m){for(i=1;i<=NF;i++) if($i ~ /^dst=/){print substr($i,5); break}}')
+		if [ -n "${stale}" ] ; then
+			cmd_list2__flush_ct ${stale}
+		fi
+	fi
+	/opt/sbin/ipset flush "${IPSET_TABLE2_NAME}" 2>/dev/null || true
+	cmd_list2__apply
+	# оставшиеся записи заново: статику перечитает main/ipset, домены — здесь
+	local line host
+	while IFS= read -r line || [ -n "${line}" ] ; do
+		case "${line}" in
+			''|'#'*|'-'*) continue ;;
+		esac
+		host=$(cmd_list2__normalize "${line}")
+		if cmd_list2__is_static "${host}" ; then
+			continue
+		fi
+		if cmd_list2__is_domain "${host}" ; then
+			cmd_list2__fill_domain "${host}"
+		fi
+	done < "${KVAS_LIST2_FILE}"
 }
 
 cmd_list2_list() {
@@ -205,12 +260,9 @@ cmd_list2_del() {
 	chmod 666 "${KVAS_LIST2_FILE}" 2>/dev/null
 	echo "Удалено из Списка 2: ${host}"
 
-	if cmd_list2__is_static "${host}" ; then
-		/opt/sbin/ipset del "${IPSET_TABLE2_NAME}" "${host}" 2>/dev/null || true
-	else
-		cmd_list2__drop_domain "${host}"
-		cmd_list2__regen_dns
-	fi
+	# пересборка целиком: убрать запись из ipset со всеми её IP
+	# (включая промахнувшиеся при точечном удалении) + сброс conntrack
+	cmd_list2__rebuild
 }
 
 cmd_list2_tunnel_list() {
