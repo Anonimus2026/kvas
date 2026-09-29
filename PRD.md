@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-617
+**Версия:** 1.1.9_beta-10-618
 **Дата:** 29.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 617)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 618)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, **617** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, **618** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v617)
+## 4. Текущий статус (v618)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -54,7 +54,8 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | kvas upgrade (force-reinstall + rollback) | ✓ |
 | Adblock + parental control | ✓ |
 | Закваски tags (add/del/edit, web + CLI) | ✓ |
-| **Список 2 — вторая полоса (kvas2.list → KVAS_LIST2 → mark 0xd1001 → table 201)** | ✓ v612 + Keenetic-native tunnels (v614), labels/delete fix (v615), ipset rebuild + conntrack flush (v616), tg update button (v617) |
+| **Список 2 — вторая полоса (kvas2.list → KVAS_LIST2 → mark 0xd1001 → table 201)** | ✓ v612 + Keenetic-native tunnels (v614), labels/delete fix (v615), ipset rebuild + conntrack flush (v616), tg update button (v617), fill_domain add revert (v618) |
+| **kvas del: удаление статики IP/CIDR из ipset + ct-flush (баг lane1-остатков)** | ✓ v618 |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -68,7 +69,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616 — рабочие. Следующий = **618**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617 — рабочие. Следующий = **619**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -123,6 +124,11 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Баг:** фоновая проверка версии (`tg_check_kvas_update` → `tg_notify update_found`, cron/цикл бота) шлёт `[update_found] Доступно обновление...` **без клавиатуры и без state `update_confirm`** → ответ пользователя «Yes update» (кнопкой из главного клавиатурного ресайза или текстом) не матчился ни глобальным case, ни state-машиной → `Unknown. Use menu or /help`.
   - **Фикс (2 места):** `tg_sender.sh` — на событие `update_found` крепится reply-клавиатура `[["Yes update"],["No cancel"]]`; `tg_bot.sh` — глобальный обработчик в `tb_on_text` (до state-машины, только при пустом state или `update_confirm`): «Yes update» → `tb_check_update` → запуск job update (либо «up to date»), «No cancel» → clear state + меню. `/update`-сценарий не менялся.
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-617`, postinst fallback `_rel=617`; изменённые файлы: `bin/tg_bot.sh`, `bin/tg_sender.sh`, `postinst`.
+- **Пакет v618 (возврат fill_domain add + удаление статики из основного списка):**
+  - **Регрессия v616 (Список 2):** в `cmd_list2__fill_domain` правка v616 заменила `ipset -exist add` на `ipset del` (вместе с добавлением flush_ct) → add домена не наполнял `KVAS_LIST2` (работал только dnsmasq-тег при повторном DNS-запросе клиента — «появилось после обновления страницы»), а `cmd_list2__rebuild` при каждом удалении вычищал IP оставшихся доменов и ронял их conntrack — после операции удаления Список 2 ломался у остальных записей. Фикс: вернуть `ipset -exist add` (flush_ct при добавлении сохранён — действующие соединения должны встать в новую полосу).
+  - **Баг `kvas del` (основной список):** ветка удаления всегда шла через `dns__get_ips_by_domain` — на IP-литерал kdig A-запрос возвращает пусто → `ipset del` не выполнялся: строка из `kvas.list` удалялась, а член `KVAS_LIST` с `timeout 0` (бессрочный, статика) оставался навсегда; conntrack не сбрасывался вообще. Следствие: пока домен был в Списке 2, цепочка KVAS_MARK2 перекрывала lane1; после удаления из Списка 2 PREROUTING матчил остаточный член → mark 0xd1000 → правило 1778 → таблица 200 → трафик «попадал в основной тоннель» при чистом kvas.list (диагностика: `ipset list KVAS_LIST` → `116.202.113.61 timeout 0`, файл по имени чист). Фикс: IP/диапазон/CIDR (по `get_regexp_ip_or_range`) удаляются напрямую `ipset -exist del` + `ct__flush_ips` — чистка идёт даже если строки в файле уже нет (застрявший член); для доменов добавлен ct-flush срезолвленных IP. Общий `ct__flush_ips()` вынесен в `libs/main` (`cmd_list2__flush_ct` делегирует).
+  - **Отладка v618 (роутер, подтверждено пользователем):** dnscrypt и conntrack в порядке — не фактор; `KVAS_LIST` создан с `timeout 86400` (доменные члены самоистекают ≤24 ч, `timeout 0` — нет); ручная чистка `ipset del KVAS_LIST 116.202.113.61` + ct-flush → после удаления из Списка 2 exit-IP = провайдер (напрямую) — причина доказана вживую.
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-618`, postinst fallback `_rel=618`; изменённые файлы: `bin/libs/list2`, `bin/libs/main`, `bin/kvas`, `postinst`.
 
 ## 5. Сетевая конфигурация
 

@@ -161,12 +161,23 @@ case "${1}" in
 			[ -z "$_dom" ] && continue
 			ready "Удаляем $_dom из списка защищенных..."
 			_esc_dom=$(echo "$_dom" | sed 's/\//\\\//g')
+			# IP/диапазон/CIDR чистим из набора всегда: dns__ на IP-литерал вернёт пусто,
+			# а член с timeout 0 мог остаться при уже чистом файле (прежние версии del)
+			_is_static=no
+			if echo "${_dom}" | grep -qE -- "$(get_regexp_ip_or_range)"; then
+				_is_static=yes
+				/opt/sbin/ipset -exist del "${IPSET_TABLE_NAME}" "${_dom}" &>/dev/null
+				ct__flush_ips "${_dom}"
+			fi
 			if grep -qe "${_dom}$" "$KVAS_LIST_FILE" 2>/dev/null; then
 				sed -i "/${_esc_dom}/d" "$KVAS_LIST_FILE" 2>/dev/null
 				cmd_adguardhome_status | grep -q ВКЛЮЧЕН 2>/dev/null && sed -i "/${_esc_dom}/d" "$ADGUARD_IPSET_FILE" 2>/dev/null
-				for _ip in $(dns__get_ips_by_domain "$_dom" 2>/dev/null); do
-					/opt/sbin/ipset -exist del "${IPSET_TABLE_NAME}" "$_ip" &>/dev/null
-				done
+				if [ "${_is_static}" = no ]; then
+					for _ip in $(dns__get_ips_by_domain "$_dom" 2>/dev/null); do
+						/opt/sbin/ipset -exist del "${IPSET_TABLE_NAME}" "$_ip" &>/dev/null
+						ct__flush_ips "$_ip"
+					done
+				fi
 				_deleted=true
 				when_ok "УДАЛЕН"
 			else

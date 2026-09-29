@@ -241,6 +241,20 @@ ipset__fill_by_domain() {
 	done
 }
 
+# сброс conntrack для IP: метка полосы живёт в CONNMARK, цепочки метят только NEW —
+# без удаления записей действующие соединения продолжают идти по старой схеме
+ct__flush_ips() {
+	local ct_ip
+	command -v conntrack >/dev/null 2>&1 || return 0
+	for ct_ip in "$@" ; do
+		case "${ct_ip}" in
+			''|*/*|*-*|*' '*) continue ;;
+		esac
+		conntrack -D -d "${ct_ip}" >/dev/null 2>&1 || true
+		conntrack -D -s "${ct_ip}" >/dev/null 2>&1 || true
+	done
+}
+
 # доступность DNS сервера
 DNS_ENABLE=false
 DNS_DEFAULT=''

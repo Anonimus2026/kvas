@@ -99,7 +99,7 @@ cmd_list2__fill_domain() {
 	cmd_list2__ensure_ipset
 	IFS=$'\n'
 	for domain_ip in ${ip_list}; do
-		/opt/sbin/ipset del "${IPSET_TABLE2_NAME}" "${domain_ip}" 2>/dev/null || true
+		/opt/sbin/ipset -exist add "${IPSET_TABLE2_NAME}" "${domain_ip}" 2>/dev/null || true
 		cmd_list2__flush_ct "${domain_ip}"
 	done
 }
@@ -120,18 +120,9 @@ cmd_list2__regen_dns() {
 	kill -HUP "$(pidof dnsmasq)" 2>/dev/null
 }
 
-# сброс conntrack для IP: марка полосы живёт в CONNMARK, цепочки метят только NEW —
-# без удаления записей действующие соединения продолжают идти по старой схеме
+# сброс conntrack для IP (реализация — ct__flush_ips в libs/main)
 cmd_list2__flush_ct() {
-	local ct_ip
-	command -v conntrack >/dev/null 2>&1 || return 0
-	for ct_ip in "$@" ; do
-		case "${ct_ip}" in
-			''|*/*|*-*|*' '*) continue ;;
-		esac
-		conntrack -D -d "${ct_ip}" >/dev/null 2>&1 || true
-		conntrack -D -s "${ct_ip}" >/dev/null 2>&1 || true
-	done
+	ct__flush_ips "$@"
 }
 
 # применить Список 2 целиком: ipset, dns, цепочка, вход, таблица 201
