@@ -148,7 +148,7 @@ kvas list2                   - статус Списка 2 (вторая пол�
 kvas list2 list              - записи Списка 2
 kvas list2 add <домен|IP>    - добавить в Список 2
 kvas list2 del <домен|IP>    - удалить из Списка 2
-kvas list2 tunnel [имя]      - показать/сменить тоннель Списка 2
+kvas list2 tunnel [имя]      - показать/сменить тоннель (current|vless|hysteria|awg|id из Keenetic)
 kvas list2 tunnel-list       - доступные тоннели
 
 == ДИАГНОСТИКА ==

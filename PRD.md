@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-613
+**Версия:** 1.1.9_beta-10-614
 **Дата:** 29.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 613)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 614)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, **613** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, **614** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v613)
+## 4. Текущий статус (v614)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -54,7 +54,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | kvas upgrade (force-reinstall + rollback) | ✓ |
 | Adblock + parental control | ✓ |
 | Закваски tags (add/del/edit, web + CLI) | ✓ |
-| **Список 2 — вторая полоса (kvas2.list → KVAS_LIST2 → mark 0xd1001 → table 201)** | ✓ v612 |
+| **Список 2 — вторая полоса (kvas2.list → KVAS_LIST2 → mark 0xd1001 → table 201)** | ✓ v612 + Keenetic-native tunnels (v614) |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -68,7 +68,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611 — рабочие. Следующий = **614**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613 — рабочие. Следующий = **615**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -100,6 +100,13 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Главная регрессия v612 — «основной список сломался» (домашняя сеть br0 не маркируется):** в `ip4__add_routing_for_home` (`bin/libs/ndm`, ~:660) dedup-цикл `save_iptables | grep -c -- "-A PREROUTING .*${net_interface} .*${chain_name}"` — паттерн без якоря `$` матчил подстроку `KVAS_MARK` в строке `-j KVAS_MARK2` того же интерфейса br0 → count=2 → `-D PREROUTING … -j KVAS_MARK` удалял НАСТОЯЩИЙ прыжок lane1, пересоздание не происходило (осцилляция: прыжок то есть, то нет). Фикс: якорь `…${chain_name}\$"` (в двойных кавычках `\$` доходит до grep как `$`); строка `-j KVAS_MARK2` кончается на `KVAS_MARK2` → не матчится. Также `libs/check:183` (`kvas test`): счётчик `"${VPN_IPTABLES_CHAIN}"` без границы → считал строки `-A KVAS_MARK2` как ложное «ДОБАВЛЕНЫ»; фикс: `grep -c -- "-A ${VPN_IPTABLES_CHAIN} "` (только тело цепочки). Guard `--set-mark` в `ip4__mark__create_chain`/`ip4__mark2__create_chain` НЕ трогали: он никогда не матчит реальный вывод iptables-save (`--set-xmark`) → цепочки пересоздаются при каждом `ip4_mark_vpn_network`, что случайно обеспечивает пересоздание `ip rule`/таблиц после ребута.
   - **Hysteria после обновления не запускалась** («если была запущена — приходится `kvas hysteria restart`»): путь обновления через `kvas uninstall … yes` (`main/upgrade:343`, срабатывает при пустом `SETUP_FINISHED`) останавливает все службы (`cmd_uninstall` шаг 1), а обратно `all_services_restart` поднимал hysteria **только** при `INFACE_CLI ~ Proxy41|hysteria` — не матчил `t2s41` и не поднимал «второстепенную» hysteria (main=vless/awg). После `stop` снимается `ACTIVE_FLAG` → watchdog не восстанавливает службу сам. Фиксы (3 слоя): (1) `cmd_uninstall` перед `S99hysteria status`→stop пишет маркер `/opt/var/kvas/.hysteria_running`; (2) `all_services_restart` (`libs/vpn`) — паттерн `*Proxy41*|*t2s41*|*hysteria*` + потребление маркера (рестарт при любом INFACE_CLI); (3) `main/upgrade` — фикс состояния hysteria до обновления и восстановление (`S99hysteria start`) после `kvas init`, если служба упала; плюс case bounce-интерфейса расширен `t2s21|t2s41` (комментарий «VLESS/Hysteria — не трогаем» их не покрывал).
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-613`, postinst fallback `_rel=613`; изменённые файлы: `bin/libs/ndm` (+`etc/ndm/ndm`), `bin/libs/check`, `bin/libs/vpn`, `bin/main/setup`, `bin/main/upgrade`, `postinst`.
+- **Пакет v614 (нативные тоннели Keenetic в Списке 2):**
+  - **Фича:** в выбор тоннеля Списка 2 добавлены интерфейсы VPN, поднятые непосредственно в Keenetic (OpenVPN/SSTP/WireGuard/IKE/L2TP/PPTP/PPPOE/OpenConnect) — как у основного списка (lane1 следует за `INFACE_ENT`, `ip4__route__add_table` uses ADDR_MAN). Источник — `inface_equals` (`cli|ent|desc`, пишется `update_interface_name_list`: RCI `show interface` с типами OpenVPN,Wireguard,IKE,SSTP,PPPOE,L2TP,PPTP,Proxy,OpenConnect, кроме defaultgw).
+  - **`bin/libs/list2`:** `cmd_list2__available` дописывает все `cli` из `INFACE_NAMES_FILE` кроме `shadowsocks` и `Proxy21|Proxy41|Proxy42` (они уже как vless/hysteria/awg) с дедупом; `cmd_list2_tunnel` принимает любой токен из `available` (membership-проверка `grep -qF`, хардкод-кейс `current|vless|hysteria|awg` больше не единственный вход).
+  - **`bin/libs/ndm` (+`etc/ndm/ndm`):** `ip4__lane2__get_tunnel` — нативный cli подтверждается `awk '$1==cli'` в `inface_equals`, иначе fallback `current` (пустое значение прежних версий тоже → current); `ip4__lane2__get_iface` — cli (нативный или Proxy*) резолвится в системное имя `awk -F'|' -v c=cli '$1==c {print $2; exit}'` (раньше `grep "^cli|"` — regex-символы в id были бы интерпретированы); `ip4__route2__add_table` — `via ADDR_MAN` теперь и для нативных тоннелей (семантика lane1), только KVAS-алиасы (vless/hysteria/awg) остаются `default dev <iface>` без шлюза.
+  - **Web UI/CGI:** `manage.sh list2_tunnel` — белый список `current|vless|hysteria|awg` заменён на charset-валидацию `^[A-Za-z0-9._-]+$` (членство в `available` проверяет lib, ошибка rc возвращается как раньше); селект `l2TunnelSel` строится из `available` — нативные тоннели появляются автоматически (label = raw id, `labels[t] || t`).
+  - **Spare:** `inface_equals` может быть пуст/отсутствовать (скан не гонялся) — available деградирует до `current`+алиасов, не падает.
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-614`, postinst fallback `_rel=614`; изменённые файлы: `bin/libs/list2`, `bin/libs/ndm` (+`etc/ndm/ndm`), `bin/monitor/www/cgi-bin/manage.sh`, `etc/conf/kvas.help`, `postinst`.
 
 ## 5. Сетевая конфигурация
 

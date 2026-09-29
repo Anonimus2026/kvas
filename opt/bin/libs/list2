@@ -40,12 +40,23 @@ cmd_list2__is_domain() {
 	echo "${1}" | grep -qE '^[A-Za-z0-9*][A-Za-z0-9.*_-]*(\.[A-Za-z0-9*_-]+)+$'
 }
 
-# список настроенных тоннелей lane2 (current всегда доступен)
+# список настроенных тоннелей lane2 (current всегда доступен;
+# плюс тоннели, поднятые в самом Keenetic — OpenVPN/SSTP/WG/... — как у основного списка)
 cmd_list2__available() {
 	local out="current"
+	local cli _rest
 	grep -q "^Proxy21|" "${INFACE_NAMES_FILE}" 2>/dev/null && out="${out} vless"
 	grep -q "^Proxy41|" "${INFACE_NAMES_FILE}" 2>/dev/null && out="${out} hysteria"
 	grep -q "^Proxy42|" "${INFACE_NAMES_FILE}" 2>/dev/null && out="${out} awg"
+	if [ -f "${INFACE_NAMES_FILE}" ]; then
+		while IFS='|' read -r cli _rest; do
+			case "${cli}" in
+				''|shadowsocks|Proxy21|proxy21|Proxy41|proxy41|Proxy42|proxy42) continue ;;
+			esac
+			case " ${out} " in *" ${cli} "*) continue ;; esac
+			out="${out} ${cli}"
+		done < "${INFACE_NAMES_FILE}"
+	fi
 	echo "${out}"
 }
 
@@ -192,11 +203,14 @@ cmd_list2_tunnel() {
 	case "${tun}" in
 		current|vless|hysteria|awg) ;;
 		*)
-			error "Неизвестный тоннель '${tun}'. Доступно: $(cmd_list2__available)"
-			return 1
+			# тоннели Keenetic (sstp/openconnect/...) — по списку inface_equals
+			if ! echo " $(cmd_list2__available) " | grep -qF " ${tun} " ; then
+				error "Неизвестный тоннель '${tun}'. Доступно: $(cmd_list2__available)"
+				return 1
+			fi
 			;;
 	esac
-	if ! echo " $(cmd_list2__available) " | grep -q " ${tun} " ; then
+	if ! echo " $(cmd_list2__available) " | grep -qF " ${tun} " ; then
 		error "Тоннель '${tun}' не настроен"
 		return 1
 	fi

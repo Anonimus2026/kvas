@@ -1388,7 +1388,12 @@ ip4__lane2__get_tunnel() {
 	lane2_tun=$(get_config_value 'LANE2_TUNNEL')
 	case "${lane2_tun}" in
 		vless|hysteria|awg) echo "${lane2_tun}" ;;
-		*) echo 'current' ;;
+		'')
+			echo 'current' ;;
+		*)
+			# тоннель, поднятый в Keenetic (sstp/openconnect/...) — должен быть в inface_equals
+			awk -F'|' -v c="${lane2_tun}" '$1==c {found=1} END {exit !found}' "${INFACE_NAMES_FILE}" 2>/dev/null \
+				&& echo "${lane2_tun}" || echo 'current' ;;
 	esac
 }
 
@@ -1404,9 +1409,9 @@ ip4__lane2__get_iface() {
 		vless)    cli_name='Proxy21' ;;
 		hysteria) cli_name='Proxy41' ;;
 		awg)      cli_name='Proxy42' ;;
-		*)        return ;;
+		*)        cli_name="${lane2_tun}" ;;
 	esac
-	grep "^${cli_name}|" "${INFACE_NAMES_FILE}" 2>/dev/null | head -1 | cut -d'|' -f2
+	awk -F'|' -v c="${cli_name}" '$1==c {print $2; exit}' "${INFACE_NAMES_FILE}" 2>/dev/null
 }
 
 # интерфейс поднят (administratively UP)?
@@ -1439,11 +1444,13 @@ ip4__route2__add_table() {
 		return 0
 	fi
 
-	# for current tunnel mirror lane1 semantics (via ADDR_MAN if set)
+	# for current tunnel mirror lane1 semantics (via ADDR_MAN if set);
+	# нативные тоннели Keenetic — та же семантика, что у основного списка (lane1)
 	local gateway_ip=''
-	if [ "${lane2_tun}" = 'current' ] ; then
-		gateway_ip=$(get_config_value 'ADDR_MAN')
-	fi
+	case "${lane2_tun}" in
+		vless|hysteria|awg) ;;
+		*) gateway_ip=$(get_config_value 'ADDR_MAN') ;;
+	esac
 	if [ -n "${gateway_ip}" ] ; then
 		local subroute="default via ${gateway_ip} dev ${net_interface}"
 		local submessage="таблицы маршрутизации ${ROUTE_TABLE2_ID} для ${net_interface} через ${gateway_ip}"

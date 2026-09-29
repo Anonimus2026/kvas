@@ -1524,7 +1524,8 @@ adblock_off)
 		list2_tunnel)
 			check_token "$token"
 			_tun=$(echo "$QUERY_STRING" | sed 's/.*tunnel=//; s/&.*//')
-			case "$_tun" in current|vless|hysteria|awg) ;; *) json_error "bad tunnel" ;; esac
+			# белый список: current|vless|hysteria|awg либо id тоннеля Keenetic из inface_equals
+			echo "$_tun" | grep -qE '^[A-Za-z0-9._-]+$' || json_error "bad tunnel"
 			out=$($KVAS_BIN list2 tunnel "$_tun" 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "$(printf '%s' "$out" | head -3)"
