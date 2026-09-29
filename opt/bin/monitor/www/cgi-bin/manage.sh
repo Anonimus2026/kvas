@@ -1471,8 +1471,24 @@ adblock_off)
 			echo "$_entries" | grep -qE '^[0-9]+$' || _entries=0
 			[ -z "$_table" ] && _table=201
 			[ -z "$_mark" ] && _mark=0xd1001
-			printf '{"ok":true,"tunnel":"%s","iface":"%s","iface_up":"%s","available":"%s","entries":%s,"table":"%s","mark":"%s"}\n' \
-				"$(json_str "$_tunnel")" "$(json_str "$_iface")" "$_up" "$(json_str "$_avail")" "$_entries" "$(json_str "$_table")" "$(json_str "$_mark")"
+			# подписи тоннелей (label.<токен>=<описание>) → JSON-объект names
+			_names=''
+			while IFS= read -r _ln ; do
+				case "${_ln}" in
+					label.*) ;;
+					*) continue ;;
+				esac
+				_rest=${_ln#label.}
+				_tk=${_rest%%=*}
+				_lb=${_rest#*=}
+				[ -z "${_tk}" ] && continue
+				[ -n "${_names}" ] && _names="${_names},"
+				_names="${_names}\"$(json_str "${_tk}")\":\"$(json_str "${_lb}")\""
+			done <<EOL2
+${_out}
+EOL2
+			printf '{"ok":true,"tunnel":"%s","iface":"%s","iface_up":"%s","available":"%s","entries":%s,"table":"%s","mark":"%s","names":{%s}}\n' \
+				"$(json_str "$_tunnel")" "$(json_str "$_iface")" "$_up" "$(json_str "$_avail")" "$_entries" "$(json_str "$_table")" "$(json_str "$_mark")" "$_names"
 			;;
 		list2_list)
 			check_token "$token"

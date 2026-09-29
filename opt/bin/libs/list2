@@ -60,6 +60,30 @@ cmd_list2__available() {
 	echo "${out}"
 }
 
+# человекочитаемое имя тоннеля (описание из inface_equals, как в основном списке)
+cmd_list2__label() {
+	local tun="$1" cli ent desc
+	case "${tun}" in
+		vless)    cli='Proxy21' ;;
+		hysteria) cli='Proxy41' ;;
+		awg)      cli='Proxy42' ;;
+		current)
+			ent=$(get_config_value 'INFACE_ENT')
+			desc=$(awk -F'|' -v e="${ent}" '$2==e {print $3; exit}' "${INFACE_NAMES_FILE}" 2>/dev/null)
+			if [ -n "${desc}" ] ; then
+				echo "текущий (${desc})"
+			else
+				echo "текущий"
+			fi
+			return ;;
+		*)        cli="${tun}" ;;
+	esac
+	desc=$(awk -F'|' -v c="${cli}" '$1==c {print $3; exit}' "${INFACE_NAMES_FILE}" 2>/dev/null)
+	[ -n "${desc}" ] || desc=$(awk -F'|' -v c="${cli}" '$1==c {print $2; exit}' "${INFACE_NAMES_FILE}" 2>/dev/null)
+	[ -n "${desc}" ] || desc="${tun}"
+	echo "${desc}"
+}
+
 cmd_list2__count() {
 	cmd_list2__ensure_file
 	local c
@@ -168,8 +192,16 @@ cmd_list2_del() {
 		host="*.${host}"
 	fi
 
-	grep -Fxv "${host}" "${KVAS_LIST2_FILE}" > "${KVAS_LIST2_FILE}.tmp" 2>/dev/null \
-	 && mv "${KVAS_LIST2_FILE}.tmp" "${KVAS_LIST2_FILE}"
+	# grep -v возвращает 1, когда непустых строк не осталось (единственная запись) — это не ошибка
+	grep -Fxv "${host}" "${KVAS_LIST2_FILE}" > "${KVAS_LIST2_FILE}.tmp" 2>/dev/null
+	local grep_rc=$?
+	if [ "${grep_rc}" -le 1 ] && [ -f "${KVAS_LIST2_FILE}.tmp" ] ; then
+		mv -f "${KVAS_LIST2_FILE}.tmp" "${KVAS_LIST2_FILE}"
+	else
+		rm -f "${KVAS_LIST2_FILE}.tmp"
+		error "Не удалось обновить ${KVAS_LIST2_FILE}"
+		return 1
+	fi
 	chmod 666 "${KVAS_LIST2_FILE}" 2>/dev/null
 	echo "Удалено из Списка 2: ${host}"
 
@@ -187,9 +219,9 @@ cmd_list2_tunnel_list() {
 	for tun in $(cmd_list2__available) ; do
 		iface=$(ip4__lane2__get_iface "${tun}")
 		if [ "${tun}" = "${current}" ] ; then
-			echo "* ${tun} (интерфейс: ${iface:-—}) — выбран"
+			echo "* ${tun} — $(cmd_list2__label "${tun}") (интерфейс: ${iface:-—}) — выбран"
 		else
-			echo "  ${tun} (интерфейс: ${iface:-—})"
+			echo "  ${tun} — $(cmd_list2__label "${tun}") (интерфейс: ${iface:-—})"
 		fi
 	done
 }
@@ -218,7 +250,7 @@ cmd_list2_tunnel() {
 	set_config_value 'LANE2_TUNNEL' "${tun}"
 	ip4__route2__add_table
 	ip4__route__flush_cache
-	echo "Тоннель Списка 2: ${tun} (интерфейс: $(ip4__lane2__get_iface "${tun}"))"
+	echo "Тоннель Списка 2: ${tun} — $(cmd_list2__label "${tun}") (интерфейс: $(ip4__lane2__get_iface "${tun}"))"
 }
 
 # статус в формате key=value (читает Web UI)
@@ -235,4 +267,9 @@ cmd_list2_status() {
 	echo "entries=$(cmd_list2__count)"
 	echo "mark=${MARK2_NUM}"
 	echo "table=${ROUTE_TABLE2_ID}"
+	# подписи для Web UI: label.<токен>=<описание>
+	local t
+	for t in $(cmd_list2__available) ; do
+		echo "label.${t}=$(cmd_list2__label "${t}")"
+	done
 }

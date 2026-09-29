@@ -2979,10 +2979,21 @@ function loadRouteLists() {
 }
 
 /* ========== СПИСОК 2 (вторая полоса) ========== */
+var _l2Busy = false, _l2Again = false;
 function loadList2() {
+  if (_l2Busy) { _l2Again = true; return; }
   var sel = document.getElementById('l2TunnelSel');
   if (!sel) return;
+  _l2Busy = true;
+  var left = 2;
+  function fin() {
+    left--;
+    if (left > 0) return;
+    _l2Busy = false;
+    if (_l2Again) { _l2Again = false; loadList2(); }
+  }
   api('/cgi-bin/manage.sh?action=list2_status', function(d) {
+    fin();
     var st = document.getElementById('l2Status');
     var ifc = document.getElementById('l2Iface');
     if (!d.ok) { if (st) st.textContent = d.error || 'нет связи'; return; }
@@ -2992,7 +3003,7 @@ function loadList2() {
     avail.forEach(function(t) {
       var o = document.createElement('option');
       o.value = t;
-      o.textContent = (labels[t] || t) + (t === d.tunnel ? ' — выбран' : '');
+      o.textContent = ((d.names && d.names[t]) || labels[t] || t) + (t === d.tunnel ? ' — выбран' : '');
       if (t === d.tunnel) o.selected = true;
       sel.appendChild(o);
     });
@@ -3000,6 +3011,7 @@ function loadList2() {
     if (st) st.textContent = 'метка 0xd1001 → таблица ' + (d.table || '201') + ', записей: ' + d.entries;
   });
   api('/cgi-bin/manage.sh?action=list2_list', function(d) {
+    fin();
     var el = document.getElementById('l2List');
     if (!el) return;
     if (!d.ok || !d.entries || !d.entries.length) {

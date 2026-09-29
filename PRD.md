@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-614
+**Версия:** 1.1.9_beta-10-615
 **Дата:** 29.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 614)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 615)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, **614** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, **615** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v614)
+## 4. Текущий статус (v615)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -54,7 +54,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | kvas upgrade (force-reinstall + rollback) | ✓ |
 | Adblock + parental control | ✓ |
 | Закваски tags (add/del/edit, web + CLI) | ✓ |
-| **Список 2 — вторая полоса (kvas2.list → KVAS_LIST2 → mark 0xd1001 → table 201)** | ✓ v612 + Keenetic-native tunnels (v614) |
+| **Список 2 — вторая полоса (kvas2.list → KVAS_LIST2 → mark 0xd1001 → table 201)** | ✓ v612 + Keenetic-native tunnels (v614), labels/delete fix (v615) |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -68,7 +68,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Diagnostics|Help`. Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613 — рабочие. Следующий = **615**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614 — рабочие. Следующий = **616**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -107,6 +107,12 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Web UI/CGI:** `manage.sh list2_tunnel` — белый список `current|vless|hysteria|awg` заменён на charset-валидацию `^[A-Za-z0-9._-]+$` (членство в `available` проверяет lib, ошибка rc возвращается как раньше); селект `l2TunnelSel` строится из `available` — нативные тоннели появляются автоматически (label = raw id, `labels[t] || t`).
   - **Spare:** `inface_equals` может быть пуст/отсутствовать (скан не гонялся) — available деградирует до `current`+алиасов, не падает.
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-614`, postinst fallback `_rel=614`; изменённые файлы: `bin/libs/list2`, `bin/libs/ndm` (+`etc/ndm/ndm`), `bin/monitor/www/cgi-bin/manage.sh`, `etc/conf/kvas.help`, `postinst`.
+- **Пакет v615 (фикс удаления в Списке 2 + подписи тоннелей):**
+  - **Баг: ✕ не удалял единственную запись** — `cmd_list2_del` делал `grep -Fxv host file > tmp && mv tmp file`: при единственной записи `grep -v` не выводит строк → rc=1 → `mv` не выполнялся → файл не менялся, но «Удалено» печаталось (Web показывал «удалено», запись оставалась). Фикс: rc-гард (`grep_rc <= 1` → mv; rc>1 → rm tmp + ошибка, список не затирается).
+  - **Подписи тоннелей как в основном списке:** новая `cmd_list2__label` (описание из `inface_equals` field3, fallback field2 → токен; `current` → «текущий (<desc основного тоннеля>)»); `cmd_list2_status` отдаёт строки `label.<токен>=<описание>`; CGI собирает JSON-объект `names` через `json_str`; Web UI селект: `(d.names && d.names[t]) || labels[t] || t`; CLI `kvas list2 tunnel [-list]` показывает «токен — описание (интерфейс: …)».
+  - **loadList2:** защита от гонки параллельных обновлений (`_l2Busy`/`_l2Again`: повторный вызов ставится в очередь и выполняется после завершения текущего — список/select не перемешиваются и не остаются пустыми).
+  - **Отладка v615 (роутер):** правила 1777/1778/1779 и table 201 подтверждены (`default dev nocli0`, gateway-net `172.16.5.0/24 via 172.16.5.4`), трафик Списка 2 идёт через нативный тоннель — первое срабатывание выглядит как «долго ждал», т.к. dnsmasq/ipset догоняют после regen.
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-615`, postinst fallback `_rel=615`; изменённые файлы: `bin/libs/list2`, `bin/monitor/www/cgi-bin/manage.sh`, `bin/monitor/www/index.html`, `postinst`.
 
 ## 5. Сетевая конфигурация
 
