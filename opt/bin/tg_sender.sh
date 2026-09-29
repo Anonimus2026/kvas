@@ -26,10 +26,23 @@ while IFS="$(printf '\t')" read -r _ev _txt || [ -n "${_ev}${_txt}" ]; do
 	[ -z "${_ev}" ] && [ -z "${_txt}" ] && continue
 	# форма + urlencode (не JSON -d: curl шлёт её как form, Telegram не видит text)
 	# tg_curl_to: без $() = без subshell с cmdline tg_sender/tg_bot
+	# update_found: сразу кнопки ответа — иначе пользователь отвечает текстом
+	# и бот (нет state) отвечает "Unknown"
+	_mk=""
+	case "${_ev}" in
+		update_found) _mk='{"keyboard":[["Yes update"],["No cancel"]],"resize_keyboard":true}' ;;
+	esac
 	_sf="${_work}.send"
-	tg_curl_to "${_sf}" "https://api.telegram.org/bot${_tok}/sendMessage" \
-		--data-urlencode "chat_id=${_cht}" \
-		--data-urlencode "text=[${_ev}] ${_txt}"
+	if [ -n "${_mk}" ]; then
+		tg_curl_to "${_sf}" "https://api.telegram.org/bot${_tok}/sendMessage" \
+			--data-urlencode "chat_id=${_cht}" \
+			--data-urlencode "text=[${_ev}] ${_txt}" \
+			--data-urlencode "reply_markup=${_mk}"
+	else
+		tg_curl_to "${_sf}" "https://api.telegram.org/bot${_tok}/sendMessage" \
+			--data-urlencode "chat_id=${_cht}" \
+			--data-urlencode "text=[${_ev}] ${_txt}"
+	fi
 	if [ ! -s "${_sf}" ] || ! grep -q '"ok":true' "${_sf}" 2>/dev/null; then
 		printf '%s\t%s\n' "${_ev}" "${_txt}" >> "${Q}" 2>/dev/null
 	fi

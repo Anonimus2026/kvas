@@ -453,6 +453,26 @@ tb_on_text() { # $1=chat $2=text
 			tb_show_diag_menu "${_ch}"
 			return
 			;;
+		"Yes update"|Update)
+			# кнопка из фонового update_found: state не выставлен — ловим глобально
+			if [ -z "${_st}" ] || [ "${_st}" = "update_confirm" ]; then
+				tb_state_clear
+				if tb_check_update; then
+					tb_send "${_ch}" "Starting update: ${_upd_new} (you have ${_upd_cur}). ETA 1-2 min." "${_TB_KB}"
+					tb_job "${_ch}" update
+				else
+					tb_send "${_ch}" "KVAS is up to date (build ${_upd_cur:-?})." "${_TB_KB}"
+				fi
+				return
+			fi
+			;;
+		"No cancel")
+			if [ -z "${_st}" ] || [ "${_st}" = "update_confirm" ]; then
+				tb_state_clear
+				tb_send "${_ch}" "OK." "${_TB_KB}"
+				return
+			fi
+			;;
 	esac
 
 	case "${_st}" in
