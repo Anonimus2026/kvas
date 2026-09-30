@@ -349,11 +349,23 @@ main() {
 			[ -x /opt/sbin/xray ] && xray_ver=$(/opt/sbin/xray version 2>/dev/null | head -1 | sed 's/Xray //' | sed 's/ .*//')
 			awg_running="false"
 			[ -f /var/run/wireproxy.pid ] && kill -0 "$(cat /var/run/wireproxy.pid 2>/dev/null)" 2>/dev/null && awg_running="true"
+			# AmneziaWG (wireproxy) service + resource profile — как xray/hysteria строки
+			awg_svc="not_installed"
+			if [ -f "/opt/apps/kvas/awg/etc/init.d/S99awg" ]; then
+				if [ "$awg_running" = "true" ] || pidof wireproxy >/dev/null 2>&1; then
+					awg_svc="running"
+				else
+					awg_svc="stopped"
+				fi
+			fi
+			awg_profile=$(sed -n 's/^RESOURCE_PROFILE=//p' /opt/apps/kvas/awg/etc/conf/env.sh 2>/dev/null | head -1 | tr -d '"')
+			[ -z "$awg_profile" ] && awg_profile="balanced"
 			dnsmasq_running=$(check_service S56dnsmasq)
-			printf '{"ok":true,"pkg":"%s","ver":"%s","mode":"%s","failover":"%s","vless":"%s","hysteria":"%s","awg":"%s","dnsmasq":"%s","hosts":"%s","xray_service":"%s","hysteria_service":"%s","xray_version":"%s"}\n' \
+			printf '{"ok":true,"pkg":"%s","ver":"%s","mode":"%s","failover":"%s","vless":"%s","hysteria":"%s","awg":"%s","dnsmasq":"%s","hosts":"%s","xray_service":"%s","hysteria_service":"%s","xray_version":"%s","awg_service":"%s","awg_profile":"%s"}\n' \
 				"$(json_str "$kvaspkg_name")" "$(json_str "$kvaspkg_ver")" "$(json_str "$vpn_mode")" "$(json_str "$failover")" \
 				"$vless_running" "$hysteria_running" "$awg_running" "$dnsmasq_running" "$host_count" \
-				"$(json_str "$xray_svc")" "$(json_str "$hysteria_svc")" "$(json_str "$xray_ver")"
+				"$(json_str "$xray_svc")" "$(json_str "$hysteria_svc")" "$(json_str "$xray_ver")" \
+				"$(json_str "$awg_svc")" "$(json_str "$awg_profile")"
 			;;
 		health_details)
 			check_token "$token"
@@ -1022,6 +1034,22 @@ main() {
 				*)
 					curl -s -d '{"down":"true"}' "localhost:79/rci/interface/${_iface}" &>/dev/null
 					out="Interface ${_iface} down"
+					;;
+			esac
+			out=$(echo "$out" | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\\/\\\\/g; s/"/\\"/g')
+			json_ok "$out"
+			;;
+		tunnel_restart)
+			check_token "$token"
+			_iface=$(echo "$QUERY_STRING" | sed 's/.*iface=//; s/&.*//')
+			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+			[ -z "$_iface" ] && json_error "iface required"
+			case "$_iface" in
+				Proxy21|vless|t2s21)   out=$(service_action S97xray restart 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(service_action S99hysteria restart 2>&1) ;;
+				Proxy42|awg)           out=$($KVAS_BIN awg restart 2>&1) ;;
+				*)
+					json_error "restart not supported for ${_iface}"
 					;;
 			esac
 			out=$(echo "$out" | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\\/\\\\/g; s/"/\\"/g')

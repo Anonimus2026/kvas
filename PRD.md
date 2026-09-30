@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-619
+**Версия:** 1.1.9_beta-10-620
 **Дата:** 30.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 619)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 620)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, **619** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, **620** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v619)
+## 4. Текущий статус (v620)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -58,6 +58,8 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | **kvas del: удаление статики IP/CIDR из ipset + ct-flush (баг lane1-остатков)** | ✓ v618 |
 | **Failover: фикс флапа при ручном AWG (рассинхрон desc/токен) + авто-миграция conf (вариант B) + дедуп TERTIARY** | ✓ v619 |
 | **Telegram-бот: выбор тоннеля (Tunnels-меню, паритет с Web UI)** | ✓ v619 |
+| **Профиль ресурсов wireproxy (RESOURCE_PROFILE и лимиты Go) переживает upgrade/rollback (merge) + backup/restore** | ✓ v620 |
+| **Web «Состояние системы»: 3 службы (xray/hysteria/awg) + Старт/Стоп + Рестарт, строка AmneziaWG с профилем** | ✓ v620 (убрана дублирующая кнопка из «Настройка VPN») |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -71,7 +73,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619 — рабочие. Следующий = **620**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620 — рабочие. Следующий = **621**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -162,6 +164,32 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 5. Тест: precheck/verify grep-маркеры + функциональный тест (get_active_iface/canonical + check_awg c фейк-env).
 
 **Фича-запрос пользователя:** в Telegram-боте нет выбора тоннеля (в Web UI есть) — хотелось бы выбирать тоннели из бота. **Вшита в v619** (Tunnels-меню, см. «Пакет v619»).
+
+- **Пакет v620 (профиль ресурсов wireproxy переживает upgrade/backup + службы в «Состоянии системы»):**
+  - **Баг (диагноз):** `awg/etc/conf/env.sh` (`RESOURCE_PROFILE/GOMAXPROCS/GOMEMLIMIT/GOGC/GODEBUG`) лежит ВНУТРИ пакета → `kvas upgrade`/`kvas rollback` через `opkg install --force-reinstall` (`main/upgrade`) перезаписывает его дефолтом `balanced` при КАЖДОМ обновлении (комментарий «конфиги /opt/etc сохраняются» для /opt/apps неверен); `backup_configs.sh`/`restore_configs.sh` никем не вызываются (мёртвые); `save_backups()`/`restore_backups()` (`main/setup`) сохраняли hysteria env, но НЕ awg env → после обновления Web всегда показывал «balanced» (индикатор `awg_mode` читает RESOURCE_PROFILE из env.sh).
+  - **Фиксы:** (1) `libs/main` += `AWG_ENV_FILE`/`AWG_ENV_BACKUP` (зеркально hysteria). (2) `main/setup`: `save_backups()` += `backup_copy "${AWG_ENV_FILE}" ...`, `restore_backups()` += `restore_backup "${AWG_ENV_BACKUP}" ...` — цепочки `kvas backup`/`restore` и uninstall. (3) `main/upgrade`: до opkg-блока сохранение env в `/tmp/.kvas_upg_awg_env.$$`, после — **merge** 5 ресурсных переменных в новый env.sh (новые ключи пакета не затираются; общий код покрывает и upgrade, и rollback).
+  - **Web — «Состояние системы» (по заявке пользователя):** строка «Служба AmneziaWG» (`sysAwgService` + `sysAwgProfile` «профиль: …»), inline-кнопки [Старт/Стоп][Рестарт] у трёх служб (JS `svcToggle`/`svcAct`/`svcSetBtn` по `xray_service`/`hysteria_service`/`awg_service`, вывод в `sysSvcMsg`); новое CGI-действие `tunnel_restart` (зеркально `tunnel_start`: `service_action S97xray/S99hysteria restart`, `$KVAS_BIN awg restart`, `*` → error); `system_status` += `awg_service` (not_installed по S99awg, иначе running/stopped по pidfile/pidof wireproxy) + `awg_profile` (RESOURCE_PROFILE, fallback `balanced`). Кнопка Старт/Стоп wireproxy в «Настройка VPN» (`awgToggleBtn`/`awgToggle`/`updateAwgToggleBtn`) **удалена** — дублировала службу; инпуты/«Обзор»/профиль/селекты остались.
+  - **Правило (§4.3):** требование пользователя — при любом изменении функционала обходить все логические цепочки и проверять backup/restore — записано в **§4.3** (эталон ошибки = этот баг).
+  - **Тест:** `test620.sh` — реальные срезы: merge-блок `main/upgrade` (perf/eco восстанавливается, новый ключ пакета сохраняется, не тронутая переменная остаётся), `backup_copy`+`restore_backup` (roundtrip awg env + отсутствие бэкапа не трогает файл), dispatch `tunnel_restart` (vless/Proxy21/hysteria/Proxy41/awg/Proxy42 + bogus + пустой/отсутствующий iface), чтение `awg_profile` в `system_status` (perf/пусто/fallback balanced) + регрессии v619 = **35/35, `TEST_RC=0`**; `PRECHECK_RC=0` (все маркеры, включая отсутствие `awgToggleBtn`); `VERIFY_DONE`/`V_RC=0` (один проход).
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-620`, postinst fallback `_rel=620`; sha256 `8bdb1743ff444e389b30c14293665f5d92042abd68a1118ef5c22a6d53528645` (313 988 B); изменённые файлы: `bin/libs/main`, `bin/main/setup`, `bin/main/upgrade`, `bin/monitor/www/cgi-bin/manage.sh`, `bin/monitor/www/index.html`, `postinst`.
+
+### 4.3. Правило: логические цепочки и backup/restore при любых изменениях
+
+При **ЛЮБОМ** изменении функционала (новая опция, параметр, служба, тоннель, файл конфигурации) обязательно:
+
+1. **Обходить все логические цепочки объекта** — найти и проверить каждое место, где объект участвует:
+   - CLI: `bin/kvas` + все `libs/*` / `main/*`;
+   - Web UI: `index.html` + `cgi-bin/manage.sh` (все actions, где объект читается/пишется);
+   - Telegram-бот: `tg_bot.sh`, `tg_job.sh`, `tg_sender.sh`;
+   - failover (`libs/failover`: check/switch/load-conf/save-conf), watchdog (`hysteria/awg/etc/ndm/watchdog.sh`), cron, ndm-скрипты;
+   - `main/upgrade` (обновление и rollback), `main/setup` (install/uninstall/backup/restore), `postinst`;
+   - статусы/диагностика: `system_status`, `kvas test`/`kvas status`, `/status` бота, help/`kvas.help`.
+   **Эталон ошибки — «забытый AWG socks5» (v619):** `check_awg` не source'ил env, токен `awg` не принимался в `vpn set`, desc vs token в failover-conf — одна непройденная цепочка = вечный флап failover.
+2. **Проверять backup/restore и upgrade/rollback:** новый/изменённый конфиг обязан переживать `kvas backup`→`kvas restore` и `kvas upgrade`/`kvas rollback`:
+   - файл добавить в `save_backups`/`restore_backups` (`main/setup`) + `*_BACKUP`-переменную в `libs/main`;
+   - файлы **внутри пакета** (перезаписываются opkg) — сохранять/восстанавливать в `main/upgrade` вокруг `opkg install --force-reinstall`, **merge-способом** (только свои переменные, новые ключи пакета не затирать).
+   **Эталон ошибки — env wireproxy (v620):** `awg/etc/conf/env.sh` не входил в backup → `RESOURCE_PROFILE` слетал на `balanced` при каждом обновлении.
+3. **Фиксировать обход в PRD-блоке «Пакет vNNN»:** список мест (кто пишет → кто читает) + маркеры в precheck/verify + функциональные проверки цепочек.
 
 ## 5. Сетевая конфигурация
 

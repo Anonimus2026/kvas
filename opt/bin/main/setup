@@ -299,6 +299,7 @@ restore_backups(){
 	restore_backup "${ADBLOCK_SOURCES_LIST_BACKUP}" "${ADBLOCK_SOURCES_LIST}" "списка источников хостов для блокировки рекламы"
 	restore_backup "${HYSTERIA_CONFIG_BACKUP}" "${HYSTERIA_CONFIG}" "конфигурации hysteria"
 	restore_backup "${HYSTERIA_ENV_BACKUP}" "${HYSTERIA_ENV_FILE}" "файла окружения hysteria"
+	restore_backup "${AWG_ENV_BACKUP}" "${AWG_ENV_FILE}" "файла окружения wireproxy (AWG, профиль ресурсов)"
 	[ -f "${KVAS_BACKUP_PATH}/hysteria_bin" ] && {
 		mkdir -p /opt/apps/kvas/hysteria/bin
 		cp -f "${KVAS_BACKUP_PATH}/hysteria_bin" /opt/apps/kvas/hysteria/bin/hysteria
@@ -339,6 +340,8 @@ save_backups(){
 	# Бэкап hysteria конфига (если есть)
 	backup_copy "${HYSTERIA_CONFIG}" "${HYSTERIA_CONFIG_BACKUP}"
 	backup_copy "${HYSTERIA_ENV_FILE}" "${HYSTERIA_ENV_BACKUP}"
+	# Бэкап env wireproxy — RESOURCE_PROFILE/GOMAXPROCS и т.д. иначе слетают на дефолт при обновлении пакета
+	backup_copy "${AWG_ENV_FILE}" "${AWG_ENV_BACKUP}"
 	backup_copy "${KVAS_WEB_PASS}" "${KVAS_WEB_PASS_BACKUP}"
 
 	# Бэкап остальных конфигов

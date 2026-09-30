@@ -343,6 +343,12 @@ _upg_hyst_running=0
 [ -f /var/run/hysteria.pid ] && kill -0 "$(cat /var/run/hysteria.pid 2>/dev/null)" 2>/dev/null && _upg_hyst_running=1
 
 #--------------------------------------------------------------------------------------------------------------
+# AWG: сохраняем профиль ресурсов ДО обновления — opkg force-reinstall перезаписывает
+# env.sh пакета дефолтом (RESOURCE_PROFILE=balanced), файлы в /opt/apps копиями не считаются
+_upg_awg_env=/tmp/.kvas_upg_awg_env.$$
+cp -f /opt/apps/kvas/awg/etc/conf/env.sh "$_upg_awg_env" 2>/dev/null
+
+#--------------------------------------------------------------------------------------------------------------
 # обновление: opkg-reinstall поверх (конфиги /opt/etc сохраняются — без потери настроек)
 if [ -f /opt/bin/kvas ] && kvas 2>/dev/null | grep -q "Настройка пакета не завершена" ; then
 	ready "Удаляем незавершенную ранее установку пакета ..."
@@ -359,6 +365,16 @@ else
 		opkg install --force-reinstall "/opt/packages/${package_name}"
 	} &>/dev/null && when_ok || { when_err; _tg_upg_fail=1; }
 fi
+
+# Восстанавливаем профиль wireproxy (RESOURCE_PROFILE + лимиты Go) в новый env.sh —
+# merge только ресурсных переменных, новые ключи пакета не затираем
+if [ -s "$_upg_awg_env" ] && [ -f /opt/apps/kvas/awg/etc/conf/env.sh ]; then
+	for _v in RESOURCE_PROFILE GOMAXPROCS GOMEMLIMIT GOGC GODEBUG; do
+		_val=$(sed -n "s/^${_v}=//p" "$_upg_awg_env" | head -1)
+		[ -n "$_val" ] && sed -i "s|^[[:space:]]*${_v}=.*|${_v}=${_val}|" /opt/apps/kvas/awg/etc/conf/env.sh
+	done
+fi
+rm -f "$_upg_awg_env"
 
 connect_home_nets(){
 	/opt/sbin/ip a | grep global | grep -v br0 | grep -qE br[1-9] && {

@@ -213,8 +213,25 @@ window.addEventListener('error', function(e){
     <div class="card-row"><label>Пакет:</label><span class="value" id="sysPkg">-</span></div>
     <div class="card-row"><label>Версия:</label><span class="value" id="sysVer">-</span></div>
     <div class="card-row"><label>Хостов:</label><span class="value" id="sysHosts">-</span></div>
-    <div class="card-row"><label>Служба Xray:</label><span class="value" id="sysXrayService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysXrayVer"></span></div>
-    <div class="card-row"><label>Служба Hysteria:</label><span class="value" id="sysHysteriaService">-</span></div>
+    <div class="card-row"><label>Служба Xray:</label><span class="value" id="sysXrayService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysXrayVer"></span>
+      <span style="margin-left:8px;display:inline-flex;gap:4px;">
+        <button class="btn btn-sm" id="svcXrayBtn" onclick="svcToggle('vless',this)">Старт</button>
+        <button class="btn btn-sm" onclick="svcAct('vless','restart',this)">Рестарт</button>
+      </span>
+    </div>
+    <div class="card-row"><label>Служба Hysteria:</label><span class="value" id="sysHysteriaService">-</span>
+      <span style="margin-left:8px;display:inline-flex;gap:4px;">
+        <button class="btn btn-sm" id="svcHysteriaBtn" onclick="svcToggle('hysteria',this)">Старт</button>
+        <button class="btn btn-sm" onclick="svcAct('hysteria','restart',this)">Рестарт</button>
+      </span>
+    </div>
+    <div class="card-row"><label>Служба AmneziaWG:</label><span class="value" id="sysAwgService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysAwgProfile"></span>
+      <span style="margin-left:8px;display:inline-flex;gap:4px;">
+        <button class="btn btn-sm" id="svcAwgBtn" onclick="svcToggle('awg',this)">Старт</button>
+        <button class="btn btn-sm" onclick="svcAct('awg','restart',this)">Рестарт</button>
+      </span>
+    </div>
+    <div id="sysSvcMsg" class="msg" style="max-height:80px;overflow-y:auto;"></div>
     <div class="card-row"><label>Текущий туннель:</label><span class="value" id="sysTunnel">-</span></div>
     <div class="card-row"><label>Обновления:</label><span class="value" id="sysUpdate">-</span>
       <button class="btn btn-sm" onclick="doCheckUpdate(this)" style="margin-left:8px;">Проверить</button>
@@ -338,7 +355,6 @@ window.addEventListener('error', function(e){
         <button class="btn btn-sm" onclick="awgNew(this)">AmneziaWG</button>
         <input type="file" id="awgFileInput" style="position:absolute;width:0;height:0;opacity:0;overflow:hidden;" onchange="awgFileSelected(this)">
         <label for="awgFileInput" class="btn btn-sm" style="white-space:nowrap;cursor:pointer;">Обзор</label>
-        <button class="btn btn-sm" id="awgToggleBtn" onclick="awgToggle(this)" style="white-space:nowrap;">Стоп</button>
       </div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0;">
         <span style="font-size:12px;color:#8b949e;white-space:nowrap;">Профиль wireproxy:</span>
@@ -750,7 +766,6 @@ function showMain() {
   loadAdblockStatus();
   loadAdguardStatus();
   loadXrayStatus();
-  updateAwgToggleBtn();
   awgModeLoad();
   loadFailoverStatus();
   loadTunnelTestInterfaces();
@@ -1228,8 +1243,14 @@ function loadSystemStatus() {
       var xraySvc = d.xray_service || '-';
       document.getElementById('sysXrayService').textContent = xraySvc === 'running' ? 'работает' : (xraySvc === 'stopped' ? 'остановлена' : (xraySvc === 'not_installed' ? 'не установлена' : xraySvc));
       document.getElementById('sysXrayVer').textContent = d.xray_version ? ('v' + d.xray_version) : '';
+      svcSetBtn('svcXrayBtn', xraySvc);
       var hysteriaSvc = d.hysteria_service || '-';
       document.getElementById('sysHysteriaService').textContent = hysteriaSvc === 'running' ? 'работает' : (hysteriaSvc === 'stopped' ? 'остановлена' : (hysteriaSvc === 'not_installed' ? 'не установлена' : hysteriaSvc));
+      svcSetBtn('svcHysteriaBtn', hysteriaSvc);
+      var awgSvc = d.awg_service || '-';
+      document.getElementById('sysAwgService').textContent = awgSvc === 'running' ? 'работает' : (awgSvc === 'stopped' ? 'остановлена' : (awgSvc === 'not_installed' ? 'не установлена' : awgSvc));
+      document.getElementById('sysAwgProfile').textContent = d.awg_profile ? ('профиль: ' + d.awg_profile) : '';
+      svcSetBtn('svcAwgBtn', awgSvc);
       document.getElementById('sysTunnel').innerHTML = '<span style="color:#8b949e;">проверка...</span>';
       api('/cgi-bin/manage.sh?action=tunnel_check', function(t) {
         if (t.ok) {
@@ -1637,52 +1658,50 @@ function vpnSetInterface(btn) {
   });
 }
 
-function awgToggle(btn) {
-  var el = document.getElementById('vpnSetupMsg');
-  var btnEl = document.getElementById('awgToggleBtn');
-  var action = btnEl.textContent.trim() === 'Стоп' ? 'tunnel_stop' : 'tunnel_start';
+/* ===== service control: start/stop/restart for vless(xray)/hysteria/awg(wireproxy) ===== */
+function svcSetBtn(id, svcState) {
+  var b = document.getElementById(id);
+  if (!b) return;
+  if (svcState === 'not_installed') {
+    b.textContent = 'Не установлен'; b.className = 'btn btn-sm'; b.disabled = true; return;
+  }
+  b.disabled = false;
+  if (svcState === 'running') { b.textContent = 'Стоп'; b.className = 'btn btn-sm danger'; }
+  else { b.textContent = 'Старт'; b.className = 'btn btn-sm success'; }
+}
+
+function svcToggle(svc, btn) {
+  var el = document.getElementById('sysSvcMsg');
+  var action = (btn.textContent.trim() === 'Стоп') ? 'tunnel_stop' : 'tunnel_start';
   loadingBtn(btn, true);
-  var u = '/cgi-bin/manage.sh?action=' + action + '&token=' + AUTH_TOKEN + '&iface=awg';
-  fetch(u).then(function(r) { return r.json(); }).then(function(d) {
+  fetch('/cgi-bin/manage.sh?action=' + action + '&token=' + AUTH_TOKEN + '&iface=' + encodeURIComponent(svc)).then(function(r) { return r.json(); }).then(function(d) {
     loadingBtn(btn, false);
     if (d.ok) {
-      el.className = 'msg ok';
-      el.textContent = d.msg || '';
-      // Update button state
-      if (action === 'tunnel_stop') {
-        btnEl.textContent = 'Старт';
-        btnEl.className = 'btn btn-sm success';
-      } else {
-        btnEl.textContent = 'Стоп';
-        btnEl.className = 'btn btn-sm danger';
-      }
+      if (el) { el.className = 'msg ok'; el.textContent = d.msg || ((action === 'tunnel_stop' ? 'Остановлено' : 'Запущено') + ': ' + svc); }
       loadSystemStatus();
     } else {
-      el.className = 'msg err';
-      el.textContent = d.error || 'Ошибка';
+      if (el) { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
     }
   }).catch(function(e) {
     loadingBtn(btn, false);
-    el.textContent = 'Ошибка: ' + e.message;
+    if (el) { el.className = 'msg err'; el.textContent = 'Ошибка: ' + e.message; }
   });
 }
 
-function updateAwgToggleBtn() {
-  var btn = document.getElementById('awgToggleBtn');
-  if (!btn) return;
-  api('/cgi-bin/manage.sh?action=awg_status', function(d) {
-    if (!d.ok) return;
-    if (d.running === 'true') {
-      btn.textContent = 'Стоп';
-      btn.className = 'btn btn-sm danger';
-    } else if (d.installed === 'true') {
-      btn.textContent = 'Старт';
-      btn.className = 'btn btn-sm success';
+function svcAct(svc, act, btn) {
+  var el = document.getElementById('sysSvcMsg');
+  loadingBtn(btn, true);
+  fetch('/cgi-bin/manage.sh?action=tunnel_' + act + '&token=' + AUTH_TOKEN + '&iface=' + encodeURIComponent(svc)).then(function(r) { return r.json(); }).then(function(d) {
+    loadingBtn(btn, false);
+    if (d.ok) {
+      if (el) { el.className = 'msg ok'; el.textContent = d.msg || ('Перезапущено: ' + svc); }
+      loadSystemStatus();
     } else {
-      btn.textContent = 'Не установлен';
-      btn.className = 'btn btn-sm';
-      btn.disabled = true;
+      if (el) { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
     }
+  }).catch(function(e) {
+    loadingBtn(btn, false);
+    if (el) { el.className = 'msg err'; el.textContent = 'Ошибка: ' + e.message; }
   });
 }
 

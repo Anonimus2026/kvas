@@ -76,6 +76,8 @@ HYSTERIA_CONFIG=/opt/etc/hysteria/config.yaml
 HYSTERIA_CONFIG_BACKUP=${KVAS_BACKUP_PATH}/hysteria_config.yaml
 HYSTERIA_ENV_FILE=/opt/apps/kvas/hysteria/etc/conf/env.sh
 HYSTERIA_ENV_BACKUP=${KVAS_BACKUP_PATH}/hysteria_env.sh
+AWG_ENV_FILE=/opt/apps/kvas/awg/etc/conf/env.sh
+AWG_ENV_BACKUP=${KVAS_BACKUP_PATH}/awg_env.sh
 
 KVAS_WEB_PASS=/opt/kvas_web_pass
 KVAS_WEB_PASS_BACKUP=${KVAS_BACKUP_PATH}/kvas_web_pass
