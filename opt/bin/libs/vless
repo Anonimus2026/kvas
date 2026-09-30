@@ -685,6 +685,17 @@ XRAY_BIN=/opt/sbin/xray
 XRAY_GITHUB_API="https://api.github.com/repos/XTLS/Xray-core/releases"
 XRAY_GITHUB_DL="https://github.com/XTLS/Xray-core/releases/download"
 
+_xray_elf_endian() {
+    local _f _b
+    for _f in /bin/busybox /bin/sh; do
+        [ -f "$_f" ] || continue
+        _b=$(dd if="$_f" bs=1 skip=5 count=1 2>/dev/null) || continue
+        [ "$_b" = "$(printf '\001')" ] && { echo "le"; return 0; }
+        [ "$_b" = "$(printf '\002')" ] && { echo "be"; return 0; }
+    done
+    return 0
+}
+
 # Определение архитектуры для xray
 _xray_detect_arch() {
     local ARCH=$(uname -m)
@@ -693,15 +704,26 @@ _xray_detect_arch() {
         *armv7*|*armv6*)   echo "arm32-v7a" ;;
         *arm*)              echo "arm32-v6" ;;
         *mips64el*|*mips64le*) echo "mips64le" ;;
-        *mips64*)           echo "mips64" ;;
+        *mips64*)           if [ "$(_xray_elf_endian)" = "le" ]; then echo "mips64le"; else echo "mips64"; fi ;;
         *mipsle*|*mipsel*)  echo "mips32le" ;;
-        *mips*)             echo "mips32" ;;
+        *mips*)             if [ "$(_xray_elf_endian)" = "le" ]; then echo "mips32le"; else echo "mips32"; fi ;;
         *riscv64*)          echo "riscv64" ;;
         *loong64*|*loongarch64*) echo "loong64" ;;
         *x86_64*|*amd64*)   echo "linux-64" ;;
         *i?86*|*x86*)      echo "linux-32" ;;
         *)                  echo "" ;;
     esac
+}
+
+_xray_guard_binary() {
+    local _bin="$1" _url="$2"
+    [ -x "$_bin" ] || chmod +x "$_bin" 2>/dev/null
+    if ! "$_bin" version >/dev/null 2>&1; then
+        echo -e "${RED}Бинарник не запускается на этой архитектуре${NC}"
+        echo -e "${YELLOW}URL: ${_url}${NC}"
+        return 1
+    fi
+    return 0
 }
 
 # Показать статус xray
@@ -882,6 +904,11 @@ with zipfile.ZipFile('$_tmp') as z:
     # Валидация — проверяем что это ELF
     if ! head -c4 "$_newbin" | grep -q $'\x7fELF'; then
         echo -e "${RED}Файл не является ELF-бинарником (возможно HTML-страница ошибки)${NC}"
+        rm -rf "$_tmpdir" "$_tmp"
+        exit 1
+    fi
+
+    if ! _xray_guard_binary "$_newbin" "$_url"; then
         rm -rf "$_tmpdir" "$_tmp"
         exit 1
     fi
