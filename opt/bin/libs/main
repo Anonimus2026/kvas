@@ -160,7 +160,10 @@ service_action(){
 	# если нет демона - выходим
 	[ -z "${_service}" ] && return 1
 	# если демон есть - выполняем действия (start/stop/restart — как передано)
-	find /opt/etc/init.d/ -name "*${_service}*" -exec {} "${_action}" \; &> /dev/null && return 0 || return 1
+	local _svc
+	_svc=$(find /opt/etc/init.d/ -name "*${_service}*" 2>/dev/null | head -1)
+	[ -n "${_svc}" ] || _svc=$(find /opt/apps/kvas/etc/init.d/ /opt/apps/kvas/hysteria/etc/init.d/ /opt/apps/kvas/awg/etc/init.d/ -name "*${_service}*" 2>/dev/null | head -1)
+	[ -n "${_svc}" ] && "${_svc}" "${_action}" &> /dev/null && return 0 || return 1
 
 }
 

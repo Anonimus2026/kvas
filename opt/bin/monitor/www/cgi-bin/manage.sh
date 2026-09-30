@@ -277,6 +277,20 @@ get_tag_domain_list_from_file() {
 	}' "$1" 2>/dev/null
 }
 
+run_service() {
+	local _act="$1"
+	shift
+	local _s
+	for _s in "$@"; do
+		if [ -f "$_s" ]; then
+			"$_s" "$_act" 2>&1
+			return $?
+		fi
+	done
+	echo "service script not found: $*" >&2
+	return 1
+}
+
 
 main() {
 	local action token pass hash stored kvaspkg kvaspkg_name kvaspkg_ver
@@ -790,7 +804,7 @@ main() {
 			;;
 		awg_mode)
 			check_token "$token"
-			_profile=$(echo "$QUERY_STRING" | sed 's/.*profile=//; s/&.*//')
+			_profile=$(echo "$QUERY_STRING" | sed -n 's/.*[&?]profile=\([^&]*\).*/\1/p')
 			_envf=/opt/apps/kvas/awg/etc/conf/env.sh
 			if [ -z "$_profile" ]; then
 				_cur=$(sed -n 's/^RESOURCE_PROFILE=//p' "$_envf" 2>/dev/null | head -1 | tr -d '"')
@@ -1010,8 +1024,8 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$($KVAS_BIN failover start >/dev/null 2>&1; /opt/etc/init.d/S97xray start 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(/opt/etc/init.d/S99hysteria start 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$($KVAS_BIN failover start >/dev/null 2>&1; run_service start /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(run_service start /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1) ;;
 				Proxy42|awg)           out=$($KVAS_BIN awg start 2>&1) ;;
 				*)
 					# Keenetic VPN - через RCI API
@@ -1028,8 +1042,8 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$(/opt/etc/init.d/S97xray stop 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(/opt/etc/init.d/S99hysteria stop 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$(run_service stop /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(run_service stop /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1) ;;
 				Proxy42|awg)           out=$($KVAS_BIN awg stop 2>&1) ;;
 				*)
 					curl -s -d '{"down":"true"}' "localhost:79/rci/interface/${_iface}" &>/dev/null
@@ -1045,8 +1059,8 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$(/opt/etc/init.d/S97xray restart 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(/opt/etc/init.d/S99hysteria restart 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$(run_service restart /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(run_service restart /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1) ;;
 				Proxy42|awg)           out=$($KVAS_BIN awg restart 2>&1) ;;
 				*)
 					json_error "restart not supported for ${_iface}"

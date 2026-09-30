@@ -232,7 +232,9 @@ all_services_restart() {
 		service_restart 'клиента VLESS' 'S24xray'
 	elif [ -f /opt/apps/kvas/etc/init.d/S97xray ]; then
 		# xray установлен но не активный — запускаем для failover проверок
-		/opt/etc/init.d/S97xray status 2>/dev/null | grep -q alive || /opt/etc/init.d/S97xray start &>/dev/null
+		_xinit="${XRAY_INIT:-}"
+		[ -f "${_xinit}" ] || _xinit=/opt/apps/kvas/etc/init.d/S97xray
+		"${_xinit}" status 2>/dev/null | grep -q alive || "${_xinit}" start &>/dev/null
  	fi
 
 	# AmneziaWG (wireproxy-awg) — если установлен

@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-621
+**Версия:** 1.1.9_beta-10-622
 **Дата:** 30.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 621)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 622)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, **621** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, **622** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v621)
+## 4. Текущий статус (v622)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -62,6 +62,8 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | **Web «Состояние системы»: 3 службы (xray/hysteria/awg) + Старт/Стоп + Рестарт, строка AmneziaWG с профилем** | ✓ v620 (убрана дублирующая кнопка из «Настройка VPN») |
 | **Кнопки служб реально работают: прямые `/opt/etc/init.d/…` в CGI (v620 «service_action: not found»), `service_action` honours action** | ✓ v621 |
 | **xray arch: mipsel→mips32le (был big-endian mips32), + mips64le/mips64/riscv64/loong64** | ✓ v621 |
+| **Кнопки на реальном устройстве: xray = S24xray → legacy S97xray → пакет, hysteria device → пакет; `service_action` pkg-fallback** | ✓ v622 (жалоба: `/opt/etc/init.d/S97xray: not found`) |
+| **Селект «Профиль wireproxy» показывает текущий профиль (`awg_mode` GET guard)** | ✓ v622 (всегда был «balanced»; строка статуса читала верно) |
 | **PRD §4.3: правило цепочек + backup/restore + актуальность справки** | ✓ v620/v621 |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
@@ -76,7 +78,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621 — рабочие. Следующий = **622**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622 — рабочие. Следующий = **623**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -182,6 +184,13 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **PRD §4.3 п.4 (по заявке пользователя):** при изменении функционала обновлять справку — `etc/conf/kvas.help` (`kvas help`), help Telegram-бота, подсказки Web UI, PRD; grep новых ключей в справке наравне с кодом в precheck/verify.
   - **Тест:** `test621.sh` — реальные срезы dispatch `tunnel_start/stop/restart` (прямые init.d, подмена пути в срезе, фейковые init-скрипты: vless/failover-start, Proxy21, hysteria, awg, Proxy42, bogus, пустой iface, bash -n), `service_action` (stop/restart/start доходят до скрипта, пустой сервис rc=1), `_xray_detect_arch` (11 uname-кейсов через uname-stub) + регрессии v620 (merge/roundtrip/profile) и structural v619/v620 = **45/45, `TEST_RC=0`**; `PRECHECK_RC=0` (~115 маркеров, incl. `abs service_action` в CGI, прямые init.d-пути, `\\;` в libs/main, mips-порядок); `VERIFY_DONE`/`V_RC=0` (один проход).
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-621`, postinst fallback `_rel=621`; sha256 `32259134fc6bde7811b6b4e7e26630320d28e3cd98c20952930cbd6a2de0fc34` (314 034 B); изменённые файлы: `bin/monitor/www/cgi-bin/manage.sh`, `bin/libs/main`, `bin/libs/vless`, `postinst`.
+
+- **Пакет v622 (кнопки служб на реальном устройстве: резолв S24xray/пакет + пакетный fallback; селект профиля wireproxy):**
+  - **Баг 1 (диагноз, жалоба пользователя):** `manage.sh: line 1048: /opt/etc/init.d/S97xray: not found` при Стоп/Рестарт. Причина: `main/setup` source'ит `libs/vless` (строки 2-4), где `XRAY_INIT=/opt/etc/init.d/S24xray` → symlink на устройстве setup:620 создаёт **именем S24xray** (`ln -s /opt/apps/kvas/etc/init.d/S97xray ${XRAY_INIT}`), а путь `/opt/etc/init.d/S97xray` не существует никогда. Прямые вызовы v621 упирались в это имя; исторически `service_action S97xray` (find в /opt/etc/init.d) молча ничего не находил — find без совпадений exit 0 = ложный успех (цепочки `kvas vless set` (bin/kvas:556), setup:704, vpn:2592 и failover-ветка vpn:235 были latent-сломаны).
+  - **Фиксы:** (1) CGI `run_service()`: первый существующий из кандидатов — для xray `/opt/etc/init.d/S24xray` → `/opt/etc/init.d/S97xray` → `/opt/apps/kvas/etc/init.d/S97xray`, для hysteria device-ссылка → пакетный путь; во всех 6 ветках dispatch (start/stop/restart), отсутствие всех кандидатов → сообщение в вывод. (2) `libs/main service_action`: если в `/opt/etc/init.d` нет совпадений — второй `find` по пакетным init.d-каталогам (`/opt/apps/kvas/{,hysteria/,awg/}etc/init.d/`), запуск первого найденного; нигде нет → rc=1 (вместо ложного 0). (3) `libs/vpn` failover-ветка xray: `_xinit="${XRAY_INIT:-}"` → если файла нет — пакетный путь.
+  - **Баг 2 (диагноз):** в «Состоянии системы» строка «профиль: perf», а селект «Профиль wireproxy» — «balanced». `awg_mode` GET без параметра делал `sed 's/.*profile=//; s/&.*//'` БЕЗ guard: на `action=awg_mode` подстроки `profile=` нет → sed возвращал всю строку → `[ -z ]` ложно → SET-ветка → `json_error "unknown profile: action=awg_mode"` → `awgModeLoad` не получал `d.profile` → селект оставался на статическом `selected=balanced`. SET с `&profile=` работал → применение профиля меняло его, чтение — никогда. Фикс: `sed -n 's/.*[&?]profile=\([^&]*\).*/\1/p'` (guard &/?; идиома `[ "$_x" = "$QUERY_STRING" ]`, применяемая в tg-секциях этого же файла).
+  - **Тест:** `test622.sh` — **74/74, `TEST_RC=0`**: dispatch-сценарии резолва кандидатов (устройство S24xray → legacy S97xray → пакет; hysteria device → пакет; проверка путей вызова через path-лог фейков, пакетный скрипт НЕ запускается когда есть device-ссылка), `service_action` (пакетный fallback, device-приоритет без двойного запуска, rc=1 когда нигде нет, аргумент действия), `awg_mode` (GET→perf, SET profile=eco применяется, bogus → ошибка), `_xinit`-резолв failover, arch-регрессия v621 (11 кейсов), merge/roundtrip/profile v620, structural; `PRECHECK_RC=0` (~120 маркеров, incl. отсутствие прямых `S97xray start/stop/restart` в CGI и старого sed-профиля); `VERIFY_DONE`/`V_RC=0` (один проход).
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-622`, postinst fallback `_rel=622`; sha256 `ebe6bd5fedf3db8168a7d0e06001a83ade89378e210437b6ffdd83455f67aad9` (314 267 B); изменённые файлы: `bin/monitor/www/cgi-bin/manage.sh`, `bin/libs/main`, `bin/libs/vpn`, `postinst`.
 
 ### 4.3. Правило: логические цепочки и backup/restore при любых изменениях
 
