@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-620
+**Версия:** 1.1.9_beta-10-621
 **Дата:** 30.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 620)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 621)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, **620** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, **621** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v620)
+## 4. Текущий статус (v621)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -60,6 +60,9 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | **Telegram-бот: выбор тоннеля (Tunnels-меню, паритет с Web UI)** | ✓ v619 |
 | **Профиль ресурсов wireproxy (RESOURCE_PROFILE и лимиты Go) переживает upgrade/rollback (merge) + backup/restore** | ✓ v620 |
 | **Web «Состояние системы»: 3 службы (xray/hysteria/awg) + Старт/Стоп + Рестарт, строка AmneziaWG с профилем** | ✓ v620 (убрана дублирующая кнопка из «Настройка VPN») |
+| **Кнопки служб реально работают: прямые `/opt/etc/init.d/…` в CGI (v620 «service_action: not found»), `service_action` honours action** | ✓ v621 |
+| **xray arch: mipsel→mips32le (был big-endian mips32), + mips64le/mips64/riscv64/loong64** | ✓ v621 |
+| **PRD §4.3: правило цепочек + backup/restore + актуальность справки** | ✓ v620/v621 |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -73,7 +76,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620 — рабочие. Следующий = **621**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621 — рабочие. Следующий = **622**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -173,6 +176,13 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Тест:** `test620.sh` — реальные срезы: merge-блок `main/upgrade` (perf/eco восстанавливается, новый ключ пакета сохраняется, не тронутая переменная остаётся), `backup_copy`+`restore_backup` (roundtrip awg env + отсутствие бэкапа не трогает файл), dispatch `tunnel_restart` (vless/Proxy21/hysteria/Proxy41/awg/Proxy42 + bogus + пустой/отсутствующий iface), чтение `awg_profile` в `system_status` (perf/пусто/fallback balanced) + регрессии v619 = **35/35, `TEST_RC=0`**; `PRECHECK_RC=0` (все маркеры, включая отсутствие `awgToggleBtn`); `VERIFY_DONE`/`V_RC=0` (один проход).
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-620`, postinst fallback `_rel=620`; sha256 `8bdb1743ff444e389b30c14293665f5d92042abd68a1118ef5c22a6d53528645` (313 988 B); изменённые файлы: `bin/libs/main`, `bin/main/setup`, `bin/main/upgrade`, `bin/monitor/www/cgi-bin/manage.sh`, `bin/monitor/www/index.html`, `postinst`.
 
+- **Пакет v621 (ремонт кнопок служб + архитектура xray mipsel + правило справки):**
+  - **Баг (диагноз, жалоба пользователя):** нажатие «Рестарт» → `manage.sh: line 1049: service_action: not found`. CGI никогда не source'ит `libs/main` (только фоновые подзадачи `adguard_on`/restore), а `service_action` определена там же → все кнопки Старт/Стоп/Рестарт у xray/hysteria падали (латентно: до v620 ветки vless/hysteria в `tunnel_start/stop` не вызывались из UI — использовался только awg). Плюс два смежных бага: `libs/main service_action()` хардкодила `-exec {} start` (аргумент действия игнорировался — все stop/restart-вызовы CLI фактически перезапускали сервис); `libs/vless _xray_detect_arch()` матчил `*mipsle*|*mipsel*` generic-веткой `*mips*` → арх `mips32` (big-endian) → качался не тот бинарник Xray.
+  - **Фиксы:** (1) `manage.sh`: все 6 вызовов заменены на прямые `/opt/etc/init.d/S97xray start|stop|restart` и `/opt/etc/init.d/S99hysteria start|stop|restart` (в контейнере device подтверждены: S97xray через `rc.func`, S99hysteria/S99awg со своими case start/stop/restart; в CGI не осталось ни одного `service_action`; `service_action` в `bin/kvas`/`main/setup` — оставлена, CLI source'ит `libs/main`). (2) `libs/main service_action`: `-exec {} "${_action}"` — stop/restart доходят до скрипта. (3) `libs/vless _xray_detect_arch`: порядок веток `*mips64el*|*mips64le*` → `*mips64*` → `*mipsle*|*mipsel*` → `*mips*`, плюс `*riscv64*`/`*loong64*|*loongarch64*` (ассеты подтверждены по GitHub API XTLS/Xray-core v26.3.27: `Xray-linux-mips32le.zip`, `mips64le`, `mips64`, `riscv64`, `loong64`).
+  - **PRD §4.3 п.4 (по заявке пользователя):** при изменении функционала обновлять справку — `etc/conf/kvas.help` (`kvas help`), help Telegram-бота, подсказки Web UI, PRD; grep новых ключей в справке наравне с кодом в precheck/verify.
+  - **Тест:** `test621.sh` — реальные срезы dispatch `tunnel_start/stop/restart` (прямые init.d, подмена пути в срезе, фейковые init-скрипты: vless/failover-start, Proxy21, hysteria, awg, Proxy42, bogus, пустой iface, bash -n), `service_action` (stop/restart/start доходят до скрипта, пустой сервис rc=1), `_xray_detect_arch` (11 uname-кейсов через uname-stub) + регрессии v620 (merge/roundtrip/profile) и structural v619/v620 = **45/45, `TEST_RC=0`**; `PRECHECK_RC=0` (~115 маркеров, incl. `abs service_action` в CGI, прямые init.d-пути, `\\;` в libs/main, mips-порядок); `VERIFY_DONE`/`V_RC=0` (один проход).
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-621`, postinst fallback `_rel=621`; sha256 `32259134fc6bde7811b6b4e7e26630320d28e3cd98c20952930cbd6a2de0fc34` (314 034 B); изменённые файлы: `bin/monitor/www/cgi-bin/manage.sh`, `bin/libs/main`, `bin/libs/vless`, `postinst`.
+
 ### 4.3. Правило: логические цепочки и backup/restore при любых изменениях
 
 При **ЛЮБОМ** изменении функционала (новая опция, параметр, служба, тоннель, файл конфигурации) обязательно:
@@ -190,6 +200,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
    - файлы **внутри пакета** (перезаписываются opkg) — сохранять/восстанавливать в `main/upgrade` вокруг `opkg install --force-reinstall`, **merge-способом** (только свои переменные, новые ключи пакета не затирать).
    **Эталон ошибки — env wireproxy (v620):** `awg/etc/conf/env.sh` не входил в backup → `RESOURCE_PROFILE` слетал на `balanced` при каждом обновлении.
 3. **Фиксировать обход в PRD-блоке «Пакет vNNN»:** список мест (кто пишет → кто читает) + маркеры в precheck/verify + функциональные проверки цепочек.
+4. **Обновлять справку (актуальность):** любое изменение CLI/функционала ⇒ обновить `etc/conf/kvas.help` (`kvas help`), help Telegram-бота (`tg_bot`/`kvas.help`), подсказки и описания в Web UI (`index.html`) — и этот PRD. Устаревшая справка хуже её отсутствия: пользователь вводит несуществующие опции и получает ложные ошибки. Проверка: grep новых ключей/действий в справке наравне с кодом (precheck/verify).
 
 ## 5. Сетевая конфигурация
 

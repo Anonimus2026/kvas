@@ -159,8 +159,8 @@ service_action(){
 	
 	# если нет демона - выходим
 	[ -z "${_service}" ] && return 1
-	# если демон есть - выполняем действия
-	find /opt/etc/init.d/ -name "*${_service}*" -exec {} start \; &> /dev/null && return 0 || return 1
+	# если демон есть - выполняем действия (start/stop/restart — как передано)
+	find /opt/etc/init.d/ -name "*${_service}*" -exec {} "${_action}" \; &> /dev/null && return 0 || return 1
 
 }
 

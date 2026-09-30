@@ -1010,11 +1010,11 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$($KVAS_BIN failover start >/dev/null 2>&1; service_action S97xray start 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(service_action S99hysteria start 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$($KVAS_BIN failover start >/dev/null 2>&1; /opt/etc/init.d/S97xray start 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(/opt/etc/init.d/S99hysteria start 2>&1) ;;
 				Proxy42|awg)           out=$($KVAS_BIN awg start 2>&1) ;;
 				*)
-					# Keenetic VPN — через RCI API
+					# Keenetic VPN - через RCI API
 					curl -s -d '{"up":"true"}' "localhost:79/rci/interface/${_iface}" &>/dev/null
 					out="Interface ${_iface} up"
 					;;
@@ -1028,8 +1028,8 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$(service_action S97xray stop 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(service_action S99hysteria stop 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$(/opt/etc/init.d/S97xray stop 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(/opt/etc/init.d/S99hysteria stop 2>&1) ;;
 				Proxy42|awg)           out=$($KVAS_BIN awg stop 2>&1) ;;
 				*)
 					curl -s -d '{"down":"true"}' "localhost:79/rci/interface/${_iface}" &>/dev/null
@@ -1045,8 +1045,8 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$(service_action S97xray restart 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(service_action S99hysteria restart 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$(/opt/etc/init.d/S97xray restart 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(/opt/etc/init.d/S99hysteria restart 2>&1) ;;
 				Proxy42|awg)           out=$($KVAS_BIN awg restart 2>&1) ;;
 				*)
 					json_error "restart not supported for ${_iface}"
