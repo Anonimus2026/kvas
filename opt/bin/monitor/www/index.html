@@ -43,7 +43,15 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 .btn.danger:hover { background: #f8514922; }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn-sm { padding: 3px 10px; font-size: 11px; }
-.row-actions { margin-left: auto; display: inline-flex; gap: 6px; flex-shrink: 0; }
+.row-main { min-width: 340px; }
+.row-actions { margin-left: 8px; display: inline-flex; gap: 6px; flex-shrink: 0; }
+.card-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.view-toggle { display: inline-flex; gap: 4px; }
+#svcRows.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 8px 0; }
+#svcRows.tiles .card-row { flex-direction: column; align-items: flex-start; gap: 8px; margin: 0; padding: 12px; border: 1px solid #30363d; border-radius: 8px; background: #0d1117; }
+#svcRows.tiles .row-main { min-width: 0; flex-basis: auto; }
+#svcRows.tiles .row-actions { margin-left: 0; width: 100%; margin-top: 2px; flex-basis: auto; }
+#svcRows.tiles .row-actions .btn { flex: 1 1 auto; min-height: 38px; }
 .hchip { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:6px; background:#0d1117; border:1px solid #30363d; font-size:12px; cursor:pointer; user-select:none; }
 .hchip:active { background:#161b22; }
 .hdot { width:8px; height:8px; border-radius:50%; background:#8b949e; flex:none; }
@@ -73,12 +81,19 @@ body.mobile-view .tabs { display:none; }
 body.mobile-view .mobilenav { display:flex; }
 body.mobile-view #mainUi { padding-bottom:76px; }
 
+@media (max-width:900px){
+  #svcRows.tiles { grid-template-columns: repeat(2, 1fr); }
+}
+
 @media (max-width:600px){
   body { padding:10px; }
   .btn { min-height:44px; padding:10px 14px; }
   .btn-sm { min-height:40px; padding:8px 12px; }
   .tab { padding:12px 14px; min-height:44px; }
   .hchip { min-height:44px; padding:10px 14px; }
+  .row-main { min-width:0; flex-basis:100%; }
+  .row-actions { margin-left:0; flex-basis:100%; margin-top:4px; }
+  #svcRows.tiles { grid-template-columns: 1fr; }
 }
 
 /* Messages */
@@ -210,31 +225,38 @@ window.addEventListener('error', function(e){
 
   <!-- System Status -->
   <div class="card">
-    <h3>Состояние системы</h3>
+    <div class="card-title-row"><h3>Состояние системы</h3>
+      <span class="view-toggle">
+        <button class="btn btn-sm" id="svcViewTiles" onclick="setSvcView('tiles')">Плитками</button>
+        <button class="btn btn-sm" id="svcViewList" onclick="setSvcView('list')">Списком</button>
+      </span>
+    </div>
     <div class="card-row"><label>Пакет:</label><span class="value" id="sysPkg">-</span></div>
     <div class="card-row"><label>Версия:</label><span class="value" id="sysVer">-</span></div>
     <div class="card-row"><label>Хостов:</label><span class="value" id="sysHosts">-</span></div>
-    <div class="card-row"><label>Служба Xray:</label><span class="value" id="sysXrayService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysXrayVer"></span>
+    <div id="svcRows">
+    <div class="card-row"><span class="row-main"><label>Служба Xray:</label><span class="value" id="sysXrayService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysXrayVer"></span></span>
       <span class="row-actions">
         <button class="btn btn-sm" id="svcXrayBtn" onclick="svcToggle('vless',this)">Старт</button>
         <button class="btn btn-sm" onclick="svcAct('vless','restart',this)">Рестарт</button>
       </span>
     </div>
-    <div class="card-row"><label>Служба Hysteria:</label><span class="value" id="sysHysteriaService">-</span>
+    <div class="card-row"><span class="row-main"><label>Служба Hysteria:</label><span class="value" id="sysHysteriaService">-</span></span>
       <span class="row-actions">
         <button class="btn btn-sm" id="svcHysteriaBtn" onclick="svcToggle('hysteria',this)">Старт</button>
         <button class="btn btn-sm" onclick="svcAct('hysteria','restart',this)">Рестарт</button>
       </span>
     </div>
-    <div class="card-row"><label>Служба AmneziaWG:</label><span class="value" id="sysAwgService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysAwgProfile"></span>
+    <div class="card-row"><span class="row-main"><label>Служба AmneziaWG:</label><span class="value" id="sysAwgService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysAwgProfile"></span></span>
       <span class="row-actions">
         <button class="btn btn-sm" id="svcAwgBtn" onclick="svcToggle('awg',this)">Старт</button>
         <button class="btn btn-sm" onclick="svcAct('awg','restart',this)">Рестарт</button>
       </span>
     </div>
+    </div>
     <div id="sysSvcMsg" class="msg" style="max-height:80px;overflow-y:auto;"></div>
     <div class="card-row"><label>Текущий туннель:</label><span class="value" id="sysTunnel">-</span></div>
-    <div class="card-row"><label>Обновления:</label><span class="value" id="sysUpdate">-</span>
+    <div class="card-row"><span class="row-main"><label>Обновления:</label><span class="value" id="sysUpdate">-</span></span>
       <span class="row-actions">
         <button class="btn btn-sm" onclick="doCheckUpdate(this)">Проверить</button>
         <button class="btn btn-sm" id="kvasUpgradeBtn" onclick="doKvasUpgrade(this)" style="display:none;">Обновить KVAS</button>
@@ -247,10 +269,10 @@ window.addEventListener('error', function(e){
   <div class="card">
     <h3>Состояние сервисов</h3>
     <div class="card-row" style="gap:8px;flex-wrap:wrap;">
-      <span class="hchip" id="chipVpn" onclick="toggleHealth('vpn')"><span class="hdot" id="hdVpn"></span>VPN</span>
+      <span class="row-main"><span class="hchip" id="chipVpn" onclick="toggleHealth('vpn')"><span class="hdot" id="hdVpn"></span>VPN</span>
       <span class="hchip" id="chipAdg" onclick="toggleHealth('adg')"><span class="hdot" id="hdAdg"></span>AdGuard</span>
       <span class="hchip" id="chipDns" onclick="toggleHealth('dns')"><span class="hdot" id="hdDns"></span>dnsmasq</span>
-      <span class="hchip" id="chipFo" onclick="toggleHealth('fo')"><span class="hdot" id="hdFo"></span>Failover</span>
+      <span class="hchip" id="chipFo" onclick="toggleHealth('fo')"><span class="hdot" id="hdFo"></span>Failover</span></span>
       <button class="btn btn-sm row-actions" onclick="loadHealth()">Обновить</button>
     </div>
     <div id="healthHint" style="font-size:11px;color:#8b949e;margin-top:6px;"></div>
@@ -750,6 +772,18 @@ function checkToken() {
   }).catch(function(){ sessionStorage.removeItem('kvas_token'); AUTH_TOKEN = ''; initAuth(); });
 }
 
+function setSvcView(v) { try { localStorage.setItem('kvasSvcView', v); } catch (e) {} applySvcView(); }
+function applySvcView() {
+  var v = 'tiles';
+  try { v = localStorage.getItem('kvasSvcView') || 'tiles'; } catch (e) {}
+  var g = document.getElementById('svcRows');
+  if (g) g.classList.toggle('tiles', v === 'tiles');
+  var t = document.getElementById('svcViewTiles');
+  var l = document.getElementById('svcViewList');
+  if (t) t.classList.toggle('primary', v === 'tiles');
+  if (l) l.classList.toggle('primary', v !== 'tiles');
+}
+
 function showMain() {
   document.getElementById('authScreen').style.display = 'none';
   document.getElementById('mainUi').style.display = 'block';
@@ -757,6 +791,7 @@ function showMain() {
   document.getElementById('settingsWrap').style.display = '';
   document.getElementById('tgWrap').style.display = '';
   applyMobileView();
+  applySvcView();
   upgTick();
   loadSystemStatus();
   loadHealth();

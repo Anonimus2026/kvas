@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-624
+**Версия:** 1.1.9_beta-10-625
 **Дата:** 30.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 624)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 625)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, **624** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, **625** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v624)
+## 4. Текущий статус (v625)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -67,7 +67,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | **xray на LE-mips: эндianness по ELF-пробе (uname=mips → mips32le/mips64le), явные mipsel-ветки сохранены** | ✓ v623 (KN-1011: скачивался BE `mips32`, не запускался) |
 | **Установка xray: `xray version`-проба скачанного бинарника ДО стопа демона (fail fast с URL)** | ✓ v623 (было: стоп → падение → restore, «Установлена версия:» пусто) |
 | **`kvas test`: единый полный НЕинтерактивный отчёт для бота и Web UI (режим `auto`: +`kvas_list_ipset_check`, −интерактивный `ipset_site_visit_check`) + полная отправка в Telegram (без `tail -c 3500`) | ✓ v624 (жалоба: «вид kvas test отличается для бота, он не полный») |
-| **Web UI «Состояние системы»: кнопки действий выровнены (`.row-actions`: правая колонка на ПК, цельный правый перенос на мобиле) | ✓ v624 (жалоба: «мобильная версия ад перфекциониста», Стоп/Старт/Рестарт) |
+| **Web UI «Состояние системы»: кнопки по одной оси рядом с текстом (`.row-main`, min-width 340px; на мобиле — блоком под текстом) + вид «Плитками» (сетка 3 карточек служб с крупными кнопками) с тумблером в шапке секции (localStorage) | ✓ v625 (жалоба на v624: на ПК кнопки у правого края — «промахнуться», на мобиле оторваны; просили «рядом как раньше, но выровнить») |
 | **PRD §4.3: правило цепочек + backup/restore + актуальность справки** | ✓ v620/v621/v623/v624 |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
@@ -82,7 +82,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624 — рабочие. Следующий = **625**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624/625 — рабочие. Следующий = **626**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -211,6 +211,13 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Цепочки (§4.3):** флаг читается только в `cmd_state_checker` (пишет `bin/kvas:791 test|check) cmd_test_warning "${2}"`; читатели: `tg_job` test, `manage.sh kvas_test`, `main/upgrade:436` — оставлен). Справка/подсказки Web UI не менялись: `auto` — внутренний режим неинтерактивных контекстов, команда `kvas test` и кнопки UI прежние (§4.3 п.4 — без изменений).
   - **Тест:** `test624.sh` — **31/31, `TEST_RC=0`**: логика флагов на РЕАЛЬНЫХ строках source (auto → list-check да / site-visit нет; upgrade → оба нет; пусто → оба да), test-кейс tg_job (нарезка case-блока + фейк-kvas: аргумент `test auto`, полный отчёт 9060 байт с HEAD и TAIL, `tbj_send_long` использован, простой send — нет), cgi (`test auto` есть, `test upgrade` ушёл), index.html (CSS, 4 группы, старый inline ушёл, кнопки на месте), регрессии; `PRECHECK_RC=0` (~140 маркеров, incl. `abs 'tail -c 3500'`, `abs 'margin-left:8px;display:inline-flex'`); `VERIFY_DONE`/`V_RC=0` (один проход; в verify `sh -n` добавлен `bin/tg_job.sh`).
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-624`, postinst fallback `_rel=624`; sha256 `13dbe46af62c105df23f454e9475a802d46acc4f8ca3707eda8855b1a6f178b2` (314 515 B); изменённые файлы: `bin/libs/check`, `bin/tg_job.sh`, `bin/monitor/www/cgi-bin/manage.sh`, `bin/monitor/www/index.html`, `postinst`.
+
+- **Пакет v625 (кнопки «рядом, но по оси» + плитки служб с переключателем вида):**
+  - **Диагноз (жалоба на v624):** на ПК `margin-left:auto` увёл кнопки в дальний правый угол карточки («не очень смотрится и можно промахнуться»), на мобиле кнопки оторваны от текста («тоже странно»). Просьба: «пусть будет рядом как раньше, но выровнить»; предложение пользователя: «каждая служба отдельная карточка, на ПК круто, на мобиле прокрутка, вид менять в настройках».
+  - **Фиксы (`index.html`):** (1) **ось `.row-main`** — контент каждой строки (label+value+доп) обёрнут в `<span class="row-main">` c `min-width: 340px`: кнопки стартуют вплотную (`margin-left: 8px`) после ОДНОЙ вертикальной оси — на ПК «рядом как раньше», но ровными столбиками; на ≤600px `.row-main`/`.row-actions` становятся `flex-basis:100%` — кнопки аккуратным блоком слева ПОД текстом. (2) **Плитки служб** — три строки обёрнуты в `#svcRows`; вид «Плитками» (класс `tiles`, default): `grid repeat(3,1fr)` карточек-рамок (≤900 → 2 колонки, ≤600 → 1), кнопки во всю ширину плитки (`flex:1`, min-height 38px), текст над кнопками; вид «Списком» = компактные строки. (3) **Тумблер** «Плитками/Списком» в шапке секции (`.card-title-row` + `.view-toggle`, активная кнопка `.primary`), выбор хранится в `localStorage.kvasSvcView`, применяется `applySvcView()` из `showMain()`. Реализация — чисто CSS+класс: один DOM, id статусов/кнопок (`sysXrayService`, `svcXrayBtn`, `sysAwgProfile`…) не дублируются — `loadSystemStatus`/`svcSetBtn`/`svcToggle` работают в обоих видах без правок JS.
+  - **Цепочки (§4.3):** `#svcRows` оборачивает ТОЛЬКО три службы — `sysSvcMsg`, «Текущий туннель», «Обновления» остались вне (общие для обоих видов); чипы «Состояние сервисов» получили `row-main` (ось для «Обновить»); справка/подсказки не менялись (вид — локальная настройка UI) — §4.3 п.4 без изменений; новых файлов конфигов нет — backup/restore/upgrade не затронуты.
+  - **Тест:** `test625.sh` — **43/43, `TEST_RC=0`**: регрессии v624 (флаги `auto` на реальных строках, полный отчёт бота 9060 B, cgi) + новые html-проверки (ось `row-main min-width:340`, отсутствие `margin-left:auto`, 5 обёрток `row-main`, mobile media, `#svcRows.tiles` grid, 3 колонки десктоп, `setSvcView`/`applySvcView` + 2 вызова, localStorage-ключ, обе кнопки тумблера, `card-title-row`, сохранность id служб/rollback/чипов, уход старого inline-стиля) + регрессии v619-623; `PRECHECK_RC=0` (~155 маркеров, включая `abs row-actions { margin-left: auto`); `VERIFY_DONE`/`V_RC=0` (один проход).
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-625`, postinst fallback `_rel=625`; sha256 `32a0640f01a8ef79538282264aba911350aec93731a9bfff2257f31fc58f14dc` (314 940 B); изменённые файлы: `bin/monitor/www/index.html`, `postinst`.
 
 ### 4.3. Правило: логические цепочки и backup/restore при любых изменениях
 
