@@ -43,6 +43,7 @@ h1 { color: #58a6ff; font-size: 18px; margin-bottom: 4px; }
 .btn.danger:hover { background: #f8514922; }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn-sm { padding: 3px 10px; font-size: 11px; }
+.row-actions { margin-left: auto; display: inline-flex; gap: 6px; flex-shrink: 0; }
 .hchip { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:6px; background:#0d1117; border:1px solid #30363d; font-size:12px; cursor:pointer; user-select:none; }
 .hchip:active { background:#161b22; }
 .hdot { width:8px; height:8px; border-radius:50%; background:#8b949e; flex:none; }
@@ -214,19 +215,19 @@ window.addEventListener('error', function(e){
     <div class="card-row"><label>Версия:</label><span class="value" id="sysVer">-</span></div>
     <div class="card-row"><label>Хостов:</label><span class="value" id="sysHosts">-</span></div>
     <div class="card-row"><label>Служба Xray:</label><span class="value" id="sysXrayService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysXrayVer"></span>
-      <span style="margin-left:8px;display:inline-flex;gap:4px;">
+      <span class="row-actions">
         <button class="btn btn-sm" id="svcXrayBtn" onclick="svcToggle('vless',this)">Старт</button>
         <button class="btn btn-sm" onclick="svcAct('vless','restart',this)">Рестарт</button>
       </span>
     </div>
     <div class="card-row"><label>Служба Hysteria:</label><span class="value" id="sysHysteriaService">-</span>
-      <span style="margin-left:8px;display:inline-flex;gap:4px;">
+      <span class="row-actions">
         <button class="btn btn-sm" id="svcHysteriaBtn" onclick="svcToggle('hysteria',this)">Старт</button>
         <button class="btn btn-sm" onclick="svcAct('hysteria','restart',this)">Рестарт</button>
       </span>
     </div>
     <div class="card-row"><label>Служба AmneziaWG:</label><span class="value" id="sysAwgService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysAwgProfile"></span>
-      <span style="margin-left:8px;display:inline-flex;gap:4px;">
+      <span class="row-actions">
         <button class="btn btn-sm" id="svcAwgBtn" onclick="svcToggle('awg',this)">Старт</button>
         <button class="btn btn-sm" onclick="svcAct('awg','restart',this)">Рестарт</button>
       </span>
@@ -234,9 +235,11 @@ window.addEventListener('error', function(e){
     <div id="sysSvcMsg" class="msg" style="max-height:80px;overflow-y:auto;"></div>
     <div class="card-row"><label>Текущий туннель:</label><span class="value" id="sysTunnel">-</span></div>
     <div class="card-row"><label>Обновления:</label><span class="value" id="sysUpdate">-</span>
-      <button class="btn btn-sm" onclick="doCheckUpdate(this)" style="margin-left:8px;">Проверить</button>
-      <button class="btn btn-sm" id="kvasUpgradeBtn" onclick="doKvasUpgrade(this)" style="margin-left:4px;display:none;">Обновить KVAS</button>
-      <button class="btn btn-sm" id="kvasRollbackBtn" onclick="doKvasRollback(this)" style="margin-left:4px;display:none;">Откатить</button>
+      <span class="row-actions">
+        <button class="btn btn-sm" onclick="doCheckUpdate(this)">Проверить</button>
+        <button class="btn btn-sm" id="kvasUpgradeBtn" onclick="doKvasUpgrade(this)" style="display:none;">Обновить KVAS</button>
+        <button class="btn btn-sm" id="kvasRollbackBtn" onclick="doKvasRollback(this)" style="display:none;">Откатить</button>
+      </span>
     </div>
   </div>
 
@@ -248,7 +251,7 @@ window.addEventListener('error', function(e){
       <span class="hchip" id="chipAdg" onclick="toggleHealth('adg')"><span class="hdot" id="hdAdg"></span>AdGuard</span>
       <span class="hchip" id="chipDns" onclick="toggleHealth('dns')"><span class="hdot" id="hdDns"></span>dnsmasq</span>
       <span class="hchip" id="chipFo" onclick="toggleHealth('fo')"><span class="hdot" id="hdFo"></span>Failover</span>
-      <button class="btn btn-sm" onclick="loadHealth()" style="margin-left:4px;">Обновить</button>
+      <button class="btn btn-sm row-actions" onclick="loadHealth()">Обновить</button>
     </div>
     <div id="healthHint" style="font-size:11px;color:#8b949e;margin-top:6px;"></div>
     <div id="healthDetails" style="display:none;margin-top:8px;padding:8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;font-size:12px;"></div>

@@ -66,11 +66,11 @@ ${_out:-нет вывода}"
 
 	test)
 		_outf=/tmp/.tgjob.out.$$
-		sh /opt/apps/kvas/bin/kvas test >"${_outf}" 2>&1
+		sh /opt/apps/kvas/bin/kvas test auto >"${_outf}" 2>&1
 		_rc=$?
-		_out=$(tbj_strip <"${_outf}" 2>/dev/null | tail -c 3500)
+		_out=$(tbj_strip <"${_outf}" 2>/dev/null)
 		rm -f "${_outf}"
-		tbj_send "Kvas test (код ${_rc}):
+		tbj_send_long "Kvas test (код ${_rc}):
 ${_out:-нет вывода}"
 		;;
 

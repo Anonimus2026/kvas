@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-623
+**Версия:** 1.1.9_beta-10-624
 **Дата:** 30.09.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 623)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 624)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, **623** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, **624** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v623)
+## 4. Текущий статус (v624)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -66,7 +66,9 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | **Селект «Профиль wireproxy» показывает текущий профиль (`awg_mode` GET guard)** | ✓ v622 (всегда был «balanced»; строка статуса читала верно) |
 | **xray на LE-mips: эндianness по ELF-пробе (uname=mips → mips32le/mips64le), явные mipsel-ветки сохранены** | ✓ v623 (KN-1011: скачивался BE `mips32`, не запускался) |
 | **Установка xray: `xray version`-проба скачанного бинарника ДО стопа демона (fail fast с URL)** | ✓ v623 (было: стоп → падение → restore, «Установлена версия:» пусто) |
-| **PRD §4.3: правило цепочек + backup/restore + актуальность справки** | ✓ v620/v621/v623 |
+| **`kvas test`: единый полный НЕинтерактивный отчёт для бота и Web UI (режим `auto`: +`kvas_list_ipset_check`, −интерактивный `ipset_site_visit_check`) + полная отправка в Telegram (без `tail -c 3500`) | ✓ v624 (жалоба: «вид kvas test отличается для бота, он не полный») |
+| **Web UI «Состояние системы»: кнопки действий выровнены (`.row-actions`: правая колонка на ПК, цельный правый перенос на мобиле) | ✓ v624 (жалоба: «мобильная версия ад перфекциониста», Стоп/Старт/Рестарт) |
+| **PRD §4.3: правило цепочек + backup/restore + актуальность справки** | ✓ v620/v621/v623/v624 |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -80,7 +82,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623 — рабочие. Следующий = **624**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624 — рабочие. Следующий = **625**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -200,6 +202,15 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Сопутствующее:** hysteria/awg маппят все mips-варианты → mipsle (для LE Keenetic случайно верно) — не тронуты; справка/подсказки Web UI заявлений об архитектуре xray не содержат — без изменений (§4.3 п.4).
   - **Тест:** `test623.sh` — **79/79, `TEST_RC=0`**: реальная проба эндiности на хосте (→ le), арх-матрица с моками uname+probe (`mips/le→mips32le` — регрессия KN-1011, `mips/be→mips32`, `mipsel/be→mips32le` — явная ветка бьёт пробу, `mips64/le→mips64le`, 5 немипс-кейсов, unknown→пусто), guard (non-binary отклонён + URL в выводе, `/bin/true` принят, missing отклонён, позиция вызова ДО «Останавливаем xray»), все регрессии v620-622; `PRECHECK_RC=0` (~130 маркеров, порядок веток mipsle < mips в verify сохранён, CRLF-свип); `VERIFY_DONE`/`V_RC=0` (один проход).
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-623`, postinst fallback `_rel=623`; sha256 `fb1ba914275a6359e437b788884673aa50bb8f63bac39c8ff6cb81f93910047d` (314 452 B); изменённые файлы: `bin/libs/vless`, `postinst`.
+
+- **Пакет v624 (единый полный неинтерактивный `kvas test` для бота и Web UI + выравнивание кнопок действий):**
+  - **Диагноз 1 (жалоба: «вид kvas test отличается для бота, он не полный»):** два расхождения. (1) `tg_job.sh` test-кейс обрезал вывод `tail -c 3500` и слал через `tbj_send` (одно сообщение) → начало отчёта (заголовок, интернет, хосты, AdGuard, туннели) терялось — бот выглядел «неполным». (2) Контексты запускали РАЗНЫЕ режимы: бот — полный `kvas test` (интерактивный `ipset_site_visit_check` с 2× `pause` печатал бессмысленные «нажмите клавишу» в чат), веб (`manage.sh` action `kvas_test`) — `kvas test upgrade`, который пропускал и `kvas_list_ipset_check`.
+  - **Фиксы:** (1) `libs/check cmd_state_checker`: новый режим **`auto`** — line 705 пропускает только интерактивный `ipset_site_visit_check`, line 690 (`kvas_list_ipset_check`) выполняется → полный неинтерактивный отчёт. (2) `tg_job.sh`: `kvas test auto` + полный вывод через `tbj_send_long` (чанкинг ~3500, без обрезки). (3) `manage.sh`: `test auto` вместо `test upgrade` → бот и веб дают ИДЕНТИЧНЫЙ отчёт. CLI `kvas test` без аргументов — прежний интерактивный полный режим (SSH); `main/upgrade:436 kvas test upgrade` — не тронут (post-upgrade — быстрый режим).
+  - **Диагноз 2 (жалоба: «мобильная версия ад перфекциониста», кнопки Стоп/Старт/Рестарт):** кнопки служб/обновлений/чипов были отдельными flex-item'ами `.card-row` → при нехватке места каждый уезжал по отдельности (кнопки AmneziaWG и «Откатить» падали на новую строку без выравнивания, «Обновить» чипов — влево).
+  - **Фиксы (`index.html`):** класс `.row-actions { margin-left: auto; display: inline-flex; gap: 6px; flex-shrink: 0; }` — группа кнопок прижата вправо (ПК = единая правая колонка), при переносе на мобильном уходит ЦЕЛИКОМ и выравнивается по правому краю. Применён к 3 строкам служб (span), строке «Обновления» (Проверить/Обновить KVAS/Откатить — одна группа) и кнопке «Обновить» чипов; старые inline-стили `margin-left:8px;display:inline-flex` удалены.
+  - **Цепочки (§4.3):** флаг читается только в `cmd_state_checker` (пишет `bin/kvas:791 test|check) cmd_test_warning "${2}"`; читатели: `tg_job` test, `manage.sh kvas_test`, `main/upgrade:436` — оставлен). Справка/подсказки Web UI не менялись: `auto` — внутренний режим неинтерактивных контекстов, команда `kvas test` и кнопки UI прежние (§4.3 п.4 — без изменений).
+  - **Тест:** `test624.sh` — **31/31, `TEST_RC=0`**: логика флагов на РЕАЛЬНЫХ строках source (auto → list-check да / site-visit нет; upgrade → оба нет; пусто → оба да), test-кейс tg_job (нарезка case-блока + фейк-kvas: аргумент `test auto`, полный отчёт 9060 байт с HEAD и TAIL, `tbj_send_long` использован, простой send — нет), cgi (`test auto` есть, `test upgrade` ушёл), index.html (CSS, 4 группы, старый inline ушёл, кнопки на месте), регрессии; `PRECHECK_RC=0` (~140 маркеров, incl. `abs 'tail -c 3500'`, `abs 'margin-left:8px;display:inline-flex'`); `VERIFY_DONE`/`V_RC=0` (один проход; в verify `sh -n` добавлен `bin/tg_job.sh`).
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-624`, postinst fallback `_rel=624`; sha256 `13dbe46af62c105df23f454e9475a802d46acc4f8ca3707eda8855b1a6f178b2` (314 515 B); изменённые файлы: `bin/libs/check`, `bin/tg_job.sh`, `bin/monitor/www/cgi-bin/manage.sh`, `bin/monitor/www/index.html`, `postinst`.
 
 ### 4.3. Правило: логические цепочки и backup/restore при любых изменениях
 

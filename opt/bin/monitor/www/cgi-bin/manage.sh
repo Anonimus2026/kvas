@@ -1959,7 +1959,7 @@ EOL2
 			(
 				touch /tmp/kvas_test.lock
 				{
-					out=$(echo | $KVAS_BIN test upgrade 2>&1); rc=$?
+					out=$(echo | $KVAS_BIN test auto 2>&1); rc=$?
 					echo "$out"
 					# Telegram P.8: test_err при проблемах в выводе
 					if printf '%s' "$out" | grep -qE 'НЕ ОТВЕЧАЕТ|ОШИБКА|НЕ РАБОТАЕТ'; then
