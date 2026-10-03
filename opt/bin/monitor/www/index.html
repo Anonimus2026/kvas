@@ -181,6 +181,7 @@ window.addEventListener('error', function(e){
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
             <button class="btn btn-sm primary" onclick="tgSave(this)">Сохранить</button>
             <button class="btn btn-sm" onclick="tgTest(this)">Тест</button>
+            <button class="btn btn-sm" onclick="tgBotRestart(this)" title="Убить и заново запустить поллер бота">Перезапуск бота</button>
             <span id="tgStatus" style="font-size:11px;color:#8b949e;"></span>
           </div>
         </div>
@@ -964,7 +965,12 @@ function tgLoad(){
     var qs=document.getElementById('tgQuietStart'); if(qs) qs.value = d.quiet_start || '';
     var qe=document.getElementById('tgQuietEnd'); if(qe) qe.value = d.quiet_end || '';
     var s=document.getElementById('tgStatus');
-    if(s){ s.textContent = d.token_set ? '' : 'не настроено'; s.style.color='#8b949e'; }
+    if(s){
+      if(!d.token_set){ s.textContent='не настроено'; s.style.color='#8b949e'; }
+      else if(!d.enabled){ s.textContent='уведомления выключены'; s.style.color='#8b949e'; }
+      else if(d.bot_running){ s.textContent='бот работает'; s.style.color='#3fb950'; }
+      else { s.textContent='бот остановлен — нажмите «Перезапуск бота»'; s.style.color='#f85149'; }
+    }
   });
 }
 function tgSave(btn){
@@ -995,6 +1001,12 @@ function tgTest(btn){
   apiBtn('/cgi-bin/manage.sh?'+p, btn, function(d){
     var s=document.getElementById('tgStatus'); if(!s) return;
     s.textContent = d.ok ? (d.msg||'Ок') : (d.error||'Ошибка'); s.style.color = d.ok?'#3fb950':'#f85149';
+  }, 30000);
+}
+function tgBotRestart(btn){
+  apiBtn('/cgi-bin/manage.sh?action=tg_bot_restart', btn, function(d){
+    var s=document.getElementById('tgStatus'); if(!s) return;
+    s.textContent = d.ok ? (d.msg||'Перезапущен') : (d.error||'Ошибка'); s.style.color = d.ok?'#3fb950':'#f85149';
   }, 30000);
 }
 

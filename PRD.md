@@ -1,7 +1,7 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-626
-**Дата:** 30.09.2026
+**Версия:** 1.1.9_beta-10-627
+**Дата:** 03.10.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
 **Оригинал:** https://github.com/qzeleza/kvas
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 626)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 627)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, **626** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, **627** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v626)
+## 4. Текущий статус (v627)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -70,6 +70,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | **Сборка: чистая установка без ошибок opkg** — из staging удалены 11 фиктивных пустых каталогов с обратными слэшами (`opt\apps\...`), которые попадали в `data.tar.gz` лишними записями и роняли `mkdir` в opkg с «Read-only file system» (баг сборки появился в цикле 624, был в 624 и 625; тест/verify не ловили — нет guard'а) | ✓ v626 (жалоба Nikolay: чистая установка 625 сыпет ошибками; 534 ставился чисто) |
 | **Web UI «Состояние системы»: кнопки по одной оси рядом с текстом (`.row-main`, min-width 340px; на мобиле — блоком под текстом) + вид «Плитками» (сетка 3 карточек служб с крупными кнопками) с тумблером в шапке секции (localStorage) | ✓ v625 (жалоба на v624: на ПК кнопки у правого края — «промахнуться», на мобиле оторваны; просили «рядом как раньше, но выровнить») |
 | **PRD §4.3: правило цепочек + backup/restore + актуальность справки** | ✓ v620/v621/v623/v624 |
+| **Telegram: keepalive чинит stale-lock мёртвого поллера (bot никогда не перезапускался) + кнопка «Перезапуск бота» в попапе «Уведомления Telegram» + индикатор «бот работает/остановлен»** | ✓ v627 (жалоба: тест приходит, бот не реагирует на команды) |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -79,11 +80,11 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Файлы:** `bin/tg_bot.sh`, `bin/libs/tgq`, `bin/tg_sender.sh`, `bin/tg_job.sh`, `bin/tg_health.sh`; cron: `cron.1min/tg_sender`, `cron.15min/tg_health`.
 - **Конфиг:** `TG_ENABLED`, `TG_BOT_TOKEN`, `TG_CHAT_ID`, `TG_QUIET_START/END` (тихие часы), whitelist событий `failover|update_found|upgrade|tunnel|health|parental_expire` (v606: +`upgrade` — иначе «Обновление выполнено» из CLI/WebUI не доходило).
 - **Сеть:** Telegram только через `tg_curl`/`tg_curl_to` (socks5h, порт из `tg_socks_port`, default 1097). long-poll getUpdates `timeout=25`, sendMessage fire-and-forget, RC=0 только при `"ok":true`.
-- **Singleton:** atomic `mkdir` lock + pid re-verify + `kill -9` чужих; один EXIT-trap; TERM/INT/HUP → `exit 0`. Keepalive: `tg_sender` стартует бота, только если lock-каталога нет и 0 инстансов.
+- **Singleton:** atomic `mkdir` lock + pid re-verify + `kill -9` чужих; один EXIT-trap; TERM/INT/HUP → `exit 0`. Keepalive: `tg_sender` стартует бота, только если lock-каталога нет и 0 инстансов; **v627:** если lock есть, а pid в нём мёртв — stale-lock снимается и поллер стартует (раньше мёртвый lock блокировал автозапуск навсегда, ручной `rm -rf lock` не помогал). Также кнопка «Перезапуск бота» в Web UI (`tg_bot_restart`) и `bot_running` в `tg_get`.
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624/625/626 — рабочие. Следующий = **627**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624/625/626/627 — рабочие. Следующий = **628**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -226,6 +227,13 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
   - **Цепочки (§4.3):** ни один поставляемый файл не менялся (кроме номера в postinst/control) — симлинки, backup/restore, справка без изменений; §4.3 п.4 без изменений.
   - **Тест:** `test626.sh` — **TEST_RC=0** (регрессии v624-625: флаги auto, полный отчёт бота, cgi, row-main/tiles маркеры, версии `_rel=626`/`Version: …-626`); `PRECHECK_RC=0` (~155 маркеров + новый staging-guard «no stray backslash paths»); `VERIFY_DONE`/`V_RC=0` (один проход, включая archive-guard «backslash entries: 0»).
   - **Сборка:** CONTROL `Version: 1.1.9_beta-10-626`, postinst fallback `_rel=626`; sha256 `14adb9745b78390cea9ac07b20f2f9975cc74241fc307c5d6131d13da637dca8` (314 665 B); изменённые файлы: только `postinst` (число) + `CONTROL/control`.
+
+- **Пакет v627 (keepalive чинит stale-lock поллера бота + кнопка «Перезапуск бота» в Web UI):**
+  - **Диагноз (жалоба Nikolay):** тест-уведомления приходят, но бот не реагирует на команды. Вывод: `ps` поллера пуст, при этом `/opt/var/kvas/tg_bot.lock` существует (pid=10158), настройки в порядке (`TG_ENABLED=true`, `TG_CHAT_ID`=tg_lastchat), лог до смерти: `POLL size=23` (= `{"ok":true,"result":[]}`) каждые ~26с, затем `Terminated` (терминал-таймаут). **Причина:** бот погиб и оставил stale-lock — keepalive в `tg_sender.sh:7` проверял только `[ ! -d lock ]` → поллер никогда не перезапускался (исходящая очередь при этом работала: тест шёл, т.к. sender — отдельный путь). Помогал только ручной `rm -rf lock/pid` + запуск `tg_bot.sh`.
+  - **Фиксы:** (1) **`bin/tg_sender.sh` keepalive** — если lock существует: при непустом pid и неудачном `kill -0` stale-lock снимается (`rm -rf lock` + `rm -f tg_bot.pid`) и поллер стартует; пустой pid = бот считается стартующим (прежняя семантика сохранена); живой pid → не трогаем. (2) **`manage.sh`: `tg_get`** добавляет поле `bot_running` (ps-grep `tg_bot.sh`); **новый case `tg_bot_restart)`** (:2089-2113): check_token → guard `TG_ENABLED=true` → TERM всех `tg_bot.sh` → sleep 1 → kill -9 добить → rm lock/pid → старт `tg_bot.sh >> tg_bot.log` → sleep 1 → проверка `ps` → `json_ok "бот перезапущен — проверьте реакцию на /menu"` / `json_error "бот не стартовал — см. /opt/var/kvas/tg_bot.log"`. (3) **`index.html`**: кнопка **«Перезапуск бота»** (`tgBotRestart(btn)`, `apiBtn` 30с) прямо в попапе «Уведомления Telegram» (`tgPop`, рядом с «Сохранить/Тест» — по указанию пользователя, не рядом с иконкой); в `tgLoad` индикатор: «не настроено» / «уведомления выключены» / **«бот работает»** (#3fb950) / **«бот остановлен — нажмите „Перезапуск бота“»** (#f85149) по `bot_running`.
+  - **Цепочки (§4.3):** `tg_sender.sh` (cron.1min) и `manage.sh tg_bot_restart` → lock/pid `tg_bot.sh`; `tg_get bot_running` ← `tgLoad`/`tgBotRestart` (index.html). Новых файлов конфигов нет — backup/restore/upgrade не затронуты; справка (`kvas.help`, help бота) не менялась: изменения только в Web UI (CLI-команд нет) — §4.3 п.4 без изменений.
+  - **Тест:** `test627.sh` — **61/61, `TEST_RC=0`** (запуск с `-u root`): срез РЕАЛЬНОГО keepalive с моками (dead pid → снятие lock+старт; живой pid → без перезапуска, lock цел; пустой pid «st starting» → без перезапуска; lock отсутствует → старт) + статические маркеры `tg_bot_restart`/`bot_running`/`tgBotRestart`/«Перезапуск бота»/«бот остановлен» в cgi/html + регрессии v624-626 (флаги `auto`, полный отчёт бота, `row-main`/tiles, `_rel=627`); `PRECHECK_RC=0` (~160 маркеров, включая stale-lock-маркеры и `find … '*\\*'`=0); `VERIFY_DONE`/`V_RC=0` (один проход; `tg_sender.sh` добавлен в `sh -n`- и CRLF-свипы; archive-guard backslash entries: 0).
+  - **Сборка:** CONTROL `Version: 1.1.9_beta-10-627`, postinst fallback `_rel=627`; sha256 `a9f548f5b2580fb72ebc7f5546c571c900934d28b9a85f579d3597f2d2736eb1` (315 306 B); изменённые файлы: `bin/tg_sender.sh`, `bin/monitor/www/cgi-bin/manage.sh`, `bin/monitor/www/index.html`, `postinst`.
 
 ### 4.3. Правило: логические цепочки и backup/restore при любых изменениях
 

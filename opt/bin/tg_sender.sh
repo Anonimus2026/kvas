@@ -4,6 +4,15 @@
 # keepalive интерактивного бота (P.8+): не стартуем, пока lock существует (даже pid пуст = бот стартует)
 if [ "$(tg_conf_get TG_ENABLED)" = "true" ]; then
 	_lockd=/opt/var/kvas/tg_bot.lock
+	# v627: stale-lock — pid в lock уже мёртв (kill -9/сбой), прежний keepalive
+	# такой lock видел и поллер не перезапускался никогда; снимаем сами
+	if [ -d "${_lockd}" ]; then
+		_lockpid=$(cat "${_lockd}/pid" 2>/dev/null)
+		if [ -n "${_lockpid}" ] && ! kill -0 "${_lockpid}" 2>/dev/null; then
+			rm -rf "${_lockd}" 2>/dev/null
+			rm -f /opt/var/kvas/tg_bot.pid 2>/dev/null
+		fi
+	fi
 	if [ ! -d "${_lockd}" ]; then
 		_cnt=0
 		for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do

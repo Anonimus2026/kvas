@@ -1983,8 +1983,11 @@ EOL2
 			_qe=$(sed -n 's/^TG_QUIET_END=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			_mask=""; _set=false
 			if [ -n "$_t" ]; then _set=true; _mask=$(printf '%s' "$_t" | sed 's/^\([^:]*\):.*/\1:…/'); fi
-			printf '{"ok":true,"enabled":%s,"token_set":%s,"token_hint":"%s","chat":"%s","events":"%s","quiet_start":"%s","quiet_end":"%s"}\n' \
-				"$_en" "$_set" "$(json_str "$_mask")" "$(json_str "$_c")" "$(json_str "$_e")" "$(json_str "$_qs")" "$(json_str "$_qe")"
+			# v627: жив ли поллер tg_bot.sh (для индикатора в меню уведомлений)
+			_bp=false
+			for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do _bp=true; done
+			printf '{"ok":true,"enabled":%s,"token_set":%s,"token_hint":"%s","chat":"%s","events":"%s","quiet_start":"%s","quiet_end":"%s","bot_running":%s}\n' \
+				"$_en" "$_set" "$(json_str "$_mask")" "$(json_str "$_c")" "$(json_str "$_e")" "$(json_str "$_qs")" "$(json_str "$_qe")" "$_bp"
 			;;
 		tg_save)
 			check_token "$token"
@@ -2081,6 +2084,31 @@ EOL2
 				_err=$(echo "$_resp" | jq -r '.description // "ошибка Telegram"' 2>/dev/null)
 				[ -n "$_err" ] && [ "$_err" != "null" ] || _err="нет ответа от Telegram"
 				json_error "Telegram: ${_err}"
+			fi
+			;;
+		tg_bot_restart)
+			check_token "$token"
+			[ "$(sed -n 's/^TG_ENABLED=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)" = "true" ] || \
+				json_error "уведомления выключены — включите «Включено»"
+			# v627: кнопка «Перезапуск бота»: TERM (+ жёсткий докил), снятие
+			# stale-lock, старт поллера, проверка что жив
+			for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
+				kill "${_p}" 2>/dev/null
+			done
+			sleep 1
+			for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
+				kill -9 "${_p}" 2>/dev/null
+			done
+			rm -rf /opt/var/kvas/tg_bot.lock 2>/dev/null
+			rm -f /opt/var/kvas/tg_bot.pid 2>/dev/null
+			( sh /opt/apps/kvas/bin/tg_bot.sh >>/opt/var/kvas/tg_bot.log 2>&1 & ) 2>/dev/null
+			sleep 1
+			_bp=false
+			for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do _bp=true; done
+			if [ "${_bp}" = "true" ]; then
+				json_ok "бот перезапущен — проверьте реакцию на /menu"
+			else
+				json_error "бот не стартовал — см. /opt/var/kvas/tg_bot.log"
 			fi
 			;;
 		kvas_debug)
