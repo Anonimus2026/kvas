@@ -13,6 +13,10 @@ DNS_LOG=/tmp/kvas-dns.log
 IP_CACHE=/tmp/kvas-ip-cache.txt
 build_ip_cache() {
 	[ ! -f "$DNS_LOG" ] || [ ! -s "$DNS_LOG" ] && return
+	# лог кольцевой: пока мониторинг включён, он растёт на tmpfs — обрезаем
+	if [ "$(wc -c < "$DNS_LOG" 2>/dev/null)" -gt 524288 ] 2>/dev/null; then
+		tail -c 262144 "$DNS_LOG" > "$DNS_LOG.tmp" 2>/dev/null && mv "$DNS_LOG.tmp" "$DNS_LOG"
+	fi
 	: > "$IP_CACHE"
 	# "reply <domain> is <IP>" — map resolved IP → domain
 	grep ' is ' "$DNS_LOG" 2>/dev/null | grep -v '<CNAME>' | \
@@ -71,11 +75,13 @@ print_connections_json() {
 
 	_kvas_ct_data=""
 	if [ "$_kvas_use_conntrack" != "0" ]; then
+		_kvas_pat=$(echo "$_kvas_ips" | sed 's/\./\\./g; s/,/|/g')
+		# кэш из CLI-монитора фильтруем по текущим ips: файл мог быть собран
+		# для другого набора устройств — иначе показываем чужие соединения
 		if [ -s /tmp/kvas-monitor/conntrack_live ]; then
-			_kvas_ct_data=$(cat /tmp/kvas-monitor/conntrack_live 2>/dev/null)
+			_kvas_ct_data=$(grep -E "(src|dst)=(${_kvas_pat})" /tmp/kvas-monitor/conntrack_live 2>/dev/null)
 		fi
 		if [ -z "$_kvas_ct_data" ]; then
-			_kvas_pat=$(echo "$_kvas_ips" | sed 's/\./\\./g; s/,/|/g')
 			if [ -f /proc/net/nf_conntrack ]; then
 				_kvas_ct_data=$(grep -E "(src|dst)=(${_kvas_pat})" /proc/net/nf_conntrack 2>/dev/null)
 			elif command -v conntrack >/dev/null 2>&1; then
@@ -172,7 +178,8 @@ print_dns_json() {
 	echo -n ']'
 }
 
-# Check if device has recent DNS activity (last 30s)
+# DNS activity of a device in the current monitoring session
+# (the log is truncated when monitoring starts, so "from <ip>" = session activity)
 device_has_activity() {
 	_kvas_ip="$1"
 	if [ -s /tmp/kvas-monitor/dns_live ] && grep -q "from ${_kvas_ip}$" /tmp/kvas-monitor/dns_live 2>/dev/null; then
@@ -210,7 +217,9 @@ print_devices_json() {
 	fi
 
 	if [ -z "$_kvas_list" ] && [ -f /proc/net/arp ]; then
-		_kvas_list=$(tail -n +2 /proc/net/arp 2>/dev/null | awk '$2 != "0x0" {print $1 "|" $4}')
+		# $3 = Flags (0x0 = запись неполная, без MAC) — отбраковываем их,
+		# иначе в списке появляются фантомные устройства 00:00:00:00:00:00
+		_kvas_list=$(tail -n +2 /proc/net/arp 2>/dev/null | awk '$3 != "0x0" {print $1 "|" $4}')
 	fi
 
 	if [ -z "$_kvas_list" ]; then
@@ -293,7 +302,11 @@ case "$action" in
 		echo -n ',"conntrack":'
 		command -v conntrack >/dev/null 2>&1 && echo -n 'true' || echo -n 'false'
 		echo -n ',"dns_log":'
-		[ -s "$DNS_LOG" ] && echo -n 'true' || echo -n 'false'
+		if [ -f "$DNS_LOG" ] && grep -q '^log-facility=/tmp/kvas-dns\.log$' /opt/etc/dnsmasq.conf 2>/dev/null; then
+			echo -n 'true'
+		else
+			echo -n 'false'
+		fi
 		echo -n '}'
 		echo
 		;;

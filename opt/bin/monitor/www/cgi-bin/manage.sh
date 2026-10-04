@@ -1389,6 +1389,8 @@ adblock_off)
 			route_full=$(grep "^route_full_ip=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
 			route_list=$(grep "^route_by_list_ip=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
 			route_exclude=$(grep "^route_excluded_ip=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
+			route_exclude_dom=$(grep "^route_excluded_domains=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
+			[ -n "$route_exclude_dom" ] && route_exclude="${route_exclude} ${route_exclude_dom}"
 			route_guest=$(grep "^INFACE_GUEST_ENT=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2)
 			# Get device names from DHCP for descriptions
 			devs=$(curl -s "127.0.0.1:79/rci/show/ip/dhcp/bindings" 2>/dev/null | jq -r '.lease[] | "\(.ip)|\(.name)"' 2>/dev/null)
@@ -1411,6 +1413,7 @@ adblock_off)
 			route_full=$(grep "^route_full_ip=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
 			route_list=$(grep "^route_by_list_ip=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
 			route_exclude=$(grep "^route_excluded_ip=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
+			route_exclude_dom=$(grep "^route_excluded_domains=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2 | tr '+' ' ')
 			printf '{"ok":true,"routes":['
 			first=1
 			for ip in $route_full; do
@@ -1431,6 +1434,12 @@ adblock_off)
 				first=0
 				printf '{"type":"exclude","ip":"%s"}' "$ip"
 			done
+			for ip in $route_exclude_dom; do
+				[ -z "$ip" ] && continue
+				[ "$first" -eq 0 ] && printf ','
+				first=0
+				printf '{"type":"exclude","ip":"%s"}' "$ip"
+			done
 			echo ']}'
 			;;
 		route_add)
@@ -1441,7 +1450,15 @@ adblock_off)
 			case "$type" in
 				full) key="route_full_ip" ;;
 				list) key="route_by_list_ip" ;;
-				exclude) key="route_excluded_ip" ;;
+				exclude)
+					# IP -> route_excluded_ip, домен -> route_excluded_domains
+					# (домен генерирует ipset=/domain/KVAS_DESTINATION_EXCLUDED)
+					if echo "$ip" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+						key="route_excluded_ip"
+					else
+						key="route_excluded_domains"
+					fi
+					;;
 				*) json_error "type must be full, list, or exclude" ;;
 			esac
 			current=$(grep "^${key}=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2)
@@ -1451,7 +1468,10 @@ adblock_off)
 				[ -n "$current" ] && current="${current}+${ip}" || current="$ip"
 				sed -i "/^${key}=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				echo "${key}=${current}" >> "$KVAS_CONF_FILE"
-				if $KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1; then
+				# defer=1 — отложить refresh (массовое добавление: один refresh в конце)
+				_defer=0
+				case "$QUERY_STRING" in *defer=1*) _defer=1;; esac
+				if [ "$_defer" -eq 1 ] || $KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1; then
 					json_ok "added $ip to $type"
 				else
 					json_error "route refresh failed, see /tmp/kvas-route-refresh.log"
@@ -1466,7 +1486,13 @@ adblock_off)
 			case "$type" in
 				full) key="route_full_ip" ;;
 				list) key="route_by_list_ip" ;;
-				exclude) key="route_excluded_ip" ;;
+				exclude)
+					if echo "$ip" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+						key="route_excluded_ip"
+					else
+						key="route_excluded_domains"
+					fi
+					;;
 				*) json_error "type must be full, list, or exclude" ;;
 			esac
 			current=$(grep "^${key}=" "$KVAS_CONF_FILE" 2>/dev/null | cut -d= -f2)

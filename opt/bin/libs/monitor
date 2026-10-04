@@ -10,16 +10,35 @@ MONITOR_PORT=8085
 MONITOR_WEB_LOG=/tmp/kvas-monitor-web.log
 
 monitor__enable_dns_log() {
-	# DO NOT modify system dnsmasq.conf or restart dnsmasq
-	# This breaks VPN routing!
-	# Just ensure log file exists
+	# Включаем log-queries в opt-dnsmasq kvas (конф /opt/etc/dnsmasq.conf).
+	# Системный dnsmasq Keenetic НЕ трогаем (ломает маршрутизацию VPN) —
+	# клиентский DNS DNAT-ится в 127.0.0.1:9753 (libs/ndm ip4__dns),
+	# поэтому клиентские query[A] ... from <ip> видны именно здесь.
 	: > "$MONITOR_DNS_LOG" 2>/dev/null
+	local conf=/opt/etc/dnsmasq.conf
+	[ -f "$conf" ] || return 0
+	grep -q '^log-facility=/tmp/kvas-dns\.log$' "$conf" 2>/dev/null && return 0
+	{
+		echo '# kvas-monitor'
+		echo 'log-queries'
+		echo 'log-facility=/tmp/kvas-dns.log'
+	} >> "$conf"
+	if [ -x /opt/etc/init.d/S56dnsmasq ]; then
+		/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
+	fi
 }
 
 monitor__disable_dns_log() {
-	# DO NOT modify system dnsmasq.conf or restart dnsmasq
-	# This breaks VPN routing!
+	# Снимаем наши опции (блок «# kvas-monitor» … log-facility) и удаляем лог.
+	local conf=/opt/etc/dnsmasq.conf
 	rm -f "$MONITOR_DNS_LOG" 2>/dev/null
+	[ -f "$conf" ] || return 0
+	grep -q '^# kvas-monitor$' "$conf" 2>/dev/null || return 0
+	grep -q '^log-facility=/tmp/kvas-dns\.log$' "$conf" 2>/dev/null || return 0
+	sed -i '/^# kvas-monitor$/,/^log-facility=\/tmp\/kvas-dns\.log$/d' "$conf"
+	if [ -x /opt/etc/init.d/S56dnsmasq ]; then
+		/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
+	fi
 }
 
 monitor__get_conntrack() {

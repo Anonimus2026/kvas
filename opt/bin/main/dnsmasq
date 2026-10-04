@@ -52,4 +52,12 @@ if [ -f "${host_list2}" ]; then
 	}' "${host_list2}" >> "${ipset_file}"
 fi
 
+# Домены в обход тоннеля (route_excluded_domains) -> ipset исключённых назначений;
+# DNAT-цепочка PREROUTING не маркирует трафик к членам KVAS_DESTINATION_EXCLUDED
+kvas_conf=/opt/etc/kvas.conf
+if [ -f "${kvas_conf}" ]; then
+	grep '^route_excluded_domains=' "${kvas_conf}" 2>/dev/null | cut -d= -f2 | tr '+' '\n' | \
+		awk 'NF && $0 !~ /^#/ && $0 ~ /\./ {print "ipset=/" $0 "/KVAS_DESTINATION_EXCLUDED"}' >> "${ipset_file}"
+fi
+
 exit 0

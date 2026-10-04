@@ -263,6 +263,18 @@ cmd_route_refresh() {
 		[ -n "$ip" ] && conntrack -D -s "$ip" 2>/dev/null || true
 	done
 	echo 'сделано.'
+
+	# Перегенерация ipset-таблиц dnsmasq (закваски + домены в обход) и рестарт
+	# демона, только если файл реально изменился — dnsmasq читает conf при старте
+	local dns_before dns_after
+	dns_before=$(cksum < "${DNSMASQ_IPSET_HOSTS}" 2>/dev/null)
+	[ -x /opt/apps/kvas/bin/main/dnsmasq ] && /opt/apps/kvas/bin/main/dnsmasq >/dev/null 2>&1
+	dns_after=$(cksum < "${DNSMASQ_IPSET_HOSTS}" 2>/dev/null)
+	if [ "${dns_before}" != "${dns_after}" ] && [ -x "${DNSMASQ_DEMON}" ]; then
+		echo -n 'Перезапуск dnsmasq (изменились таблицы ipset)...'
+		"${DNSMASQ_DEMON}" restart >/dev/null 2>&1
+		echo 'сделано.'
+	fi
 }
 
 route__show_block() {
@@ -540,6 +552,8 @@ cmd_route_silent() {
 	route__show_block_net "br0 $(get_guest_inface_list_from_config)" 'Сети с отправкой в тоннель по списку:' "${empty_example}"
 	if [ -z "${1}" ] ; then empty_example='route_excluded_ip=192.168.1.52+192.168.1.53'; fi
 	route__show_block_ip 'route_excluded_ip' 'IP, исключённые из перехватов DNS и трафика:' "${empty_example}"
+	if [ -z "${1}" ] ; then empty_example='route_excluded_domains=example.com+site.org'; fi
+	route__show_block_ip 'route_excluded_domains' 'Домены, идущие в обход тоннеля:' "${empty_example}"
 	local output
 	nets__set_incoming; nets__set_common
 	output=$(nets__filter_for_incoming "${NETS_INCOMING}${NETS_COMMON}")
@@ -564,7 +578,7 @@ cmd_route_add() {
 		echo "Типы:"
 		echo "  full <IP>      - отправлять ВСЁ от IP в тоннель"
 		echo "  list <IP>      - отправлять в тоннель по списку КВАС"
-		echo "  exclude <IP>   - исключить IP из перехвата"
+		echo "  exclude <IP|домен> - исключить IP или домен из перехвата (обход тоннеля)"
 		echo ""
 		echo "Пример:"
 		echo "  kvas route add full 192.168.1.51"
@@ -576,7 +590,15 @@ cmd_route_add() {
 	case "${target}" in
 		full)    config_key="route_full_ip" ;;
 		list)    config_key="route_by_list_ip" ;;
-		exclude) config_key="route_excluded_ip" ;;
+		exclude)
+			# IP уходит в route_excluded_ip, домен — в route_excluded_domains
+			# (домен генерирует ipset=/domain/KVAS_DESTINATION_EXCLUDED в dnsmasq)
+			if echo "${ip}" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+				config_key="route_excluded_ip"
+			else
+				config_key="route_excluded_domains"
+			fi
+			;;
 		*)
 			echo "Неизвестный тип: ${target}. Используйте: full, list, exclude"
 			return 1
@@ -611,7 +633,7 @@ cmd_route_del() {
 		echo "Типы:"
 		echo "  full <IP>      - убрать из 'всё в тоннель'"
 		echo "  list <IP>      - убрать из 'по списку КВАС'"
-		echo "  exclude <IP>   - убрать из 'исключённые'"
+		echo "  exclude <IP|домен> - убрать из 'исключённые'"
 		echo ""
 		echo "Пример:"
 		echo "  kvas route del full 192.168.1.51"
@@ -622,7 +644,13 @@ cmd_route_del() {
 	case "${target}" in
 		full)    config_key="route_full_ip" ;;
 		list)    config_key="route_by_list_ip" ;;
-		exclude) config_key="route_excluded_ip" ;;
+		exclude)
+			if echo "${ip}" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+				config_key="route_excluded_ip"
+			else
+				config_key="route_excluded_domains"
+			fi
+			;;
 		*)
 			echo "Неизвестный тип: ${target}. Используйте: full, list, exclude"
 			return 1

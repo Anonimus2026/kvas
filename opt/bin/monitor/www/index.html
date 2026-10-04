@@ -94,6 +94,7 @@ body.mobile-view #mainUi { padding-bottom:76px; }
   .row-main { min-width:0; flex-basis:100%; }
   .row-actions { margin-left:0; flex-basis:100%; margin-top:4px; }
   #svcRows.tiles { grid-template-columns: 1fr; }
+  .device-list, .device-list.col3 { grid-template-columns: 1fr; }
 }
 
 /* Messages */
@@ -602,6 +603,19 @@ window.addEventListener('error', function(e){
   <span id="filterIndicator" class="filter-active" style="display:none;">⚙ фильтр</span>
 </div>
 
+<div class="controls" style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+  <button class="btn" id="btnTrace" onclick="toggleTrace()">Отследить сайты (60 сек)</button>
+  <span id="traceMsg" style="font-size:11px;color:#8b949e;"></span>
+</div>
+<div id="traceResults" style="display:none;margin:8px 0;padding:8px;background:#161b22;border:1px solid #30363d;border-radius:6px;">
+  <div style="font-size:13px;color:#8b949e;margin-bottom:6px;">Отслеженные сайты — отметьте и выберите действие:</div>
+  <div id="traceList"></div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+    <button class="btn btn-sm" onclick="traceAddSelected('exclude')">→ в обход тоннеля</button>
+    <button class="btn btn-sm" onclick="traceAddSelected('tunnel')">→ в закваску</button>
+    <button class="btn btn-sm" onclick="traceClear()">Скрыть</button>
+  </div>
+</div>
 <h2 style="color:#8b949e;font-size:13px;margin:8px 0;">Лог</h2>
 <div id="log"><div class="log-info">Выберите устройства и нажмите "Запустить мониторинг"</div></div>
 <div class="status-bar">
@@ -672,6 +686,12 @@ var selectedIps = new Set();
 var pollErrors = 0;
 var MAX_POLL_ERRORS = 5;
 var deviceList = [];
+var seenEvents = {};
+var lastPollEmpty = false;
+var traceActive = false;
+var traceTimer = null;
+var traceDomains = {};
+var TRACE_SEC = 60;
 var currentAuthAction = doAuth;
 
 /* ========== LOADING ========== */
@@ -810,6 +830,7 @@ function showMain() {
   loadTunnelTestInterfaces();
   loadTags();
   fetchDevices();
+  loadMonitorStatus();
   logMsg('log-info', 'Мониторинг трафика KVAS');
 }
 
@@ -2615,7 +2636,8 @@ function fetchDevices() {
     devices.forEach(function(d){
       var checked = selectedIps.has(d.ip) ? ' checked' : '';
       var activeCls = selectedIps.has(d.ip) ? ' active' : '';
-      var statusBadge = d.status === 'active' ? '<span class="badge" style="color:#3fb950;">активен</span>' : '<span class="badge" style="color:#8b949e;">в сети</span>';
+      var statusText = d.status === 'active' ? 'активен' : (d.status === 'idle' ? 'в сети' : 'н/д');
+      var statusBadge = '<span class="badge" style="color:' + (d.status === 'active' ? '#3fb950' : '#8b949e') + ';">' + statusText + '</span>';
       var activityBadge = d.active === true ? '<span class="badge" style="color:#3fb950;">✓</span>' : '';
       var el = document.createElement('div');
       el.className = 'device-item' + activeCls;
@@ -2704,6 +2726,13 @@ function updateStatus() {
   updateDeviceFilter();
 }
 
+function loadMonitorStatus() {
+  fetch('/cgi-bin/data.sh?action=status').then(function(r){return r.json()}).then(function(s){
+    if (s.conntrack === false) logMsg('log-warn', '<span style="color:#d29922;">Conntrack не установлен — список соединений будет пуст (установка: opkg install conntrack)</span>');
+    if (s.dns_log === false) logMsg('log-warn', '<span style="color:#d29922;">DNS-лог мониторинга не активен — DNS-события отображаться не будут</span>');
+  }).catch(function(){});
+}
+
 function toggleMonitor() {
   if (!monitoring && selectedIps.size === 0) { alert('Выберите хотя бы одно устройство'); return; }
   monitoring = !monitoring;
@@ -2747,17 +2776,34 @@ function poll() {
   fetch(url).then(function(r){return r.json()}).then(function(data){
     pollErrors = 0;
     if (data.error) { logMsg('log-error', '<span class="log-err">' + data.error + '</span>'); return; }
-    var count = 0;
+    var count = 0, newCount = 0;
     if (data.connections) data.connections.forEach(function(c){
       count++;
+      var key = c.proto + '|' + c.src + '|' + c.sport + '|' + c.dst + '|' + c.dport;
+      if (seenEvents[key]) return;
+      seenEvents[key] = true;
+      newCount++;
       var cls = c.proto === 'tcp' ? 'log-tcp' : 'log-udp';
       var dstDisplay = c.dst + ':' + c.dport;
       if (c.dname && c.dname !== c.dst) dstDisplay = c.dname + ' (' + c.dst + ':' + c.dport + ')';
       logMsg(cls, '<span class="log-ip">' + c.src + '</span> <span class="' + cls + '">' + c.proto.toUpperCase() + '</span> ' + c.src + ':' + c.sport + ' → ' + dstDisplay);
     });
-    if (data.dns) data.dns.forEach(function(d){ count++; logMsg('log-dns', '<span class="log-ip">DNS</span> ' + d.domain); });
-    if (count === 0 && pollErrors === 0) { logMsg('log-warn', '<span style="color:#d29922;">Нет данных. Проверьте: 1) Включён Conntrack 2) DNS-лог не пуст (kvas monitor + l) 3) Устройства активны</span>'); }
-    if (count > 0) document.getElementById('pollCount').textContent = '+' + count + ' events';
+    if (data.dns) data.dns.forEach(function(d){
+      count++;
+      var key = 'dns|' + (d.raw || d.domain || '');
+      if (seenEvents[key]) return;
+      seenEvents[key] = true;
+      newCount++;
+      logMsg('log-dns', '<span class="log-ip">DNS</span> ' + d.domain);
+      var dm = (d.raw || '').match(/query\[A[^]]*\] (\S+) from (\d+\.\d+\.\d+\.\d+)$/);
+      if (dm) traceCollect(dm[1], dm[2]);
+    });
+    if (count === 0 && !lastPollEmpty) {
+      lastPollEmpty = true;
+      logMsg('log-warn', '<span style="color:#d29922;">Нет данных. Проверьте: 1) Conntrack установлен 2) DNS-лог активен (статус при запуске) 3) Устройства активны</span>');
+    }
+    if (count > 0) lastPollEmpty = false;
+    if (newCount > 0) document.getElementById('pollCount').textContent = '+' + newCount + ' новых';
   }).catch(function(err){
     pollErrors++;
     if (pollErrors <= 3) logMsg('log-error', '<span class="log-err">Ошибка (' + pollErrors + '/' + MAX_POLL_ERRORS + '): ' + err.message + '</span>');
@@ -2799,7 +2845,97 @@ function downloadLog() {
   document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(a.href);
 }
 
-function clearLog() { document.getElementById('log').innerHTML = ''; }
+function traceEsc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function traceCollect(domain, ip) {
+  if (!traceActive || !domain) return;
+  if (!traceDomains[domain]) traceDomains[domain] = { count: 0, devs: {} };
+  traceDomains[domain].count++;
+  if (ip) traceDomains[domain].devs[ip] = true;
+}
+
+function toggleTrace() {
+  if (traceActive) { stopTrace(); return; }
+  if (!monitoring && selectedIps.size === 0) { alert('Выберите устройства для отслеживания'); return; }
+  if (!monitoring) toggleMonitor();
+  traceActive = true;
+  traceDomains = {};
+  document.getElementById('btnTrace').textContent = 'Остановить отслеживание';
+  document.getElementById('btnTrace').classList.add('active');
+  document.getElementById('traceResults').style.display = 'none';
+  document.getElementById('traceMsg').textContent = 'Идёт отслеживание — открывайте нужные сайты... ' + TRACE_SEC + ' сек';
+  traceTimer = setTimeout(stopTrace, TRACE_SEC * 1000);
+}
+
+function stopTrace() {
+  if (!traceActive) return;
+  traceActive = false;
+  if (traceTimer) { clearTimeout(traceTimer); traceTimer = null; }
+  document.getElementById('btnTrace').textContent = 'Отследить сайты (' + TRACE_SEC + ' сек)';
+  document.getElementById('btnTrace').classList.remove('active');
+  document.getElementById('traceMsg').textContent = '';
+  traceRender();
+}
+
+function traceRender() {
+  var list = document.getElementById('traceList');
+  var keys = Object.keys(traceDomains).sort(function(a, b) { return traceDomains[b].count - traceDomains[a].count; });
+  document.getElementById('traceResults').style.display = 'block';
+  if (!keys.length) {
+    list.innerHTML = '<div class="status" style="color:#8b949e;padding:6px;">Ничего не отслежено (лог DNS пуст или не было запросов выбранных устройств).</div>';
+    return;
+  }
+  var html = '';
+  keys.forEach(function(dom) {
+    var t = traceDomains[dom];
+    var devs = Object.keys(t.devs).join(', ');
+    html += '<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #21262d;">' +
+      '<input type="checkbox" class="traceCb" checked value="' + traceEsc(dom) + '" style="accent-color:#58a6ff;">' +
+      '<span style="color:#58a6ff;font-family:monospace;font-size:12px;flex:1;min-width:0;word-break:break-all;">' + traceEsc(dom) + '</span>' +
+      '<span style="color:#8b949e;font-size:11px;white-space:nowrap;">×' + t.count + (devs ? ' · ' + traceEsc(devs) : '') + '</span></label>';
+  });
+  list.innerHTML = html;
+}
+
+function traceClear() {
+  document.getElementById('traceResults').style.display = 'none';
+  document.getElementById('traceList').innerHTML = '';
+}
+
+function traceAddSelected(kind) {
+  var boxes = document.querySelectorAll('.traceCb:checked');
+  var doms = [];
+  for (var i = 0; i < boxes.length; i++) doms.push(boxes[i].value);
+  if (!doms.length) { alert('Отметьте хотя бы один сайт'); return; }
+  var idx = 0, ok = 0, fail = 0;
+  var msgEl = document.getElementById('traceMsg');
+  var isExclude = kind === 'exclude';
+  (function next() {
+    if (idx >= doms.length) {
+      logMsg(fail ? 'log-warn' : 'log-info', 'Отслеживание: ' + ok + ' из ' + doms.length + ' сайтов ' + (isExclude ? 'добавлено в обход тоннеля' : 'добавлено в закваску') + (fail ? ' (ошибок: ' + fail + ')' : ''));
+      if (isExclude && ok) {
+        msgEl.textContent = 'Обновление маршрутов...';
+        api('/cgi-bin/manage.sh?action=route_refresh', function(){ msgEl.textContent = 'Готово: добавлено ' + ok + (fail ? ', ошибок ' + fail : '') + ' из ' + doms.length; });
+      } else {
+        msgEl.textContent = 'Готово: добавлено ' + ok + (fail ? ', ошибок ' + fail : '') + ' из ' + doms.length;
+      }
+      return;
+    }
+    var d = doms[idx++];
+    msgEl.textContent = 'Добавление ' + idx + '/' + doms.length + ': ' + d;
+    var url = isExclude
+      ? '/cgi-bin/manage.sh?action=route_add&type=exclude&ip=' + encodeURIComponent(d) + '&defer=1'
+      : '/cgi-bin/manage.sh?action=host_add&domain=' + encodeURIComponent(d);
+    api(url, function(r) {
+      if (r && r.ok) ok++; else fail++;
+      next();
+    });
+  })();
+}
+
+function clearLog() { document.getElementById('log').innerHTML = ''; seenEvents = {}; lastPollEmpty = false; }
 
 
 /* ========== CONSOLE ========== */
