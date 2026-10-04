@@ -437,6 +437,9 @@ cmd_monitor_web_start() {
 		echo "Веб-интерфейс уже запущен на порту $MONITOR_PORT"
 		echo "Откройте: http://$(hostname):$MONITOR_PORT/"
 		monitor__web_log "web ui already running on port $MONITOR_PORT"
+		# после апгрейда/переустановки dnsmasq_install затирает conf —
+		# повторно включаем DNS-лог (функция идемпотентна)
+		monitor__enable_dns_log
 		monitor__web_log_show
 		return
 	fi

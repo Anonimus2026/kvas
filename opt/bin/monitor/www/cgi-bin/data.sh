@@ -4,7 +4,10 @@
 # This script prints only the JSON body.
 
 json_escape() {
-	printf '%s' "$1" | tr -d '\000-\010\013\015-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\n/\\n/g'
+	# Все управляющие символы (0x00-0x1F включая LF/TAB/FF + 0x7F) удаляем —
+	# строка обязана быть однострочной, иначе JSON ломается (raw LF в строке).
+	# \n-замена в sed бесполезна: sed читает ввод построчно и не видит \n.
+	printf '%s' "$1" | tr -d '\000-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 DNS_LOG=/tmp/kvas-dns.log
@@ -45,11 +48,12 @@ cached_resolve() {
 	}
 	local name=""
 	if command -v dig >/dev/null 2>&1; then
-		name=$(dig +short -x "$ip" 2>/dev/null | sed 's/\.$//')
+		# head -1: у IP бывает несколько PTR-записей — многострочный dname ломает JSON
+		name=$(dig +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')
 	fi
 	if [ -z "$name" ] && command -v nslookup >/dev/null 2>&1; then
 		name=$(nslookup "$ip" 2>/dev/null | awk '/^Name:/ {a=1; next} a && /^Address/ {print $NF; exit}')
-		[ -z "$name" ] && name=$(nslookup "$ip" 2>/dev/null | grep 'name = ' | sed "s/.*name = //; s/\.$//")
+		[ -z "$name" ] && name=$(nslookup "$ip" 2>/dev/null | grep 'name = ' | head -1 | sed "s/.*name = //; s/\.$//")
 	fi
 	[ -z "$name" ] && name="$ip"
 	echo "${ip}=${name}" >> "$IP_CACHE" 2>/dev/null

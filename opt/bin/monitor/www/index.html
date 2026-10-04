@@ -94,7 +94,6 @@ body.mobile-view #mainUi { padding-bottom:76px; }
   .row-main { min-width:0; flex-basis:100%; }
   .row-actions { margin-left:0; flex-basis:100%; margin-top:4px; }
   #svcRows.tiles { grid-template-columns: 1fr; }
-  .device-list, .device-list.col3 { grid-template-columns: 1fr; }
 }
 
 /* Messages */
@@ -119,6 +118,9 @@ body.mobile-view #mainUi { padding-bottom:76px; }
 /* Monitor legacy styles */
 .device-list { margin-bottom: 12px; display: grid; grid-template-columns: repeat(2,1fr); gap: 4px; }
 .device-list.col3 { grid-template-columns: repeat(3,1fr); }
+@media (max-width:600px){
+  .device-list, .device-list.col3 { grid-template-columns: 1fr; }
+}
 .device-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; cursor: pointer; user-select: none; transition: border-color 0.2s; }
 .device-item:hover { border-color: #58a6ff; }
 .device-item.active { border-color: #58a6ff; background: #1a2332; }
@@ -2773,7 +2775,14 @@ function poll() {
   }
   var ips = [...selectedIps].join(',');
   var url = '/cgi-bin/data.sh?action=data&ips=' + encodeURIComponent(ips) + getFilterParams();
-  fetch(url).then(function(r){return r.json()}).then(function(data){
+  fetch(url).then(function(r){return r.text()}).then(function(t){
+    var data;
+    try { data = JSON.parse(t); }
+    catch(e) {
+      var pm = (e.message || '').match(/position (\d+)/);
+      var pos = pm ? Math.max(0, parseInt(pm[1], 10) - 60) : 0;
+      throw new Error(e.message + ' | фрагмент ответа: ' + t.substr(pos, 200));
+    }
     pollErrors = 0;
     if (data.error) { logMsg('log-error', '<span class="log-err">' + data.error + '</span>'); return; }
     var count = 0, newCount = 0;

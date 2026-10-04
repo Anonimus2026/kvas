@@ -1641,6 +1641,14 @@ dnsmasq_install(){
 		grep -q '^hostsdir=/opt/etc/adblock/parental.d' "${DNSMASQ_CONFIG}" 2>/dev/null || \
 			echo 'hostsdir=/opt/etc/adblock/parental.d' >> "${DNSMASQ_CONFIG}"
 	fi
+	# Шаблон затирает conf — возвращаем блок DNS-лога мониторинга, если web включён
+	if [ -f /opt/etc/kvas-monitor-web-enabled ]; then
+		grep -q '^log-facility=/tmp/kvas-dns\.log$' "${DNSMASQ_CONFIG}" 2>/dev/null || {
+			echo '# kvas-monitor' >> "${DNSMASQ_CONFIG}"
+			echo 'log-queries' >> "${DNSMASQ_CONFIG}"
+			echo 'log-facility=/tmp/kvas-dns.log' >> "${DNSMASQ_CONFIG}"
+		}
+	fi
 	# Если запуск функции был не при установке пакета Квас
 	[ -z "${is_install_stage}" ] && cmd_kvas_init "no_reset"
 
