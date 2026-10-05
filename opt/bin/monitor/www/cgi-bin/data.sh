@@ -142,14 +142,17 @@ print_connections_json() {
 			if [ -z "$_kvas_dname" ]; then
 				_kvas_dname=$(cached_resolve "$_kvas_dst")
 			fi
-			printf '%s{"proto":"%s","src":"%s","sport":"%s","dst":"%s","dname":"%s","dport":"%s"}' \
+			# bytes: сумма всех направлений строки conntrack (для метки «с трафиком» в трейсе)
+			_kvas_bytes=$(echo "$_kvas_line" | tr ' ' '\n' | grep '^bytes=' | cut -d= -f2 | awk '{s+=$1} END{print s+0}')
+			printf '%s{"proto":"%s","src":"%s","sport":"%s","dst":"%s","dname":"%s","dport":"%s","bytes":%s}' \
 				"$_kvas_first" \
 				"$(json_escape "$_kvas_proto")" \
 				"$(json_escape "$_kvas_src")" \
 				"$(json_escape "$_kvas_sport")" \
 				"$(json_escape "$_kvas_dst")" \
 				"$(json_escape "$_kvas_dname")" \
-				"$(json_escape "$_kvas_dport")"
+				"$(json_escape "$_kvas_dport")" \
+				"$_kvas_bytes"
 			_kvas_first=,
 		done
 		IFS="$_kvas_oldifs"; set +f
@@ -196,6 +199,47 @@ print_dns_json() {
 			"$_kvas_first" \
 			"$(json_escape "$_kvas_line")" \
 			"$(json_escape "$_kvas_query")"
+		_kvas_first=,
+	done
+		IFS="$_kvas_oldifs"; set +f
+	echo -n ']'
+}
+
+# Baseline для трейса: домены, которые УЖЕ опрашивались до старта отслеживания
+# (из источников DNS-лога — то же окно, что и print_dns_json). Клиент помечает
+# такие домены как «фон», чтобы не засорять список новыми запросами.
+print_dns_baseline_json() {
+	_kvas_ips="$1"
+	[ -z "$_kvas_ips" ] && echo -n '[]' && return
+
+	_kvas_bl_data=""
+	if [ -s /tmp/kvas-monitor/dns_live ]; then
+		for _kvas_ip in $(echo "$_kvas_ips" | tr ',' ' '); do
+			_kvas_line=$(grep 'query\[' /tmp/kvas-monitor/dns_live 2>/dev/null | grep "from ${_kvas_ip}$" | tail -200)
+			[ -n "$_kvas_line" ] && _kvas_bl_data="$_kvas_bl_data$_kvas_line
+"
+		done
+	fi
+	if [ -s "$DNS_LOG" ]; then
+		for _kvas_ip in $(echo "$_kvas_ips" | tr ',' ' '); do
+			_kvas_line=$(grep 'query\[' "$DNS_LOG" 2>/dev/null | grep "from ${_kvas_ip}$" | tail -400)
+			[ -n "$_kvas_line" ] && _kvas_bl_data="$_kvas_bl_data$_kvas_line
+"
+		done
+	fi
+	[ -z "$_kvas_bl_data" ] && echo -n '[]' && return
+
+	echo -n '['
+	_kvas_first=""
+	_kvas_sorted=$(echo "$_kvas_bl_data" | sort -u)
+	set -f; _kvas_oldifs="$IFS"; IFS='
+'
+	for _kvas_line in $_kvas_sorted; do
+		IFS="$_kvas_oldifs"; set +f
+		[ -z "$_kvas_line" ] && continue
+		_kvas_query=$(echo "$_kvas_line" | sed -n 's/.*query\[[^]]*\] \([^ ]*\) from.*/\1/p')
+		[ -z "$_kvas_query" ] && continue
+		printf '%s"%s"' "$_kvas_first" "$(json_escape "$_kvas_query")"
 		_kvas_first=,
 	done
 	IFS="$_kvas_oldifs"; set +f
@@ -318,6 +362,12 @@ case "$action" in
 			echo -n '}'
 			echo
 		fi
+		;;
+	action=dns_baseline*)
+		ips=$(echo "$QUERY_STRING" | sed 's/.*ips=//; s/&.*//; s/%2C/,/g' | sed 's/%20/ /g')
+		echo -n '{"ok":true,"domains":'
+		print_dns_baseline_json "$ips"
+		echo '}'
 		;;
 	action=status)
 		echo -n '{'

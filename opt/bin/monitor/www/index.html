@@ -449,6 +449,10 @@ window.addEventListener('error', function(e){
   <div class="card">
     <h3>Закваски</h3>
     <p style="font-size:12px;color:#8b949e;margin-bottom:12px;">Группы доменов для добавления в защищённый список. Отмеченные домены уже добавлены.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+      <input type="text" id="tagsSearch" placeholder="поиск: имя закваски или домен" oninput="tagsSearchApply()" style="flex:1;min-width:160px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
+      <span id="tagsSearchInfo" style="font-size:11px;color:#8b949e;white-space:nowrap;"></span>
+    </div>
     <div id="tagsList" class="host-list" style="max-height:500px;"><div class="status">Загрузка...</div></div>
     <div class="card-row" style="flex-wrap:wrap;gap:8px;margin-top:8px;">
       <button class="btn btn-sm success" onclick="downloadTags()">Скачать список заквасок</button>
@@ -610,11 +614,15 @@ window.addEventListener('error', function(e){
   <span id="traceMsg" style="font-size:11px;color:#8b949e;"></span>
 </div>
 <div id="traceResults" style="display:none;margin:8px 0;padding:8px;background:#161b22;border:1px solid #30363d;border-radius:6px;">
-  <div style="font-size:13px;color:#8b949e;margin-bottom:6px;">Отслеженные сайты — отметьте и выберите действие:</div>
+  <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#8b949e;margin-bottom:6px;cursor:pointer;">
+    <input type="checkbox" id="traceMaster" style="accent-color:#58a6ff;" onchange="traceMasterToggle(this)">
+    Выделить все
+    <span style="color:#8b949e;font-weight:normal;">— отметьте и выберите действие:</span>
+  </label>
   <div id="traceList"></div>
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
     <button class="btn btn-sm" onclick="traceAddSelected('exclude')">→ в обход тоннеля</button>
-    <button class="btn btn-sm" onclick="traceAddSelected('tunnel')">→ в закваску</button>
+    <button class="btn btn-sm" onclick="traceToTagOpen()">→ в закваску</button>
     <button class="btn btn-sm" onclick="traceClear()">Скрыть</button>
   </div>
 </div>
@@ -693,6 +701,11 @@ var lastPollEmpty = false;
 var traceActive = false;
 var traceTimer = null;
 var traceDomains = {};
+var traceBaseline = {};
+var traceTraffic = {};
+var monDomains = {};
+var TRAFFIC_BYTES_MIN = 100;
+var _tagsAll = [];
 var TRACE_SEC = 60;
 var currentAuthAction = doAuth;
 
@@ -1085,8 +1098,33 @@ function loadTags() {
   api('/cgi-bin/manage.sh?action=tags_list', function(d){
     if (!d.ok) { el.innerHTML = '<div class="status status-err">' + (d.error||'error') + '</div>'; return; }
     if (!d.tags || !d.tags.length) { el.innerHTML = '<div class="status" style="color:#8b949e;">Заквасок нет</div>'; return; }
-    renderTags(d.tags);
+    _tagsAll = d.tags;
+    tagsSearchApply();
   });
+}
+
+function tagsFilter(tags, q) {
+  q = (q || '').toLowerCase().trim();
+  if (!q) return tags;
+  return tags.filter(function(t){
+    if ((t.name || '').toLowerCase().indexOf(q) > -1) return true;
+    return (t.domains || []).some(function(d){ return (d.name || '').toLowerCase().indexOf(q) > -1; });
+  });
+}
+
+function tagsSearchApply() {
+  var el = document.getElementById('tagsList');
+  if (!el) return;
+  var info = document.getElementById('tagsSearchInfo');
+  var q = ((document.getElementById('tagsSearch') || {}).value || '');
+  var found = tagsFilter(_tagsAll, q);
+  if (info) info.textContent = q.trim() ? ('найдено ' + found.length + ' из ' + _tagsAll.length) : '';
+  if (!_tagsAll.length) return;
+  if (!found.length) {
+    el.innerHTML = '<div class="status" style="color:#8b949e;">Ничего не найдено по запросу «' + traceEsc(q.trim()) + '»</div>';
+    return;
+  }
+  renderTags(found);
 }
 
 function renderTags(tags) {
@@ -2788,6 +2826,10 @@ function poll() {
     var count = 0, newCount = 0;
     if (data.connections) data.connections.forEach(function(c){
       count++;
+      if (traceActive && c.dname && c.dport !== '53') {
+        var cb = parseInt(c.bytes, 10) || 0;
+        if (cb >= TRAFFIC_BYTES_MIN && (!traceTraffic[c.dname] || cb > traceTraffic[c.dname])) traceTraffic[c.dname] = cb;
+      }
       var key = c.proto + '|' + c.src + '|' + c.sport + '|' + c.dst + '|' + c.dport;
       if (seenEvents[key]) return;
       seenEvents[key] = true;
@@ -2805,7 +2847,7 @@ function poll() {
       newCount++;
       logMsg('log-dns', '<span class="log-ip">DNS</span> ' + d.domain);
       var dm = (d.raw || '').match(/query\[[^]]*\] (\S+) from (\d+\.\d+\.\d+\.\d+)$/);
-      if (dm) traceCollect(dm[1], dm[2]);
+      if (dm) { monDomains[dm[1]] = true; traceCollect(dm[1], dm[2]); }
     });
     if (count === 0 && !lastPollEmpty) {
       lastPollEmpty = true;
@@ -2871,6 +2913,16 @@ function toggleTrace() {
   if (!monitoring) toggleMonitor();
   traceActive = true;
   traceDomains = {};
+  traceTraffic = {};
+  traceBaseline = {};
+  Object.keys(monDomains).forEach(function(d){ traceBaseline[d] = true; });
+  fetch('/cgi-bin/data.sh?action=dns_baseline&ips=' + encodeURIComponent([...selectedIps].join(',')))
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (!traceActive || !j || !j.domains) return;
+      j.domains.forEach(function(d){ traceBaseline[d] = true; });
+    })
+    .catch(function(){});
   document.getElementById('btnTrace').textContent = 'Остановить отслеживание';
   document.getElementById('btnTrace').classList.add('active');
   document.getElementById('traceResults').style.display = 'none';
@@ -2888,24 +2940,69 @@ function stopTrace() {
   traceRender();
 }
 
+function traceRowHtml(dom, opts) {
+  var t = traceDomains[dom];
+  var devs = Object.keys(t.devs).join(', ');
+  var badges = '';
+  if (opts.bg) badges = '<span style="background:#30363d;color:#8b949e;font-size:10px;padding:1px 6px;border-radius:3px;">фон</span>';
+  else if (!opts.traffic) badges = '<span style="background:#30363d;color:#8b949e;font-size:10px;padding:1px 6px;border-radius:3px;">только DNS</span>';
+  var dim = (opts.bg || !opts.traffic) ? 'opacity:0.55;' : '';
+  return '<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #21262d;' + dim + '">' +
+    '<input type="checkbox" class="traceCb" value="' + traceEsc(dom) + '" style="accent-color:#58a6ff;">' +
+    '<span style="color:#58a6ff;font-family:monospace;font-size:12px;flex:1;min-width:0;word-break:break-all;">' + traceEsc(dom) + '</span>' +
+    (badges ? '<span style="white-space:nowrap;">' + badges + '</span>' : '') +
+    '<span style="color:#8b949e;font-size:11px;white-space:nowrap;">×' + t.count + (devs ? ' · ' + traceEsc(devs) : '') + '</span></label>';
+}
+
 function traceRender() {
   var list = document.getElementById('traceList');
   var keys = Object.keys(traceDomains).sort(function(a, b) { return traceDomains[b].count - traceDomains[a].count; });
   document.getElementById('traceResults').style.display = 'block';
+  var master = document.getElementById('traceMaster');
+  if (master) { master.checked = false; master.indeterminate = false; }
   if (!keys.length) {
     list.innerHTML = '<div class="status" style="color:#8b949e;padding:6px;">Ничего не отслежено (лог DNS пуст или не было запросов выбранных устройств).</div>';
     return;
   }
-  var html = '';
+  var bg = [], traffic = [], dnsOnly = [];
   keys.forEach(function(dom) {
-    var t = traceDomains[dom];
-    var devs = Object.keys(t.devs).join(', ');
-    html += '<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #21262d;">' +
-      '<input type="checkbox" class="traceCb" checked value="' + traceEsc(dom) + '" style="accent-color:#58a6ff;">' +
-      '<span style="color:#58a6ff;font-family:monospace;font-size:12px;flex:1;min-width:0;word-break:break-all;">' + traceEsc(dom) + '</span>' +
-      '<span style="color:#8b949e;font-size:11px;white-space:nowrap;">×' + t.count + (devs ? ' · ' + traceEsc(devs) : '') + '</span></label>';
+    if (traceBaseline[dom]) { bg.push(dom); return; }
+    if (traceTraffic[dom]) traffic.push(dom); else dnsOnly.push(dom);
   });
+  var html = '';
+  traffic.concat(dnsOnly).forEach(function(dom){ html += traceRowHtml(dom, { bg: false, traffic: !!traceTraffic[dom] }); });
+  if (bg.length) {
+    html += '<div id="traceBgToggle" data-label="Фон (' + bg.length + ') — домены, опрашивавшиеся и до старта отслеживания" onclick="traceBgToggle()" style="padding:6px;color:#8b949e;font-size:12px;cursor:pointer;user-select:none;border-bottom:1px solid #21262d;">▸ Фон (' + bg.length + ') — домены, опрашивавшиеся и до старта отслеживания</div>';
+    html += '<div id="traceBgList" style="display:none;">';
+    bg.forEach(function(dom){ html += traceRowHtml(dom, { bg: true, traffic: false }); });
+    html += '</div>';
+  }
   list.innerHTML = html;
+  list.onchange = traceListChanged;
+}
+
+function traceMasterToggle(master) {
+  var boxes = document.querySelectorAll('.traceCb');
+  for (var i = 0; i < boxes.length; i++) boxes[i].checked = master.checked;
+}
+
+function traceListChanged() {
+  var master = document.getElementById('traceMaster');
+  if (!master) return;
+  var boxes = document.querySelectorAll('.traceCb');
+  var c = 0;
+  for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) c++;
+  master.checked = boxes.length > 0 && c === boxes.length;
+  master.indeterminate = c > 0 && c < boxes.length;
+}
+
+function traceBgToggle() {
+  var el = document.getElementById('traceBgList');
+  var tg = document.getElementById('traceBgToggle');
+  if (!el || !tg) return;
+  var show = el.style.display === 'none';
+  el.style.display = show ? 'block' : 'none';
+  tg.textContent = (show ? '▾ ' : '▸ ') + (tg.getAttribute('data-label') || '');
 }
 
 function traceClear() {
@@ -2920,11 +3017,10 @@ function traceAddSelected(kind) {
   if (!doms.length) { alert('Отметьте хотя бы один сайт'); return; }
   var idx = 0, ok = 0, fail = 0;
   var msgEl = document.getElementById('traceMsg');
-  var isExclude = kind === 'exclude';
   (function next() {
     if (idx >= doms.length) {
-      logMsg(fail ? 'log-warn' : 'log-info', 'Отслеживание: ' + ok + ' из ' + doms.length + ' сайтов ' + (isExclude ? 'добавлено в обход тоннеля' : 'добавлено в закваску') + (fail ? ' (ошибок: ' + fail + ')' : ''));
-      if (isExclude && ok) {
+      logMsg(fail ? 'log-warn' : 'log-info', 'Отслеживание: ' + ok + ' из ' + doms.length + ' сайтов добавлено в обход тоннеля' + (fail ? ' (ошибок: ' + fail + ')' : ''));
+      if (ok) {
         msgEl.textContent = 'Обновление маршрутов...';
         api('/cgi-bin/manage.sh?action=route_refresh', function(){ msgEl.textContent = 'Готово: добавлено ' + ok + (fail ? ', ошибок ' + fail : '') + ' из ' + doms.length; });
       } else {
@@ -2934,14 +3030,96 @@ function traceAddSelected(kind) {
     }
     var d = doms[idx++];
     msgEl.textContent = 'Добавление ' + idx + '/' + doms.length + ': ' + d;
-    var url = isExclude
-      ? '/cgi-bin/manage.sh?action=route_add&type=exclude&ip=' + encodeURIComponent(d) + '&defer=1'
-      : '/cgi-bin/manage.sh?action=host_add&domain=' + encodeURIComponent(d);
-    api(url, function(r) {
+    api('/cgi-bin/manage.sh?action=route_add&type=exclude&ip=' + encodeURIComponent(d) + '&defer=1', function(r) {
       if (r && r.ok) ok++; else fail++;
       next();
     });
   })();
+}
+
+/* ========== TRACE → TAG DIALOG ========== */
+var traceTagList = [];
+var traceTagDoms = [];
+
+function traceBaseDomain(d) {
+  var p = (d || '').split('.');
+  return p.length >= 2 ? p.slice(-2).join('.') : (d || '');
+}
+
+function traceToTagOpen() {
+  var boxes = document.querySelectorAll('.traceCb:checked');
+  traceTagDoms = [];
+  for (var i = 0; i < boxes.length; i++) traceTagDoms.push(boxes[i].value);
+  if (!traceTagDoms.length) { alert('Отметьте хотя бы один сайт'); return; }
+  document.getElementById('traceTagCount').textContent = traceTagDoms.length;
+  document.getElementById('traceTagSearch').value = '';
+  document.getElementById('traceTagNew').value = traceBaseDomain(traceTagDoms[0]);
+  var msg = document.getElementById('traceTagMsg');
+  msg.className = 'msg'; msg.textContent = '';
+  document.getElementById('traceTagPickList').innerHTML = '<div style="color:#8b949e;font-size:11px;padding:4px;"><span class="spinner"></span> Загрузка заквасок...</div>';
+  document.getElementById('traceTagOverlay').style.display = 'flex';
+  api('/cgi-bin/manage.sh?action=tags_list', function(d){
+    traceTagList = (d && d.ok && d.tags) ? d.tags : [];
+    traceTagFilter();
+  });
+}
+
+function traceTagFilter() {
+  var q = ((document.getElementById('traceTagSearch') || {}).value || '');
+  var el = document.getElementById('traceTagPickList');
+  if (!el) return;
+  var found = tagsFilter(traceTagList, q);
+  if (!found.length) {
+    el.innerHTML = '<div style="color:#8b949e;font-size:11px;padding:6px;">Нет заквасок' + (q.trim() ? ' по запросу' : '') + ' — создайте новую ниже</div>';
+    return;
+  }
+  var html = '';
+  found.forEach(function(t){
+    html += '<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #21262d;cursor:pointer;">' +
+      '<input type="radio" name="traceTagPick" value="' + traceEsc(t.name || '') + '" style="accent-color:#58a6ff;" onchange="traceTagRadioChanged(this)">' +
+      '<span style="color:#58a6ff;font-family:monospace;font-size:12px;">[' + traceEsc(t.name || '') + ']</span>' +
+      '<span style="color:#8b949e;font-size:11px;">' + (t.domains || []).length + ' доменов</span></label>';
+  });
+  el.innerHTML = html;
+}
+
+function traceTagRadioChanged(r) {
+  if (r.checked) document.getElementById('traceTagNew').value = '';
+}
+
+function traceTagNewChanged() {
+  var inp = document.getElementById('traceTagNew');
+  if (inp && inp.value.trim()) {
+    var picked = document.querySelector('input[name=traceTagPick]:checked');
+    if (picked) picked.checked = false;
+  }
+}
+
+function traceTagClose() {
+  document.getElementById('traceTagOverlay').style.display = 'none';
+}
+
+function traceTagConfirm(btn) {
+  var picked = document.querySelector('input[name=traceTagPick]:checked');
+  var newName = document.getElementById('traceTagNew').value.trim().replace(/[\[\]\s\/]/g, '');
+  var msg = document.getElementById('traceTagMsg');
+  var tag = picked ? picked.value : newName;
+  if (!tag) { msg.className = 'msg err'; msg.textContent = 'Выберите закваску или введите новое имя'; return; }
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=tags_trace_add&tag=' + encodeURIComponent(tag) + '&domains=' + encodeURIComponent(traceTagDoms.join(' ')), function(r){
+    if (btn) loadingBtn(btn, false);
+    if (r && r.ok) {
+      var failN = (r.list_failed || 0) + (r.tag_failed || 0);
+      var text = traceTagDoms.length + ' доменов → закваска «' + tag + '»' + (r.created ? ' (создана)' : '') + (failN ? ', ошибок: ' + failN : '');
+      document.getElementById('traceMsg').textContent = 'Готово: ' + text;
+      logMsg(failN ? 'log-warn' : 'log-info', 'Отслеживание: ' + text);
+      traceTagClose();
+      loadTags();
+    } else {
+      msg.className = 'msg err';
+      msg.textContent = (r && r.error) || 'Ошибка';
+    }
+  });
 }
 
 function clearLog() { document.getElementById('log').innerHTML = ''; seenEvents = {}; lastPollEmpty = false; }
@@ -3377,6 +3555,25 @@ function routeGuestDel() {
     <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
       <button class="btn btn-sm" onclick="tagsEditClose()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;">Отмена</button>
       <button class="btn btn-sm success" onclick="tagsEditSave(this)" style="background:#1f6feb;color:#fff;border:none;">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Trace → Zakvaska -->
+<div id="traceTagOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:999;justify-content:center;align-items:center;">
+  <div style="background:#0d1117;color:#c9d1d9;border-radius:8px;padding:20px;width:90%;max-width:520px;max-height:85vh;display:flex;flex-direction:column;border:1px solid #30363d;">
+    <h3 style="margin:0 0 8px 0;font-size:16px;color:#e6edf3;">Добавить в закваску</h3>
+    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">Выбрано доменов: <b id="traceTagCount" style="color:#58a6ff;">0</b>. Выберите существующую закваску или введите имя новой — она будет создана.</div>
+    <input type="text" id="traceTagSearch" placeholder="поиск: имя закваски или домен" oninput="traceTagFilter()" style="width:100%;padding:6px;margin-bottom:8px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#c9d1d9;font-family:monospace;font-size:12px;">
+    <div id="traceTagPickList" style="border:1px solid #30363d;border-radius:4px;max-height:180px;overflow-y:auto;background:#161b22;"></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <span style="font-size:12px;color:#8b949e;white-space:nowrap;">или новая:</span>
+      <input type="text" id="traceTagNew" placeholder="example.org" oninput="traceTagNewChanged()" style="flex:1;min-width:0;padding:6px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#c9d1d9;font-family:monospace;font-size:12px;">
+    </div>
+    <div id="traceTagMsg" class="msg" style="margin-top:8px;"></div>
+    <div style="display:flex;gap:8px;margin-top:8px;justify-content:flex-end;">
+      <button class="btn btn-sm" onclick="traceTagClose()" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;">Отмена</button>
+      <button class="btn btn-sm success" onclick="traceTagConfirm(this)" style="background:#1f6feb;color:#fff;border:none;">Добавить</button>
     </div>
   </div>
 </div>

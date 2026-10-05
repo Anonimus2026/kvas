@@ -1890,6 +1890,64 @@ EOL2
 			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
 			json_ok "закваска «$name» создана"
 			;;
+		tags_trace_add)
+			# Диалог «→ в закваску» из отслеживания: активирует домены в kvas.list
+			# (путь host_add, ДО записи в секцию — иначе cmd_add_one_host может
+			# уйти в интерактивный read_ynq по тегу) и группирует их в закваску.
+			check_token "$token"
+			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
+			[ "$tag" = "$QUERY_STRING" ] && tag=""
+			raw_domains=$(echo "$QUERY_STRING" | sed 's/.*domains=//; s/&.*//' 2>/dev/null)
+			raw_domains=$(printf '%s' "$raw_domains" | sed 's/%0D%0A/ /g; s/%0A/ /g; s/%0D/ /g; s/%20/ /g; s/%2[fF]/\//g; s/+/ /g')
+			domains=$(echo "$raw_domains" | sed 's/  */ /g; s/^ //; s/ $//')
+			tag=$(printf '%s' "$tag" | sed 's/%20/ /g')
+			[ -z "$tag" ] && json_error "tag required"
+			[ -z "$domains" ] && json_error "domains required"
+			case "$tag" in
+				*'['*|*']'*|*'/'*|*' '*|*'
+'*) json_error "bad tag name" ;;
+			esac
+			# 1) активация в kvas.list — пока домена ещё нет в секции тега
+			list_added=0; list_already=0; list_failed=0
+			for d in $domains; do
+				if [ -f "$KVAS_LIST" ] && grep -qxF "$d" "$KVAS_LIST" 2>/dev/null; then
+					list_already=$((list_already + 1))
+					continue
+				fi
+				out=$($KVAS_BIN add "$d" 2>&1)
+				if [ $? -eq 0 ]; then
+					list_added=$((list_added + 1))
+				else
+					list_failed=$((list_failed + 1))
+				fi
+			done
+			# 2) секция закваски: создать (create=1 или секции ещё нет) / дополнить
+			created="false"
+			tag_added=0; tag_already=0; tag_failed=0
+			if ! grep -qF "[$tag]" "$TAGS_FILE" 2>/dev/null; then
+				out=$($KVAS_BIN tags create "$tag" $domains 2>&1)
+				[ $? -ne 0 ] && json_error "create failed: $out"
+				created="true"
+			else
+				existing=$(get_tag_domain_list_from_file "$TAGS_FILE" "$tag")
+				for d in $domains; do
+					if echo "$existing" | grep -qxF "$d"; then
+						tag_already=$((tag_already + 1))
+						continue
+					fi
+					out=$($KVAS_BIN tags add "$tag" "$d" 2>&1)
+					if [ $? -eq 0 ]; then
+						tag_added=$((tag_added + 1))
+					else
+						tag_failed=$((tag_failed + 1))
+					fi
+				done
+			fi
+			printf '{"ok":true,"tag":"%s","created":%s,"list_added":%d,"list_already":%d,"list_failed":%d,"tag_added":%d,"tag_already":%d,"tag_failed":%d}\n' \
+				"$(json_str "$tag")" "$created" \
+				"$list_added" "$list_already" "$list_failed" \
+				"$tag_added" "$tag_already" "$tag_failed"
+			;;
 		tags_delete)
 			check_token "$token"
 			tag=$(echo "$QUERY_STRING" | sed 's/.*tag=//; s/&.*//' 2>/dev/null)
