@@ -14,6 +14,10 @@ DNS_LOG=/tmp/kvas-dns.log
 
 # Build IP→domain cache from DNS log (one pass, fast)
 IP_CACHE=/tmp/kvas-ip-cache.txt
+# PTR-кэш переживает сборку IP_CACHE (build_ip_cache стирает его каждый poll):
+# без него dig выполнялся каждые 5с на каждый IP без ответа из DNS-лога и
+# медленные/брошенные PTR-запросы держали CGI до обрыва («Failed to fetch»).
+PTR_CACHE=/tmp/kvas-ip-ptr.txt
 build_ip_cache() {
 	[ ! -f "$DNS_LOG" ] || [ ! -s "$DNS_LOG" ] && return
 	# лог кольцевой: пока мониторинг включён, он растёт на tmpfs — обрезаем
@@ -21,18 +25,22 @@ build_ip_cache() {
 		tail -c 262144 "$DNS_LOG" > "$DNS_LOG.tmp" 2>/dev/null && mv "$DNS_LOG.tmp" "$DNS_LOG"
 	fi
 	: > "$IP_CACHE"
-	# "reply <domain> is <IP>" — map resolved IP → domain
+	# "reply <domain> is <IP>" — map resolved IP → domain (строго IPv4-квадрат:
+	# AAAA-ответы давали мусор вида «2=domain» из-за остановки sed на букве)
 	grep ' is ' "$DNS_LOG" 2>/dev/null | grep -v '<CNAME>' | \
-		sed -n 's/.*reply \([^ ]*\) is \([0-9][0-9.]*\).*/\2=\1/p' >> "$IP_CACHE"
+		sed -n 's/.*reply \([^ ]*\) is \([0-9]\{1,3\}\(\.[0-9]\{1,3\}\)\{3\}\).*/\2=\1/p' >> "$IP_CACHE"
 	# "cached <domain> is <IP>" — same format
 	grep ' is ' "$DNS_LOG" 2>/dev/null | grep -v '<CNAME>' | \
-		sed -n 's/.*cached \([^ ]*\) is \([0-9][0-9.]*\).*/\2=\1/p' >> "$IP_CACHE"
-	# "query[A] <domain> from <IP>" — map client IP → last queried domain
-	grep 'query\[A\]' "$DNS_LOG" 2>/dev/null | \
-		sed -n 's/.*query\[A\] \([^ ]*\) from \([0-9][0-9.]*\).*/\2=\1/p' >> "$IP_CACHE"
-	# Deduplicate — keep last (most recent)
+		sed -n 's/.*cached \([^ ]*\) is \([0-9]\{1,3\}\(\.[0-9]\{1,3\}\)\{3\}\).*/\2=\1/p' >> "$IP_CACHE"
+	# "query[<type>] <domain> from <IP>" — map client IP → last queried domain.
+	# Тип ANY (A/AAAA/HTTPS/SVCB/...): раньше брался только [A] и [HTTPS]-запросы
+	# современных браузеров выпадали из маппинга
+	grep 'query\[' "$DNS_LOG" 2>/dev/null | \
+		sed -n 's/.*query\[[^]]*\] \([^ ]*\) from \([0-9][0-9.]*\).*/\2=\1/p' >> "$IP_CACHE"
+	# Дедупликация — оставляем последнее (самое свежее) значение на ключ:
+	# для CDN-IP привязка домена со временем меняется, первое — устаревшее
 	if [ -s "$IP_CACHE" ]; then
-		awk -F= '!seen[$1]++' "$IP_CACHE" > "${IP_CACHE}.tmp"
+		awk -F= '{ a[$1] = $0 } END { for (k in a) print a[k] }' "$IP_CACHE" > "${IP_CACHE}.tmp"
 		mv "${IP_CACHE}.tmp" "$IP_CACHE"
 	fi
 }
@@ -46,17 +54,29 @@ cached_resolve() {
 		cached=$(grep "^${ip}=" "$IP_CACHE" 2>/dev/null | tail -1 | cut -d= -f2)
 		[ -n "$cached" ] && [ "$cached" != "$ip" ] && echo "$cached" && return
 	}
+	# PTR-кэш (положительный и отрицательный): dig выполняется максимум
+	# один раз на IP за жизнь системы, дальше — мгновенный ответ
+	[ -f "$PTR_CACHE" ] && {
+		local pcached
+		pcached=$(grep "^${ip}=" "$PTR_CACHE" 2>/dev/null | tail -1 | cut -d= -f2)
+		[ -n "$pcached" ] && echo "$pcached" && return
+	}
 	local name=""
 	if command -v dig >/dev/null 2>&1; then
-		# head -1: у IP бывает несколько PTR-записей — многострочный dname ломает JSON
-		name=$(dig +short -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')
-	fi
-	if [ -z "$name" ] && command -v nslookup >/dev/null 2>&1; then
-		name=$(nslookup "$ip" 2>/dev/null | awk '/^Name:/ {a=1; next} a && /^Address/ {print $NF; exit}')
-		[ -z "$name" ] && name=$(nslookup "$ip" 2>/dev/null | grep 'name = ' | head -1 | sed "s/.*name = //; s/\.$//")
+		# head -1: у IP бывает несколько PTR-записей — многострочный dname ломает JSON.
+		# +time=1 +tries=1: жёсткий потолок 1с — десятки PTR-таймаутов подряд
+		# иначе роняют CGI-таймаут httpd («Failed to fetch» в браузере)
+		name=$(dig +short +time=1 +tries=1 -x "$ip" 2>/dev/null | head -1 | sed 's/\.$//')
+	else
+		# nslookup — только когда dig отсутствует: при пустом ответе dig
+		# он дал бы тот же результат ценой ещё одного сетевого ожидания
+		if command -v nslookup >/dev/null 2>&1; then
+			name=$(nslookup "$ip" 2>/dev/null | awk '/^Name:/ {a=1; next} a && /^Address/ {print $NF; exit}')
+			[ -z "$name" ] && name=$(nslookup "$ip" 2>/dev/null | grep 'name = ' | head -1 | sed "s/.*name = //; s/\.$//")
+		fi
 	fi
 	[ -z "$name" ] && name="$ip"
-	echo "${ip}=${name}" >> "$IP_CACHE" 2>/dev/null
+	echo "${ip}=${name}" >> "$PTR_CACHE" 2>/dev/null
 	echo "$name"
 }
 
@@ -64,8 +84,8 @@ cached_resolve() {
 find_dns_query() {
 	local client_ip="$1"
 	[ -f "$DNS_LOG" ] || return
-	grep "query\[A\].*from ${client_ip}$" "$DNS_LOG" 2>/dev/null | tail -1 | \
-		sed -n 's/.*query\[A\] \([^ ]*\) from.*/\1/p'
+	grep "query\[[^]]*\].*from ${client_ip}$" "$DNS_LOG" 2>/dev/null | tail -1 | \
+		sed -n 's/.*query\[[^]]*\] \([^ ]*\) from.*/\1/p'
 }
 
 print_connections_json() {
@@ -169,7 +189,7 @@ print_dns_json() {
 	for _kvas_line in $_kvas_sorted; do
 		IFS="$_kvas_oldifs"; set +f
 		[ -z "$_kvas_line" ] && continue
-		_kvas_query=$(echo "$_kvas_line" | sed -n 's/.*query\[A[^]]*\] \([^ ]*\) from.*/\1/p')
+		_kvas_query=$(echo "$_kvas_line" | sed -n 's/.*query\[[^]]*\] \([^ ]*\) from.*/\1/p')
 		[ -z "$_kvas_query" ] && _kvas_query=$(echo "$_kvas_line" | sed -n 's/.*reply \([^ ]*\) is.*/\1/p')
 		[ -z "$_kvas_query" ] && _kvas_query=$(echo "$_kvas_line" | tr -s ' ')
 		printf '%s{"raw":"%s","domain":"%s"}' \
@@ -361,6 +381,11 @@ case "$action" in
 		fi
 		echo -n ',"ip_cache_size":'
 		[ -s "$IP_CACHE" ] && wc -l < "$IP_CACHE" 2>/dev/null || echo -n '0'
+		echo -n ',"ptr_cache_size":'
+		[ -s "$PTR_CACHE" ] && wc -l < "$PTR_CACHE" 2>/dev/null || echo -n '0'
+		echo -n ',"dns_log_tail":"'
+		json_escape "$(tail -6 "$DNS_LOG" 2>/dev/null)"
+		echo -n '"'
 		echo -n ',"test_resolve_93.158.134.158":"'
 		build_ip_cache 2>/dev/null
 		json_escape "$(cached_resolve "93.158.134.158")"

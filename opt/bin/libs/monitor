@@ -366,7 +366,7 @@ cmd_monitor_start() {
 		if [ -n "$dns_lines" ]; then
 			local dline
 			echo "$dns_lines" | while IFS= read -r dline; do
-				local query=$(echo "$dline" | grep -o 'query\[A\].*is' | sed 's/query\[A\] //; s/ is$//' 2>/dev/null)
+				local query=$(echo "$dline" | sed -n 's/.*query\[[^]]*\] \([^ ]*\) from.*/\1/p' 2>/dev/null)
 				local reply=$(echo "$dline" | grep -o 'is [0-9.]*' | cut -d' ' -f2 2>/dev/null)
 				if [ -n "$query" ]; then
 					printf "  %-50s -> %s

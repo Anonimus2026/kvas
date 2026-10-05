@@ -2804,7 +2804,7 @@ function poll() {
       seenEvents[key] = true;
       newCount++;
       logMsg('log-dns', '<span class="log-ip">DNS</span> ' + d.domain);
-      var dm = (d.raw || '').match(/query\[A[^]]*\] (\S+) from (\d+\.\d+\.\d+\.\d+)$/);
+      var dm = (d.raw || '').match(/query\[[^]]*\] (\S+) from (\d+\.\d+\.\d+\.\d+)$/);
       if (dm) traceCollect(dm[1], dm[2]);
     });
     if (count === 0 && !lastPollEmpty) {
@@ -2816,7 +2816,7 @@ function poll() {
   }).catch(function(err){
     pollErrors++;
     if (pollErrors <= 3) logMsg('log-error', '<span class="log-err">Ошибка (' + pollErrors + '/' + MAX_POLL_ERRORS + '): ' + err.message + '</span>');
-    if (pollErrors >= MAX_POLL_ERRORS) {
+    if (pollErrors >= MAX_POLL_ERRORS && monitoring) {
       stopPolling(); monitoring = false;
       document.getElementById('btnStart').textContent = 'Запустить мониторинг';
       document.getElementById('btnStart').classList.remove('active');
