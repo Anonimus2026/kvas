@@ -129,8 +129,8 @@ body.mobile-view #mainUi { padding-bottom:76px; }
 .device-item .name { color: #c9d1d9; flex: 1; }
 .device-item .badge { margin-left: auto; font-size: 11px; padding: 0 6px; border-radius: 3px; }
 .filters { margin: 6px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; }
-.filters label { color: #8b949e; display: inline-flex; align-items: center; gap: 4px; }
-.filters select,.filters input { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 3px 6px; font-family: monospace; }
+.filters label { color: #8b949e; display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.filters select,.filters input { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 3px 6px; font-family: monospace; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
 #log { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; height: 400px; overflow-y: auto; font-size: 12px; line-height: 1.5; margin-top: 8px; }
 .log-dns { color: #7ee787; }
 .log-tcp { color: #79c0ff; }
