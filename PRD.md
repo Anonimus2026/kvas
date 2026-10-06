@@ -1,6 +1,6 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-634
+**Версия:** 1.1.9_beta-10-635
 **Дата:** 06.10.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 634)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 635)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 630, 631, 632, 633, **634** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 630, 631, 632, 633, 634, **635** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v634)
+## 4. Текущий статус (v635)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -78,6 +78,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | **Мобильные переполнения Web UI (v632): строка результата трейса получила `flex-wrap:wrap`, счётчик с устройствами (`×N · ip1, ip2`) перестал быть `white-space:nowrap` (`flex:0 1 auto` + `word-break:break-all`) — после отслеживания список устройств в строке уезжал за вьюпорт и расширял страницу (`#traceResults` вне `.card`, без overflow-клиппинга); модалка «Добавить в закваску»: `min-width:0` у бокса/`#traceTagPickList`/инпута поиска (как flex-item она имела automatic min-size = min-content от длинных имён заквасок), `overflow:hidden` на оверлее, `word-break:break-all` в строках списка и `overflow-wrap:anywhere` в подсказке; defensive `flex-wrap` в `.status-bar`, шапке «Выделить все» и модалке `editTagOverlay` | ✓ v632 (жалоба 631: «после отслеживания поле устройства выходит за пределы мобильного вида, страница шире», «модалка добавления в закваску не вписывается в мобильный вид») |
 | **Мобильный дропдаун устройств (v633): `.filters label` и `.filters select/input` получили `min-width:0; max-width:100%` (+`text-overflow:ellipsis` у select) — option вида `ip + длинное имя устройства` растягивал intrinsic-ширину `#filterDevice` до ширины содержимого и расширял мобильную страницу; flex-item label теперь жёстко ограничен шириной `.filters` | ✓ v633 (жалоба 632: «когда отмечаю устройство с длинным названием, дропдаун увеличивается и расширяет мобильный вид») |
 | **Агрегатор VLESS (v634): пул голых `vless://`-ссылок (`/opt/etc/kvas.aggregator`, по одной на строку, # - комментарий) с полным тестом каждого кандидата (apply → xray restart → socks-проба на 2ip.io/ifconfig.me через IP_FILTER): sticky-переключение на первый живой, 3 неудачи подряд → dead, dead перепроверяются каждые 30 мин (cron.15min/aggregator, гейт AGG_RECHECK_SEC=1800, общий lock), смерть активного → авто-сдвиг с TG-уведомлением, пул исчерпан → fallback на снапшот ручного конфига (`/opt/etc/xray/kvas.json.manual`) + TG; управление в трёх местах: Web UI (карточка «Aggregator VLESS» в «Управлении», on/check CGI идут в фон, лог `/opt/var/kvas/agg.last.log`), CLI `kvas aggregator status/list/add/del/on/off/check/set` (help-секция), Telegram (`/aggregator`, клавиши Agg ON/OFF/Check, строка в `/status`); state `/opt/var/kvas/aggregator.state` (ENABLED/ACTIVE/LASTCHECK/FAIL_n/DEAD_n), пул в backup (`kvas.aggregator`), whitelist TG-событий +`aggregator` (только авто-события) | ✓ v634 (запрос v633: агрегатор VLESS-ссылок; решения юзера: голые ссылки по одной на строку / полный тест через прокси / sticky первый живой / dead=3 + recheck 30 мин / fallback снапшот ручного + TG / управление UI+CLI+бот) |
+| **Горячий фикс агрегатора (v635): CGI-парсер `n` в `manage.sh`** — `apiBtn` дописывает `&token=` последним, а жадный `sed 's/.*n=//'` цеплялся за `n=` внутри `token=` и выдавал токен вместо номера сервера, поэтому Web UI при удалении/переключении отвечал `n required (1..pool)`; парсер в `agg_del|agg_set` и `agg_check` теперь привязан к `&n=` (`s/.*&n=//`), в test635 — регресс-тест парсера (в т.ч. воспроизведение ловушки на старом паттерне) | ✓ v635 (баг влит сразу после v634) |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -91,7 +92,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624/625/626/627/628/629/630/631/632/633/634 — рабочие. Следующий = **635**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624/625/626/627/628/629/630/631/632/633/634/635 — рабочие. Следующий = **636**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.

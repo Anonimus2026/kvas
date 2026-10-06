@@ -599,7 +599,8 @@ main() {
 			;;
 		agg_del|agg_set)
 			check_token "$token"
-			_agg_n=$(echo "$QUERY_STRING" | sed 's/.*n=//; s/&.*//')
+			# v635: greedy .*n= matched the n= inside "token=" (apiBtn appends &token= last) - anchor to &n=
+			_agg_n=$(echo "$QUERY_STRING" | sed 's/.*&n=//; s/&.*//')
 			[ "${_agg_n}" = "$QUERY_STRING" ] && _agg_n=""
 			case "${_agg_n}" in ''|*[!0-9]*) json_error "n required (1..pool)" ;; esac
 			case "$action" in
@@ -623,7 +624,8 @@ main() {
 			;;
 		agg_check)
 			check_token "$token"
-			_agg_n=$(echo "$QUERY_STRING" | sed 's/.*n=//; s/&.*//')
+			# v635: same &n= anchor as agg_del (token= contains n= too)
+			_agg_n=$(echo "$QUERY_STRING" | sed 's/.*&n=//; s/&.*//')
 			[ "${_agg_n}" = "$QUERY_STRING" ] && _agg_n=""
 			case "${_agg_n}" in ''|*[!0-9]*) _agg_n="" ;; esac
 			# v634: full tests are slow (xray restarts) - background + UI poll
