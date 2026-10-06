@@ -82,6 +82,12 @@ AWG_ENV_BACKUP=${KVAS_BACKUP_PATH}/awg_env.sh
 KVAS_WEB_PASS=/opt/kvas_web_pass
 KVAS_WEB_PASS_BACKUP=${KVAS_BACKUP_PATH}/kvas_web_pass
 
+# VLESS aggregator (v634): pool of vless:// links, runtime state, manual config snapshot
+AGG_POOL_FILE=/opt/etc/kvas.aggregator
+AGG_STATE_FILE=/opt/var/kvas/aggregator.state
+AGG_MANUAL_FILE=/opt/etc/xray/kvas.json.manual
+AGG_POOL_BACKUP=${KVAS_BACKUP_PATH}/kvas.aggregator
+
 ADGUARDHOME_LOG=/opt/var/log/AdGuardHome.log
 ADGUARDHOME_DEMON=/opt/etc/init.d/S99adguardhome
 DNSMASQ_DEMON=/opt/etc/init.d/S56dnsmasq

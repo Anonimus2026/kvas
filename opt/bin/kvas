@@ -40,7 +40,7 @@ cmd_show_kvas_list(){
 	fi
 }
 
-if  echo "${1}" | grep -qvEi 'uninstall|hysteria|failover|vpn|route|monitor|ver|help' && [ -z "$(get_config_value "SETUP_FINISHED")" ]; then
+if  echo "${1}" | grep -qvEi 'uninstall|hysteria|failover|aggregator|vpn|route|monitor|ver|help' && [ -z "$(get_config_value "SETUP_FINISHED")" ]; then
 	print_line
 	echo "${2}" | grep -qE 'upgrade|true' && warning "Запускаем настройку пакета" || {
 		error "Настройка пакета не завершена, запускаем настройку пакета" "1"
@@ -63,6 +63,7 @@ case "${1}" in
 	restore) _require vpn ;;
 	tags|add_tags|del_tags) _require tags vpn ;;
  	vless) _require vless vpn ;;
+	aggregator) _require aggregator ;;
  	awg) _require awg ;;
  	xray) _require vless ;;
  	hysteria) _require hysteria vpn ;;
@@ -420,6 +421,20 @@ case "${1}" in
 	# Расширенные настройки
 
 	# Тоннели
+
+	aggregator)
+		case "${2}" in
+			add)		agg_cmd_add "${3}" ;;
+			del|rm)		agg_cmd_del "${3}" ;;
+			list)		agg_cmd_list ;;
+			on)			agg_cmd_on ;;
+			off)		agg_cmd_off ;;
+			check)		agg_cmd_check "${3}" ;;
+			set)		agg_cmd_set "${3}" ;;
+			cron)		agg_cron ;;
+			status|*)	agg_status_line; printf '\n' ;;
+		esac
+			;;
 
 	vless)
 		case "${2}" in

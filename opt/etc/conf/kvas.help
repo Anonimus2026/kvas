@@ -100,6 +100,20 @@ kvas failover set threshold <N>   - порог ошибок (по умолч. 2)
 kvas failover log [N]        - последние N записей лога
 kvas failover test           - тест каналов
 
+== AGGREGATOR VLESS ==
+
+kvas aggregator status       - статус агрегатора (пул, активный, мёртвые)
+kvas aggregator list         - список пула (активный отмечен *, мёртвые - dead)
+kvas aggregator add vless://...  - добавить ссылку в пул
+kvas aggregator del <N>      - удалить ссылку №N из пула
+kvas aggregator on           - включить: полный тест, применение первого живого
+kvas aggregator off          - выключить: откат на ручной VLESS-конфиг
+kvas aggregator check [N]    - проверить ссылку №N (без N - активную + мёртвые)
+kvas aggregator set <N>      - переключиться на ссылку №N
+Прим.: пул - файл /opt/etc/kvas.aggregator (одна ссылка на строку, # - комментарий);
+dead помечается после 3 неответов подряд, re-check каждые 30 мин (cron);
+при пустом пуле/всех dead - откат на ручной конфиг + уведомление в Telegram.
+
 == DNS ==
 
 kvas dns                     - текущий DNS сервер

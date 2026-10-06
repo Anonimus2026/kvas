@@ -52,6 +52,7 @@ if [ "$1" = "configure" ]; then
     mkdir -p /opt/etc/cron.1min /opt/etc/cron.15min 2>/dev/null
     ln -sf /opt/apps/kvas/bin/tg_sender.sh /opt/etc/cron.1min/tg_sender 2>/dev/null
     ln -sf /opt/apps/kvas/bin/tg_health.sh /opt/etc/cron.15min/tg_health 2>/dev/null
+    ln -sf /opt/apps/kvas/bin/main/aggregator_cron /opt/etc/cron.15min/aggregator 2>/dev/null
     # Интерактивный бот: kill-all + lock, затем один свежий
     for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
         kill -9 "${_p}" 2>/dev/null

@@ -1,0 +1,567 @@
+#!/bin/sh
+# ------------------------------------------------------------------------------------------
+#
+#   VLESS aggregator (v634)
+#
+#   Pool of vless:// links (one per line) in AGG_POOL_FILE. Sticky active server:
+#   full test (apply -> xray restart -> socks probe) picks the first live candidate,
+#   3 consecutive probe failures mark a server dead, dead servers are re-tested every
+#   30 min (cron.15min gate), empty pool / all dead -> fallback to the manual config
+#   snapshot with a Telegram notification.
+#
+#   Core functions are ASCII-only output (CLI, Web UI, TG bot share them).
+#
+# ------------------------------------------------------------------------------------------
+
+. /opt/apps/kvas/bin/libs/vless
+. /opt/apps/kvas/bin/libs/tgq
+
+AGG_FAIL_MAX=3
+AGG_RECHECK_SEC=1800
+AGG_PROBE_URL1="https://${DOMAIN_FOR_CHECK}"
+AGG_PROBE_URL2="https://ifconfig.me"
+AGG_LOCK=/tmp/kvas-aggregator.lock
+
+# ---------------- state ----------------
+
+agg_state_init(){
+	[ -f "${AGG_STATE_FILE}" ] && return 0
+	mkdir -p "$(dirname "${AGG_STATE_FILE}")" 2>/dev/null
+	printf 'ENABLED=0\nACTIVE=0\nLASTCHECK=0\n' > "${AGG_STATE_FILE}"
+}
+
+agg_get(){ # $1=key -> value (empty if unset)
+	sed -n "s/^$1=//p" "${AGG_STATE_FILE}" 2>/dev/null | head -1
+}
+
+agg_set(){ # $1=key $2=value
+	local _val
+	_val=$(printf '%s' "$2" | tr -d '\n')
+	agg_state_init
+	if grep -q "^$1=" "${AGG_STATE_FILE}" 2>/dev/null; then
+		sed -i "s|^$1=.*|$1=$_val|" "${AGG_STATE_FILE}"
+	else
+		printf '%s=%s\n' "$1" "$_val" >> "${AGG_STATE_FILE}"
+	fi
+}
+
+agg_enabled(){ [ "$(agg_get ENABLED)" = "1" ]; }
+
+agg_active_idx(){ local _a; _a=$(agg_get ACTIVE); [ -n "${_a}" ] || _a=0; printf '%s' "${_a}"; }
+
+# ---------------- pool ----------------
+
+agg_pool_init(){
+	[ -f "${AGG_POOL_FILE}" ] && return 0
+	mkdir -p "$(dirname "${AGG_POOL_FILE}")" 2>/dev/null
+	: > "${AGG_POOL_FILE}"
+}
+
+agg_pool_raw(){ # pool links without comments/blank lines
+	agg_pool_init
+	grep -v '^[[:space:]]*#' "${AGG_POOL_FILE}" 2>/dev/null | grep -v '^[[:space:]]*$'
+}
+
+agg_pool_count(){ agg_pool_raw | grep -c . 2>/dev/null || true; }
+
+agg_pool_get(){ # $1=index(1-based) -> link
+	agg_pool_raw | sed -n "$1p"
+}
+
+agg_is_dead(){ # $1=index
+	local _d
+	_d=$(agg_get "DEAD_$1")
+	[ -n "${_d}" ] && [ "${_d}" != "0" ]
+}
+
+agg_count_fail(){ # $1=index: +1 fail, mark dead at AGG_FAIL_MAX
+	local _f
+	_f=$(agg_get "FAIL_$1"); [ -n "${_f}" ] || _f=0
+	_f=$((_f + 1))
+	agg_set "FAIL_$1" "${_f}"
+	if [ "${_f}" -ge "${AGG_FAIL_MAX}" ]; then
+		agg_set "DEAD_$1" "$(date +%s)"
+		agg_set "FAIL_$1" 0
+	fi
+	return 0
+}
+
+# ---------------- xray / probe ----------------
+
+agg_xray_restart(){
+	if [ -x "${XRAY_INIT}" ]; then
+		"${XRAY_INIT}" restart >/dev/null 2>&1 || service_action S97xray restart >/dev/null 2>&1
+	else
+		service_action S97xray restart >/dev/null 2>&1 || {
+			service_action S97xray stop >/dev/null 2>&1
+			sleep 1
+			service_action S97xray start >/dev/null 2>&1
+		}
+	fi
+	# re-bind Keenetic VPN interface to socks (same as start_vless), only when
+	# vless is the current tunnel - do not switch a foreign tunnel silently
+	local _cli
+	_cli=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	case "${_cli}" in
+		Proxy21|vless|t2s21)
+			/opt/apps/kvas/bin/kvas vpn set vless >/dev/null 2>&1 || true
+			;;
+	esac
+	return 0
+}
+
+agg_cfg_test(){ # xray -test on current config
+	"${XRAY}" run -test -c "${VLESS_CONFIG_FILE}" 2>&1 | grep -q "Configuration OK"
+}
+
+agg_probe(){ # live probe through local xray socks (no restart)
+	local _ip
+	_ip=$(curl -s --connect-timeout 5 --max-time 12 -x "socks5://127.0.0.1:${PROXY_VLESS_PORT}" "${AGG_PROBE_URL1}" 2>/dev/null)
+	echo "${_ip}" | grep -qE "${IP_FILTER}" && return 0
+	_ip=$(curl -s --connect-timeout 6 --max-time 12 -x "socks5://127.0.0.1:${PROXY_VLESS_PORT}" "${AGG_PROBE_URL2}" 2>/dev/null)
+	echo "${_ip}" | grep -qE "${IP_FILTER}" && return 0
+	return 1
+}
+
+agg_parse_cfg(){ # $1=link: rewrite config in a subshell (parse exits on invalid link)
+	( vless_link_parse "$1" "${VLESS_CONFIG_FILE}" ) >/dev/null 2>&1
+}
+
+# apply link and KEEP it on success; restore previous config on failure
+agg_try_apply(){ # $1=link -> 0 if live server applied
+	local _link="$1" _bak=/tmp/agg.cfg.$$
+	agg_state_init
+	[ -f "${VLESS_CONFIG_FILE}" ] || cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}" 2>/dev/null
+	cp -f "${VLESS_CONFIG_FILE}" "${_bak}" 2>/dev/null
+	if ! agg_parse_cfg "${_link}"; then
+		cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null; rm -f "${_bak}"; return 1
+	fi
+	if ! agg_cfg_test; then
+		cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null; rm -f "${_bak}"; return 1
+	fi
+	agg_xray_restart
+	sleep 2
+	if agg_probe; then
+		rm -f "${_bak}"
+		return 0
+	fi
+	cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null
+	rm -f "${_bak}"
+	agg_xray_restart
+	sleep 1
+	return 1
+}
+
+# full test: apply -> probe -> ALWAYS restore previous config
+agg_test_link(){ # $1=link -> 0 if live
+	local _link="$1" _bak=/tmp/agg.cfg.$$ _rc=1
+	agg_state_init
+	[ -f "${VLESS_CONFIG_FILE}" ] || cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}" 2>/dev/null
+	cp -f "${VLESS_CONFIG_FILE}" "${_bak}" 2>/dev/null
+	if agg_parse_cfg "${_link}" && agg_cfg_test; then
+		agg_xray_restart
+		sleep 2
+		agg_probe && _rc=0
+	fi
+	cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null
+	rm -f "${_bak}"
+	agg_xray_restart
+	sleep 1
+	return ${_rc}
+}
+
+# ---------------- manual fallback ----------------
+
+agg_snapshot_manual(){ # remember user's manual config before first aggregator apply
+	[ -f "${AGG_MANUAL_FILE}" ] && return 0
+	[ -f "${VLESS_CONFIG_FILE}" ] || return 1
+	cp -f "${VLESS_CONFIG_FILE}" "${AGG_MANUAL_FILE}"
+}
+
+agg_pre_enable(){ # called before first apply while disabled
+	agg_enabled && return 0
+	[ -f "${VLESS_CONFIG_FILE}" ] || { printf 'Aggregator: VLESS config not found (run kvas vless new first)\n'; return 1; }
+	rm -f "${AGG_MANUAL_FILE}"
+	agg_snapshot_manual || { printf 'Aggregator: cannot snapshot manual config\n'; return 1; }
+	return 0
+}
+
+agg_restore_manual(){
+	[ -f "${AGG_MANUAL_FILE}" ] || return 1
+	cp -f "${AGG_MANUAL_FILE}" "${VLESS_CONFIG_FILE}"
+	agg_xray_restart
+	sleep 1
+	return 0
+}
+
+# ---------------- selection core ----------------
+
+# scan pool starting at $1 (wraps), skipping dead unless $2=keep
+# first full-test success becomes ACTIVE; success notify handled by caller
+agg_scan(){ # $1=start [$2=all]
+	local _total _i _k=0 _link _start _all="${2:-skip}"
+	_total=$(agg_pool_count)
+	[ "${_total}" -gt 0 ] || return 1
+	_start="$1"
+	case "${_start}" in ''|*[!0-9]*) _start=1 ;; esac
+	[ "${_start}" -ge 1 ] && [ "${_start}" -le "${_total}" ] || _start=1
+	_i="${_start}"
+	while [ "${_k}" -lt "${_total}" ]; do
+		if [ "${_all}" = "all" ] || ! agg_is_dead "${_i}"; then
+			_link=$(agg_pool_get "${_i}")
+			if [ -n "${_link}" ] && agg_try_apply "${_link}"; then
+				agg_set "DEAD_${_i}" 0
+				agg_set "FAIL_${_i}" 0
+				agg_set ACTIVE "${_i}"
+				return 0
+			fi
+			[ -n "${_link}" ] && agg_count_fail "${_i}"
+		fi
+		_i=$((_i + 1))
+		[ "${_i}" -gt "${_total}" ] && _i=1
+		_k=$((_k + 1))
+	done
+	return 1
+}
+
+agg_fallback(){ # no live server: manual config + TG
+	agg_set ACTIVE 0
+	agg_restore_manual || true
+	tg_notify aggregator "Aggregator VLESS: no live servers, fallback to manual VLESS config"
+	printf 'Aggregator: pool exhausted, fallback to manual config\n'
+}
+
+agg_emergency(){ # $1=dead active idx: shift to next alive (sticky order)
+	if agg_scan $(($1 + 1)); then
+		tg_notify aggregator "Aggregator VLESS: server #${1} failed 3 checks, switched to #$(agg_active_idx)"
+		printf 'Aggregator: switched to #%s\n' "$(agg_active_idx)"
+		return 0
+	fi
+	agg_fallback
+	return 1
+}
+
+agg_fail_active(){ # $1=active idx: probe fail accounting
+	local _f
+	_f=$(agg_get "FAIL_$1"); [ -n "${_f}" ] || _f=0
+	_f=$((_f + 1))
+	agg_set "FAIL_$1" "${_f}"
+	if [ "${_f}" -ge "${AGG_FAIL_MAX}" ]; then
+		agg_set "DEAD_$1" "$(date +%s)"
+		agg_set "FAIL_$1" 0
+		agg_emergency "$1"
+	fi
+	return 0
+}
+
+# ---------------- CLI / shared commands ----------------
+
+# single-run lock: no overlapping scans/restarts (cron, CLI, Web UI share it)
+agg_locked(){ # $1=impl func, args...
+	local _f="$1" _age _rc
+	shift
+	if [ -f "${AGG_LOCK}" ]; then
+		_age=$(( $(date +%s) - $(stat -c %Y "${AGG_LOCK}" 2>/dev/null || date +%s) ))
+		if [ "${_age}" -ge 0 ] && [ "${_age}" -lt 600 ]; then
+			printf 'Aggregator: another aggregator run in progress\n'
+			return 1
+		fi
+		rm -f "${AGG_LOCK}"
+	fi
+	date +%s > "${AGG_LOCK}"
+	"${_f}" "$@"
+	_rc=$?
+	rm -f "${AGG_LOCK}"
+	return ${_rc}
+}
+
+agg_cmd_add(){ # $1=link
+	local _link="$1" _n
+	[ -n "${_link}" ] || { printf 'Aggregator: usage: kvas aggregator add vless://...\n'; return 1; }
+	case "${_link}" in vless://*) ;; *) printf 'Aggregator: not a vless:// link\n'; return 1 ;; esac
+	agg_pool_init
+	grep -qxF "${_link}" "${AGG_POOL_FILE}" 2>/dev/null && { printf 'Aggregator: link already in pool\n'; return 1; }
+	printf '%s\n' "${_link}" >> "${AGG_POOL_FILE}"
+	_n=$(agg_pool_count)
+	printf 'Aggregator: added #%s (pool %s)\n' "${_n}" "${_n}"
+	return 0
+}
+
+agg_cmd_del(){ agg_locked _agg_cmd_del "$@"; }
+_agg_cmd_del(){ # $1=index
+	local _n="$1" _total _tmp _en _act _lc
+	_total=$(agg_pool_count)
+	case "${_n}" in ''|*[!0-9]*) printf 'Aggregator: usage: kvas aggregator del <N>\n'; return 1 ;; esac
+	[ "${_n}" -ge 1 ] 2>/dev/null && [ "${_n}" -le "${_total}" ] 2>/dev/null || {
+		printf 'Aggregator: no server #%s (pool has %s)\n' "${_n:-?}" "${_total}"; return 1; }
+	_en=$(agg_get ENABLED); [ -n "${_en}" ] || _en=0
+	_act=$(agg_active_idx)
+	_lc=$(agg_get LASTCHECK); [ -n "${_lc}" ] || _lc=0
+	_tmp="${AGG_POOL_FILE}.tmp.$$"
+	awk -v n="${_n}" 'BEGIN{c=0} /^[[:space:]]*#/{print;next} /^[[:space:]]*$/{print;next} {c++; if(c!=n) print}' \
+		"${AGG_POOL_FILE}" > "${_tmp}" 2>/dev/null && mv -f "${_tmp}" "${AGG_POOL_FILE}"
+	rm -f "${_tmp}"
+	# index shift: rebuild state (fail/dead counters belong to old indexes)
+	printf 'ENABLED=%s\nACTIVE=0\nLASTCHECK=%s\n' "${_en}" "${_lc}" > "${AGG_STATE_FILE}"
+	printf 'Aggregator: deleted #%s\n' "${_n}"
+	if [ "${_act}" = "${_n}" ] && [ "${_en}" = "1" ]; then
+		# active server removed from pool: move to next alive now
+		if agg_scan "${_n}"; then
+			tg_notify aggregator "Aggregator VLESS: active server removed, switched to #$(agg_active_idx)"
+		else
+			agg_fallback
+		fi
+	elif [ "${_act}" -gt "${_n}" ] 2>/dev/null && [ "${_en}" = "1" ]; then
+		agg_set ACTIVE "$((_act - 1))"
+	fi
+	return 0
+}
+
+agg_cmd_list(){ # human-readable pool listing
+	local _total _i _link _act _host _mark _f _d _out _en
+	_total=$(agg_pool_count)
+	_act=$(agg_active_idx)
+	_en=$(agg_get ENABLED); [ "${_en}" = "1" ] && _en=on || _en=off
+	printf 'Aggregator VLESS: %s (pool %s, active %s)\n' "${_en}" "${_total}" \
+		"$([ "${_act}" != "0" ] && printf '#%s' "${_act}" || printf 'manual')"
+	[ "${_total}" -eq 0 ] && { printf '  (pool is empty)\n'; return 0; }
+	_i=1
+	while [ "${_i}" -le "${_total}" ]; do
+		_link=$(agg_pool_get "${_i}")
+		_host=$(printf '%s' "${_link}" | sed 's|^vless://||; s|^[^@]*@||; s|[:/?#].*$||')
+		[ -n "${_host}" ] || _host="(bad link)"
+		_mark=" "
+		[ "${_i}" = "${_act}" ] && _mark="*"
+		printf ' %s#%-3s %-24s' "${_mark}" "${_i}" "${_host}"
+		if agg_is_dead "${_i}"; then
+			_d=$(agg_get "DEAD_${_i}")
+			printf ' dead(since %s)' "${_d}"
+		else
+			_f=$(agg_get "FAIL_${_i}"); [ -n "${_f}" ] || _f=0
+			[ "${_f}" != "0" ] && printf ' fails=%s/%s' "${_f}" "${AGG_FAIL_MAX}"
+		fi
+		printf '\n'
+		_i=$((_i + 1))
+	done
+	return 0
+}
+
+agg_status_line(){ # single line for bot/status text
+	local _en _act _total _dead _i _host _link
+	_en=$(agg_get ENABLED); [ "${_en}" = "1" ] && _en=ON || _en=OFF
+	_act=$(agg_active_idx)
+	_total=$(agg_pool_count)
+	_dead=0
+	_i=1
+	while [ "${_i}" -le "${_total}" ]; do
+		agg_is_dead "${_i}" && _dead=$((_dead + 1))
+		_i=$((_i + 1))
+	done
+	_host=""
+	if [ "${_act}" != "0" ]; then
+		_link=$(agg_pool_get "${_act}")
+		_host=$(printf '%s' "${_link}" | sed 's|^vless://||; s|^[^@]*@||; s|[:/?#].*$||')
+	fi
+	printf 'Aggregator VLESS: %s, pool %s, active %s%s, dead %s, manual snapshot %s' \
+		"${_en}" "${_total}" \
+		"$([ "${_act}" != "0" ] && printf '#%s' "${_act}" || printf 'manual')" \
+		"$([ -n "${_host}" ] && printf ' (%s)' "${_host}")" \
+		"${_dead}" \
+		"$([ -f "${AGG_MANUAL_FILE}" ] && printf saved || printf missing)"
+}
+
+agg_status_json(){ # for Web UI (manage.sh agg_status)
+	local _en=false _act _total _i _link _host _f _d _dead="[" _links="" _first=1 _fails="{"
+	_en=$(agg_get ENABLED); [ "${_en}" = "1" ] && _en=true || _en=false
+	_act=$(agg_active_idx)
+	_total=$(agg_pool_count)
+	_i=1
+	while [ "${_i}" -le "${_total}" ]; do
+		_link=$(agg_pool_get "${_i}")
+		_host=$(printf '%s' "${_link}" | sed 's|^vless://||; s|^[^@]*@||; s|[:/?#].*$||')
+		[ -n "${_host}" ] || _host="?"
+		_host=$(printf '%s' "${_host}" | sed 's/"/./g')
+		_f=$(agg_get "FAIL_${_i}"); [ -n "${_f}" ] || _f=0
+		if agg_is_dead "${_i}"; then
+			[ "${_dead}" = "[" ] || _dead="${_dead},"
+			_dead="${_dead}${_i}"
+			[ "${_first}" = "1" ] || _links="${_links},"
+			_links="${_links}{\"n\":${_i},\"host\":\"${_host}\",\"dead\":1,\"fails\":${_f},\"active\":0}"
+			_first=0
+		else
+			[ "${_first}" = "1" ] || _links="${_links},"
+			_links="${_links}{\"n\":${_i},\"host\":\"${_host}\",\"dead\":0,\"fails\":${_f},\"active\":$([ "${_i}" = "${_act}" ] && printf 1 || printf 0)}"
+			_first=0
+		fi
+		if [ "${_f}" != "0" ]; then
+			[ "${_fails}" = "{" ] || _fails="${_fails},"
+			_fails="${_fails}\"${_i}\":${_f}"
+		fi
+		_i=$((_i + 1))
+	done
+	_dead="${_dead}]"
+	_fails="${_fails}}"
+	[ "${_total}" -eq 0 ] && _links=""
+	printf '{"ok":true,"enabled":%s,"active":%s,"total":%s,"dead":%s,"fails":%s,"has_manual":%s,"links":[%s]}\n' \
+		"${_en}" "${_act}" "${_total}" "${_dead}" "${_fails}" \
+		"$([ -f "${AGG_MANUAL_FILE}" ] && printf true || printf false)" \
+		"${_links}"
+	return 0
+}
+
+agg_cmd_on(){ agg_locked _agg_cmd_on; }
+_agg_cmd_on(){
+	[ "$(agg_pool_count)" -gt 0 ] || { printf 'Aggregator: pool is empty (add links first)\n'; return 1; }
+	agg_pre_enable || return 1
+	agg_set ENABLED 1
+	if agg_scan 1; then
+		printf 'Aggregator: ON, active #%s\n' "$(agg_active_idx)"
+		return 0
+	fi
+	agg_set ACTIVE 0
+	printf 'Aggregator: ON, no live server in pool, staying on manual config\n'
+	return 1
+}
+
+agg_cmd_off(){ agg_locked _agg_cmd_off; }
+_agg_cmd_off(){
+	agg_set ENABLED 0
+	agg_set ACTIVE 0
+	local _i _total
+	_total=$(agg_pool_count)
+	_i=1
+	while [ "${_i}" -le "${_total}" ]; do
+		agg_set "FAIL_${_i}" 0
+		agg_set "DEAD_${_i}" 0
+		_i=$((_i + 1))
+	done
+	if agg_restore_manual; then
+		printf 'Aggregator: OFF, manual VLESS config restored\n'
+	else
+		printf 'Aggregator: OFF (no manual snapshot, current config kept)\n'
+	fi
+	return 0
+}
+
+agg_cmd_set(){ agg_locked _agg_cmd_set "$@"; }
+_agg_cmd_set(){ # $1=index: manual switch to a pool entry
+	local _n="$1" _link _total _prev
+	_total=$(agg_pool_count)
+	case "${_n}" in ''|*[!0-9]*) printf 'Aggregator: usage: kvas aggregator set <N>\n'; return 1 ;; esac
+	[ "${_n}" -ge 1 ] 2>/dev/null && [ "${_n}" -le "${_total}" ] 2>/dev/null || {
+		printf 'Aggregator: no server #%s (pool has %s)\n' "${_n:-?}" "${_total}"; return 1; }
+	_link=$(agg_pool_get "${_n}")
+	[ -n "${_link}" ] || { printf 'Aggregator: #%s is not a valid link\n' "${_n}"; return 1; }
+	agg_pre_enable || return 1
+	if agg_try_apply "${_link}"; then
+		agg_set ENABLED 1
+		agg_set ACTIVE "${_n}"
+		agg_set "DEAD_${_n}" 0
+		agg_set "FAIL_${_n}" 0
+		printf 'Aggregator: active #%s\n' "${_n}"
+		return 0
+	fi
+	printf 'Aggregator: server #%s failed full test\n' "${_n}"
+	agg_enabled && agg_count_fail "${_n}"
+	return 1
+}
+
+agg_cmd_check(){ agg_locked _agg_cmd_check "$@"; }
+_agg_cmd_check(){ # $1=optional index; no arg -> active probe + dead re-tests
+	local _n="$1" _link _total _i _rc=0
+	if [ -n "${_n}" ]; then
+		case "${_n}" in *[!0-9]*) printf 'Aggregator: usage: kvas aggregator check [N]\n'; return 1 ;; esac
+		_link=$(agg_pool_get "${_n}")
+		[ -n "${_link}" ] || { printf 'Aggregator: no server #%s\n' "${_n}"; return 1; }
+		if agg_test_link "${_link}"; then
+			agg_set "DEAD_${_n}" 0
+			agg_set "FAIL_${_n}" 0
+			printf 'Aggregator: #%s is alive (full test ok)\n' "${_n}"
+			return 0
+		fi
+		printf 'Aggregator: #%s failed full test\n' "${_n}"
+		agg_enabled && agg_count_fail "${_n}"
+		return 1
+	fi
+	local _act
+	_act=$(agg_active_idx)
+	if [ "${_act}" != "0" ]; then
+		if agg_probe; then
+			agg_set "FAIL_${_act}" 0
+			printf 'Aggregator: active #%s probe ok\n' "${_act}"
+		else
+			printf 'Aggregator: active #%s probe FAILED\n' "${_act}"
+			_rc=1
+			agg_enabled && agg_fail_active "${_act}"
+		fi
+	fi
+	# dead re-tests (resurrect)
+	_total=$(agg_pool_count)
+	_i=1
+	while [ "${_i}" -le "${_total}" ]; do
+		if agg_is_dead "${_i}"; then
+			_link=$(agg_pool_get "${_i}")
+			if [ -n "${_link}" ] && agg_test_link "${_link}"; then
+				agg_set "DEAD_${_i}" 0
+				agg_set "FAIL_${_i}" 0
+				tg_notify aggregator "Aggregator VLESS: server #${_i} is alive again"
+				printf 'Aggregator: #%s resurrected\n' "${_i}"
+			fi
+		fi
+		_i=$((_i + 1))
+	done
+	[ "${_act}" = "0" ] && agg_enabled && [ "$(agg_active_idx)" = "0" ] && [ "$(agg_pool_count)" -gt 0 ] && {
+		# still on manual: try recovery scan now
+		if agg_scan 1; then
+			tg_notify aggregator "Aggregator VLESS: pool recovered, switched to #$(agg_active_idx)"
+			printf 'Aggregator: switched to #%s\n' "$(agg_active_idx)"
+			_rc=0
+		fi
+	}
+	return ${_rc}
+}
+
+# cron entry (runs each cron.15min, gated to AGG_RECHECK_SEC = 30 min)
+agg_cron(){
+	agg_enabled || return 0
+	agg_locked agg_cron_body
+	return 0
+}
+
+agg_cron_body(){
+	local _now _last _act _total _i _link
+	_now=$(date +%s)
+	_last=$(agg_get LASTCHECK); [ -n "${_last}" ] || _last=0
+	[ $((_now - _last)) -ge "${AGG_RECHECK_SEC}" ] || return 0
+	agg_set LASTCHECK "${_now}"
+	_act=$(agg_active_idx)
+	if [ "${_act}" != "0" ]; then
+		if agg_probe; then
+			agg_set "FAIL_${_act}" 0
+		else
+			agg_fail_active "${_act}"
+			_act=$(agg_active_idx)
+		fi
+		# resurrect re-check of dead servers (full test, config restored)
+		[ "${_act}" = "0" ] && return 0
+		_total=$(agg_pool_count)
+		_i=1
+		while [ "${_i}" -le "${_total}" ]; do
+			if agg_is_dead "${_i}"; then
+				_link=$(agg_pool_get "${_i}")
+				if [ -n "${_link}" ] && agg_test_link "${_link}"; then
+					agg_set "DEAD_${_i}" 0
+					agg_set "FAIL_${_i}" 0
+					tg_notify aggregator "Aggregator VLESS: server #${_i} is alive again"
+				fi
+			fi
+			_i=$((_i + 1))
+		done
+	else
+		# on manual fallback: full scan incl. dead (auto-recovery)
+		if agg_scan 1 all; then
+			tg_notify aggregator "Aggregator VLESS: pool recovered, switched to #$(agg_active_idx)"
+		fi
+	fi
+	return 0
+}

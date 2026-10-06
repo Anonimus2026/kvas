@@ -106,6 +106,21 @@ ${_out:-нет вывода}"
 ${_out:-нет вывода}"
 		;;
 
+	agg)
+		_act="$1"
+		case "${_act}" in
+			on|off|check|list|status) ;;
+			*) tbj_send "agg: unknown action '${_act}' (on|off|check|list|status)"; exit 1 ;;
+		esac
+		_outf=/tmp/.tgjob.out.$$
+		sh /opt/apps/kvas/bin/kvas aggregator "${_act}" >"${_outf}" 2>&1
+		_rc=$?
+		_out=$(tbj_strip <"${_outf}" 2>/dev/null | tail -c 2500)
+		rm -f "${_outf}"
+		tbj_send "Aggregator ${_act} (code ${_rc}):
+${_out:-нет вывода}"
+		;;
+
 	site)
 		_iface="$1"; _site="$2"
 		[ -n "${_iface}" ] && [ -n "${_site}" ] || { tbj_send "site: нужны iface и site"; exit 1; }

@@ -354,6 +354,24 @@ window.addEventListener('error', function(e){
     </div>
   </div>
 
+  <!-- Aggregator VLESS -->
+  <div class="card">
+    <h3>Aggregator VLESS</h3>
+    <div class="card-row" style="flex-wrap:wrap;gap:6px;">
+      <button class="btn btn-sm success" onclick="aggAct('on',this)">Включить</button>
+      <button class="btn btn-sm danger" onclick="aggAct('off',this)">Выключить</button>
+      <button class="btn btn-sm" onclick="aggAct('check',this)">Проверить</button>
+      <button class="btn btn-sm" onclick="loadAgg()">Обновить</button>
+    </div>
+    <div id="aggInfo" style="font-size:12px;color:#8b949e;margin-top:6px;">-</div>
+    <div id="aggPool" style="margin-top:6px;max-height:200px;overflow-y:auto;"></div>
+    <div class="card-row" style="gap:6px;margin-top:6px;">
+      <input id="aggLink" placeholder="vless://..." style="flex:1;min-width:0;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
+      <button class="btn btn-sm" onclick="aggAdd(this)">Добавить</button>
+    </div>
+    <div id="aggMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:150px;overflow-y:auto;"></div>
+  </div>
+
   <!-- AdGuard -->
   <div class="card">
     <h3>AdGuard Home</h3>
@@ -842,6 +860,7 @@ function showMain() {
   loadXrayStatus();
   awgModeLoad();
   loadFailoverStatus();
+  loadAgg();
   loadTunnelTestInterfaces();
   loadTags();
   fetchDevices();
@@ -972,7 +991,7 @@ var TG_EVENT_DEFS = [
   ['failover','Переключение VPN'],['update_found','Новая версия KVAS'],
   ['upgrade','Обновление/откат KVAS'],
   ['tunnel','Состояние туннеля'],['health','Здоровье системы'],
-  ['parental_expire','Истёк срок контроля']
+  ['parental_expire','Истёк срок контроля'],['aggregator','Aggregator VLESS']
 ];
 function tgRenderEvents(sel){
   var el=document.getElementById('tgEvents'); if(!el) return;
@@ -1376,7 +1395,9 @@ function loadSystemStatus() {
             return fail + 'не работает';
           }
           if (mode === 'vless') {
-            document.getElementById('sysTunnel').innerHTML = 'VLESS ' + tunnelState(t.vless);
+            var _aggBadge = '';
+            if (t.agg) _aggBadge = ' <span style="color:#8b949e;font-size:11px;">(' + (t.agg_active ? 'agg#' + t.agg_active : 'agg:manual') + ')</span>';
+            document.getElementById('sysTunnel').innerHTML = 'VLESS ' + tunnelState(t.vless) + _aggBadge;
           } else if (mode === 'hysteria') {
             document.getElementById('sysTunnel').innerHTML = 'Hysteria ' + tunnelState(t.hysteria);
           } else if (t.other_desc) {
@@ -1829,6 +1850,64 @@ function vpnSet(proto, btn) {
       consoleLog('vpn set ' + proto + ' ERROR: ' + (d.error || 'unknown'));
     }
   });
+}
+
+/* ========== AGGREGATOR VLESS ========== */
+function aggMsg(d){
+  var e = document.getElementById('aggMsg');
+  if (!e) return;
+  if (d && d.ok) { e.className = 'msg ok'; e.textContent = d.msg || 'OK'; }
+  else { e.className = 'msg err'; e.textContent = (d && (d.error || d.msg)) || 'error'; }
+}
+function loadAgg(){
+  api('/cgi-bin/manage.sh?action=agg_status', function(d){
+    var info = document.getElementById('aggInfo');
+    var pool = document.getElementById('aggPool');
+    if (!d || !d.ok) { if (info) info.textContent = '-'; return; }
+    var act = d.active ? ('#' + d.active) : 'manual';
+    if (info) info.textContent = (d.enabled ? 'ON' : 'OFF') + ', active ' + act +
+      ', pool ' + d.total + ', dead ' + (d.dead || []).length +
+      ', manual ' + (d.has_manual ? 'saved' : 'missing');
+    var h = '';
+    (d.links || []).forEach(function(e){
+      var col = e.dead ? '#f85149' : (e.active ? '#3fb950' : '#c9d1d9');
+      var tags = (e.active ? ' [active]' : '') + (e.dead ? ' [dead]' : '') + (e.fails ? ' [' + e.fails + '/3]' : '');
+      h += '<div class="card-row" style="gap:6px;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #21262d;">'
+        + '<span style="font-size:12px;color:' + col + ';min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">#' + e.n + ' ' + e.host + tags + '</span>'
+        + '<span style="display:flex;gap:4px;flex:0 0 auto;">'
+        + '<button class="btn btn-sm" onclick="aggSet(' + e.n + ',this)" title="Switch to this server">Вкл</button>'
+        + '<button class="btn btn-sm danger" onclick="aggDel(' + e.n + ',this)" title="Remove from pool">X</button>'
+        + '</span></div>';
+    });
+    if (pool) pool.innerHTML = h || '<div style="color:#8b949e;font-size:12px;">Пул пуст - добавьте vless:// ссылку ниже</div>';
+  });
+}
+function aggAct(a, btn){
+apiBtn('/cgi-bin/manage.sh?action=agg_' + a, btn, function(d){
+aggMsg(d); loadAgg();
+if (a === 'on' || a === 'check') setTimeout(loadAgg, 35000);
+});
+}
+function aggAdd(btn){
+  var inp = document.getElementById('aggLink');
+  var v = inp ? inp.value.trim() : '';
+  if (!v) { aggMsg({error: 'Введите vless:// ссылку'}); return; }
+  apiBtn('/cgi-bin/manage.sh?action=agg_add&link=' + encodeURIComponent(v), btn, function(d){
+    aggMsg(d);
+    if (d && d.ok && inp) inp.value = '';
+    loadAgg();
+  }, 120000);
+}
+function aggDel(n, btn){
+  if (!confirm('Удалить #' + n + ' из пула?')) return;
+  apiBtn('/cgi-bin/manage.sh?action=agg_del&n=' + n, btn, function(d){
+    aggMsg(d); loadAgg();
+  }, 240000);
+}
+function aggSet(n, btn){
+  apiBtn('/cgi-bin/manage.sh?action=agg_set&n=' + n, btn, function(d){
+    aggMsg(d); loadAgg();
+  }, 240000);
 }
 
 /* ========== FAILOVER ========== */

@@ -576,7 +576,59 @@ main() {
 			_other_json="false"
 			[ "$other_ok" = "true" ] && _other_json="true"
 			# vless/hysteria: true | port | false
-			printf '{"ok":true,"vless":"%s","hysteria":"%s","other":%s,"other_desc":"%s"}\n' "$vless_ok" "$hysteria_ok" "$_other_json" "$other_desc"
+			# v634: aggregator state (enabled + active index) for the sysTunnel badge
+			_agg_en=$(sed -n 's/^ENABLED=//p' /opt/var/kvas/aggregator.state 2>/dev/null | head -1)
+			_agg_act=$(sed -n 's/^ACTIVE=//p' /opt/var/kvas/aggregator.state 2>/dev/null | head -1)
+			[ "${_agg_en}" = "1" ] && _agg_en=true || _agg_en=false
+			case "${_agg_act}" in ''|*[!0-9]*) _agg_act=0 ;; esac
+			printf '{"ok":true,"vless":"%s","hysteria":"%s","other":%s,"other_desc":"%s","agg":%s,"agg_active":%s}\n' "$vless_ok" "$hysteria_ok" "$_other_json" "$other_desc" "$_agg_en" "$_agg_act"
+			;;
+		agg_status)
+			check_token "$token"
+			_out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_status_json)
+			case "${_out}" in '{"ok":true,'*) printf '%s\n' "${_out}" ;; *) json_error "aggregator unavailable" ;; esac
+			;;
+		agg_add)
+			check_token "$token"
+			_agg_link=$(echo "$QUERY_STRING" | sed 's/.*link=//; s/&.*//')
+			[ "${_agg_link}" = "$QUERY_STRING" ] && _agg_link=""
+			_agg_link=$(urldecode "${_agg_link}")
+			[ -n "${_agg_link}" ] || json_error "link required"
+			_out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_add "${_agg_link}" 2>&1); _rc=$?
+			[ "${_rc}" -eq 0 ] && json_ok "${_out}" || json_error "${_out}"
+			;;
+		agg_del|agg_set)
+			check_token "$token"
+			_agg_n=$(echo "$QUERY_STRING" | sed 's/.*n=//; s/&.*//')
+			[ "${_agg_n}" = "$QUERY_STRING" ] && _agg_n=""
+			case "${_agg_n}" in ''|*[!0-9]*) json_error "n required (1..pool)" ;; esac
+			case "$action" in
+				agg_del) _out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_del "${_agg_n}" 2>&1) ;;
+				*)       _out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_set "${_agg_n}" 2>&1) ;;
+			esac
+			_rc=$?
+			[ "${_rc}" -eq 0 ] && json_ok "${_out}" || json_error "${_out}"
+			;;
+		agg_on)
+			check_token "$token"
+			# v634: pool scan runs full tests (xray restarts + probes) - too slow for CGI,
+			# run in background and let the UI poll agg_status
+			( . /opt/apps/kvas/bin/libs/aggregator 2>/dev/null && agg_cmd_on ) > /opt/var/kvas/agg.last.log 2>&1 </dev/null &
+			json_ok "Aggregator: scan started, refresh status in ~30s (log: /opt/var/kvas/agg.last.log)"
+			;;
+		agg_off)
+			check_token "$token"
+			_out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_off 2>&1); _rc=$?
+			[ "${_rc}" -eq 0 ] && json_ok "${_out}" || json_error "${_out}"
+			;;
+		agg_check)
+			check_token "$token"
+			_agg_n=$(echo "$QUERY_STRING" | sed 's/.*n=//; s/&.*//')
+			[ "${_agg_n}" = "$QUERY_STRING" ] && _agg_n=""
+			case "${_agg_n}" in ''|*[!0-9]*) _agg_n="" ;; esac
+			# v634: full tests are slow (xray restarts) - background + UI poll
+			( . /opt/apps/kvas/bin/libs/aggregator 2>/dev/null && agg_cmd_check "${_agg_n}" ) > /opt/var/kvas/agg.last.log 2>&1 </dev/null &
+			json_ok "Aggregator: check started, refresh status in ~30s (log: /opt/var/kvas/agg.last.log)"
 			;;
 		vpn_interfaces)
 			check_token "$token"
@@ -2106,6 +2158,7 @@ EOL2
 			mkdir -p /opt/etc/cron.1min /opt/etc/cron.15min 2>/dev/null
 			ln -sf /opt/apps/kvas/bin/tg_sender.sh /opt/etc/cron.1min/tg_sender 2>/dev/null
 			ln -sf /opt/apps/kvas/bin/tg_health.sh /opt/etc/cron.15min/tg_health 2>/dev/null
+			ln -sf /opt/apps/kvas/bin/main/aggregator_cron /opt/etc/cron.15min/aggregator 2>/dev/null
 			json_ok "Настройки уведомлений сохранены"
 			;;
 		tg_getchat)

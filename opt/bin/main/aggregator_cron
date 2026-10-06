@@ -1,0 +1,4 @@
+#!/bin/sh
+# VLESS aggregator cron hook (v634): symlinked into /opt/etc/cron.15min/aggregator.
+# The library gates the real re-check to every 30 minutes (AGG_RECHECK_SEC).
+exec /opt/apps/kvas/bin/kvas aggregator cron >/dev/null 2>&1

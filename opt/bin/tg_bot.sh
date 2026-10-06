@@ -106,6 +106,7 @@ KB_DIAG() { tb_kb "Kvas test|Kvas debug" "Site test|Speed test" "Restart KVAS" "
 KB_CANCEL() { tb_kb "Cancel"; }
 KB_BACK() { tb_kb "Back"; }
 KB_UPD() { tb_kb "Yes update" "No cancel"; }
+KB_AGG() { tb_kb "Agg ON|Agg OFF" "Agg check|Back"; }
 
 tb_valid_domain() {
 	case "$1" in
@@ -121,10 +122,11 @@ tb_help() {
 /add <domains...> — add (multiple ok)
 /del <domains...> — remove (multiple ok)
 /tunnels — list and switch VPN tunnels
+/aggregator — VLESS aggregator pool (status + ON/OFF/check)
 /status — full status (tunnel + services)
 /update — update KVAS
 /rollback — rollback
-Menu: Kvas.list, Tags, Tunnels, Diagnostics."
+Menu: Kvas.list, Tags, Tunnels, Aggregator, Diagnostics."
 }
 
 # live tunnel state: state file (check_vpn/cron) → Keenetic API probe → ?
@@ -179,6 +181,7 @@ tb_status() {
 	_hc=$(grep -c . /opt/etc/kvas.list 2>/dev/null); [ -n "${_hc}" ] || _hc=0
 	_fk=$(df /opt 2>/dev/null | awk 'NR==2{print $4}')
 	[ -n "${_fk}" ] || _fk="?"
+	_agl=$(tb_agg_line 2>/dev/null); [ -n "${_agl}" ] || _agl="Aggregator VLESS: n/a"
 	printf '%s' "KVAS build ${_v:-?}
 Tunnel: ${_tn} (${_t})
 dnsmasq: ${_d}
@@ -187,6 +190,7 @@ Xray: ${_xr}
 Hysteria: ${_hy}
 AmneziaWG: ${_aw}
 Failover: ${_fm} (${_fd})
+${_agl}
 Hosts: ${_hc}
 Free /opt: ${_fk}K"
 }
@@ -233,6 +237,7 @@ tb_job() { # $1=chat $2=mode [$3...] — из /tmp, чтобы opkg не пер�
 		debug)    _label="Kvas debug" ;;
 		init)     _label="Restart KVAS" ;;
 		vpn)      _label="Switch tunnel to $(tb_friendly "$1")" ;;
+		agg)      _label="Aggregator $1" ;;
 		site)     _label="Site test ($1 -> $2)" ;;
 		speed)    _label="Inbound speed test ($1)" ;;
 		*) return 1 ;;
@@ -284,6 +289,18 @@ tb_show_tunnels() {
 	_cur=$(tb_friendly "${_cur}"); [ -n "${_cur}" ] || _cur="?"
 	tb_state_set "tunnels"
 	tb_send "${_ch}" "Tunnels (current: ${_cur}). Choose to switch:" "$(printf '%s\n' "${_lines}" | tb_kb_lines)"
+}
+
+# VLESS aggregator (v634): status line + menu with ON/OFF/check buttons
+tb_agg_line(){
+	. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || { printf 'Aggregator VLESS: unavailable'; return 0; }
+	agg_status_line
+}
+
+tb_show_agg(){
+	_ch="$1"
+	tb_state_set "agg"
+	tb_send "${_ch}" "$(tb_agg_line)" "$(KB_AGG)"
 }
 
 # динамическая клавиатура из строк stdin + «Back»
@@ -434,6 +451,7 @@ tb_reply_cmd() { # $1=chat $2=cmd $3=arg
 			tb_send "${_ch}" "Menu:" "${_TB_KB}"
 			;;
 		/tunnels) tb_show_tunnels "${_ch}" ;;
+		/aggregator) tb_show_agg "${_ch}" ;;
 		/update)   tb_update_ask "${_ch}" ;;
 		/rollback) tb_job "${_ch}" rollback ;;
 		/*) tb_send "${_ch}" "Unknown command: ${_cmd}
@@ -464,7 +482,7 @@ tb_on_text() { # $1=chat $2=text
 				list_add|list_del) tb_show_list_menu "${_ch}" ;;
 				zk_add|zk_del)     tb_show_zk_menu "${_ch}" ;;
 				diag_site|diag_site_url|diag_speed) tb_show_diag_menu "${_ch}" ;;
-				list|zk|diag|tunnels) tb_show_main "${_ch}" ;;
+				list|zk|diag|tunnels|agg) tb_show_main "${_ch}" ;;
 				*)                 tb_show_main "${_ch}" ;;
 			esac
 			return
@@ -479,6 +497,10 @@ tb_on_text() { # $1=chat $2=text
 			;;
 		Tunnels|*Tunnels*)
 			tb_show_tunnels "${_ch}"
+			return
+			;;
+		Aggregator|*Aggregator*)
+			tb_show_agg "${_ch}"
 			return
 			;;
 		Diagnostics|*Diagnostics*)
@@ -586,6 +608,15 @@ tb_on_text() { # $1=chat $2=text
 			tb_job "${_ch}" vpn "${_cli}"
 			tb_send "${_ch}" "Menu:" "${_TB_KB}"
 			return
+			;;
+		agg)
+			case "${_tx}" in
+				Back) tb_show_main "${_ch}"; return ;;
+				"Agg ON")   tb_state_clear; tb_job "${_ch}" agg on;   return ;;
+				"Agg OFF")  tb_state_clear; tb_job "${_ch}" agg off;  return ;;
+				"Agg check") tb_state_clear; tb_job "${_ch}" agg check; return ;;
+				*) tb_send "${_ch}" "Tap Agg ON / Agg OFF / Agg check." "$(KB_AGG)"; return ;;
+			esac
 			;;
 		zk)
 			case "${_tx}" in
