@@ -139,7 +139,7 @@ body.mobile-view #mainUi { padding-bottom:76px; }
 .log-info { color: #8b949e; }
 .log-ip { color: #58a6ff; }
 .timestamp { color: #484f58; margin-right: 8px; }
-.status-bar { display: flex; gap: 16px; align-items: center; margin-top: 8px; font-size: 12px; }
+.status-bar { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-top: 8px; font-size: 12px; }
 .status { color: #8b949e; }
 .status-ok { color: #3fb950; }
 .status-warn { color: #d29922; }
@@ -614,7 +614,7 @@ window.addEventListener('error', function(e){
   <span id="traceMsg" style="font-size:11px;color:#8b949e;"></span>
 </div>
 <div id="traceResults" style="display:none;margin:8px 0;padding:8px;background:#161b22;border:1px solid #30363d;border-radius:6px;">
-  <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#8b949e;margin-bottom:6px;cursor:pointer;">
+  <label style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;color:#8b949e;margin-bottom:6px;cursor:pointer;">
     <input type="checkbox" id="traceMaster" style="accent-color:#58a6ff;" onchange="traceMasterToggle(this)">
     Выделить все
     <span style="color:#8b949e;font-weight:normal;">— отметьте и выберите действие:</span>
@@ -2947,11 +2947,11 @@ function traceRowHtml(dom, opts) {
   if (opts.bg) badges = '<span style="background:#30363d;color:#8b949e;font-size:10px;padding:1px 6px;border-radius:3px;">фон</span>';
   else if (!opts.traffic) badges = '<span style="background:#30363d;color:#8b949e;font-size:10px;padding:1px 6px;border-radius:3px;">только DNS</span>';
   var dim = (opts.bg || !opts.traffic) ? 'opacity:0.55;' : '';
-  return '<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #21262d;' + dim + '">' +
+  return '<label style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #21262d;' + dim + '">' +
     '<input type="checkbox" class="traceCb" value="' + traceEsc(dom) + '" style="accent-color:#58a6ff;">' +
-    '<span style="color:#58a6ff;font-family:monospace;font-size:12px;flex:1;min-width:0;word-break:break-all;">' + traceEsc(dom) + '</span>' +
+    '<span style="color:#58a6ff;font-family:monospace;font-size:12px;flex:1 1 120px;min-width:0;word-break:break-all;">' + traceEsc(dom) + '</span>' +
     (badges ? '<span style="white-space:nowrap;">' + badges + '</span>' : '') +
-    '<span style="color:#8b949e;font-size:11px;white-space:nowrap;">×' + t.count + (devs ? ' · ' + traceEsc(devs) : '') + '</span></label>';
+    '<span style="color:#8b949e;font-size:11px;flex:0 1 auto;min-width:0;word-break:break-all;">×' + t.count + (devs ? ' · ' + traceEsc(devs) : '') + '</span></label>';
 }
 
 function traceRender() {
@@ -3075,9 +3075,9 @@ function traceTagFilter() {
   }
   var html = '';
   found.forEach(function(t){
-    html += '<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #21262d;cursor:pointer;">' +
+    html += '<label style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid #21262d;min-width:0;cursor:pointer;">' +
       '<input type="radio" name="traceTagPick" value="' + traceEsc(t.name || '') + '" style="accent-color:#58a6ff;" onchange="traceTagRadioChanged(this)">' +
-      '<span style="color:#58a6ff;font-family:monospace;font-size:12px;">[' + traceEsc(t.name || '') + ']</span>' +
+      '<span style="color:#58a6ff;font-family:monospace;font-size:12px;min-width:0;word-break:break-all;">[' + traceEsc(t.name || '') + ']</span>' +
       '<span style="color:#8b949e;font-size:11px;">' + (t.domains || []).length + ' доменов</span></label>';
   });
   el.innerHTML = html;
@@ -3548,7 +3548,7 @@ function routeGuestDel() {
 
 <!-- Modal: Edit Tag -->
 <div id="editTagOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:999;justify-content:center;align-items:center;">
-  <div style="background:#0d1117;color:#c9d1d9;border-radius:8px;padding:20px;width:90%;max-width:500px;max-height:80vh;display:flex;flex-direction:column;border:1px solid #30363d;">
+  <div style="background:#0d1117;color:#c9d1d9;border-radius:8px;padding:20px;width:90%;max-width:500px;min-width:0;max-height:80vh;display:flex;flex-direction:column;border:1px solid #30363d;">
     <h3 style="margin:0 0 12px 0;font-size:16px;color:#e6edf3;">Редактировать закваску</h3>
     <input type="text" id="editTagName" readonly style="width:100%;padding:6px;margin-bottom:8px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#c9d1d9;font-family:monospace;font-size:13px;">
     <textarea id="editTagDomains" placeholder="Домены (каждый с новой строки)" style="flex:1;min-height:200px;padding:6px;border:1px solid #30363d;border-radius:4px;background:#0d1117;color:#c9d1d9;font-family:monospace;font-size:13px;resize:vertical;"></textarea>
@@ -3560,12 +3560,12 @@ function routeGuestDel() {
 </div>
 
 <!-- Modal: Trace → Zakvaska -->
-<div id="traceTagOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:999;justify-content:center;align-items:center;">
-  <div style="background:#0d1117;color:#c9d1d9;border-radius:8px;padding:20px;width:90%;max-width:520px;max-height:85vh;display:flex;flex-direction:column;border:1px solid #30363d;">
+<div id="traceTagOverlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;overflow:hidden;background:rgba(0,0,0,0.7);z-index:999;justify-content:center;align-items:center;">
+  <div style="background:#0d1117;color:#c9d1d9;border-radius:8px;padding:20px;width:90%;max-width:520px;min-width:0;max-height:85vh;display:flex;flex-direction:column;border:1px solid #30363d;">
     <h3 style="margin:0 0 8px 0;font-size:16px;color:#e6edf3;">Добавить в закваску</h3>
-    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;">Выбрано доменов: <b id="traceTagCount" style="color:#58a6ff;">0</b>. Выберите существующую закваску или введите имя новой — она будет создана.</div>
-    <input type="text" id="traceTagSearch" placeholder="поиск: имя закваски или домен" oninput="traceTagFilter()" style="width:100%;padding:6px;margin-bottom:8px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#c9d1d9;font-family:monospace;font-size:12px;">
-    <div id="traceTagPickList" style="border:1px solid #30363d;border-radius:4px;max-height:180px;overflow-y:auto;background:#161b22;"></div>
+    <div style="font-size:12px;color:#8b949e;margin-bottom:10px;overflow-wrap:anywhere;">Выбрано доменов: <b id="traceTagCount" style="color:#58a6ff;">0</b>. Выберите существующую закваску или введите имя новой — она будет создана.</div>
+    <input type="text" id="traceTagSearch" placeholder="поиск: имя закваски или домен" oninput="traceTagFilter()" style="width:100%;min-width:0;padding:6px;margin-bottom:8px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#c9d1d9;font-family:monospace;font-size:12px;">
+    <div id="traceTagPickList" style="border:1px solid #30363d;border-radius:4px;max-height:180px;min-width:0;overflow-y:auto;background:#161b22;"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
       <span style="font-size:12px;color:#8b949e;white-space:nowrap;">или новая:</span>
       <input type="text" id="traceTagNew" placeholder="example.org" oninput="traceTagNewChanged()" style="flex:1;min-width:0;padding:6px;border:1px solid #30363d;border-radius:4px;background:#161b22;color:#c9d1d9;font-family:monospace;font-size:12px;">
