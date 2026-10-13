@@ -1,7 +1,7 @@
 # PRD: KVAS
 
-**Версия:** 1.1.9_beta-10-635
-**Дата:** 06.10.2026
+**Версия:** 1.1.9_beta-10-636
+**Дата:** 13.10.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
 **Оригинал:** https://github.com/qzeleza/kvas
@@ -18,7 +18,7 @@ VPN-клиент для Keenetic (aarch64, KeenOS 5.1.x) с поддержкой
 
 ```
 C:\Users\Pavel\kvas\backup_v546\            ← канонический снимок исходников (bin, etc, awg, hysteria)
-C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 635)
+C:\Users\Pavel\kvas\local_build\            ← SOT артефактов ipk (в т.ч. текущий 636)
 Docker builder: /tmp/kfix/opt/apps/kvas/    ← канон в контейнере (SOT + CONTROL версии)
 /home/me/kvas/opt/                          ← синхронизировано с kfix
 C:\Users\Pavel\kvas\archive\                ← старые скрипты/пакеты/источники (не SOT)
@@ -38,10 +38,10 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 ```
 
 - `/tmp/build.sh` устарел (целится в `/tmp/base312_build`) — использовать `ipkg-build` как выше.
-- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 630, 631, 632, 633, 634, **635** (текущий).
+- GitHub Release `v1.1.9` — единственное место, откуда `kvas upgrade` качает обновления. Upgrade берёт **старший номер** сборки: `sort -n | tail -1` по `beta-10-<N>`. Ассеты: …, 576, 600, …, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 630, 631, 632, 633, 634, 635, **636** (текущий).
 - Название/описание релиза на GitHub **не трогать** (пишет пользователь).
 
-## 4. Текущий статус (v635)
+## 4. Текущий статус (v636)
 
 | Компонент | Статус |
 |-----------|--------|
@@ -79,6 +79,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 | **Мобильный дропдаун устройств (v633): `.filters label` и `.filters select/input` получили `min-width:0; max-width:100%` (+`text-overflow:ellipsis` у select) — option вида `ip + длинное имя устройства` растягивал intrinsic-ширину `#filterDevice` до ширины содержимого и расширял мобильную страницу; flex-item label теперь жёстко ограничен шириной `.filters` | ✓ v633 (жалоба 632: «когда отмечаю устройство с длинным названием, дропдаун увеличивается и расширяет мобильный вид») |
 | **Агрегатор VLESS (v634): пул голых `vless://`-ссылок (`/opt/etc/kvas.aggregator`, по одной на строку, # - комментарий) с полным тестом каждого кандидата (apply → xray restart → socks-проба на 2ip.io/ifconfig.me через IP_FILTER): sticky-переключение на первый живой, 3 неудачи подряд → dead, dead перепроверяются каждые 30 мин (cron.15min/aggregator, гейт AGG_RECHECK_SEC=1800, общий lock), смерть активного → авто-сдвиг с TG-уведомлением, пул исчерпан → fallback на снапшот ручного конфига (`/opt/etc/xray/kvas.json.manual`) + TG; управление в трёх местах: Web UI (карточка «Aggregator VLESS» в «Управлении», on/check CGI идут в фон, лог `/opt/var/kvas/agg.last.log`), CLI `kvas aggregator status/list/add/del/on/off/check/set` (help-секция), Telegram (`/aggregator`, клавиши Agg ON/OFF/Check, строка в `/status`); state `/opt/var/kvas/aggregator.state` (ENABLED/ACTIVE/LASTCHECK/FAIL_n/DEAD_n), пул в backup (`kvas.aggregator`), whitelist TG-событий +`aggregator` (только авто-события) | ✓ v634 (запрос v633: агрегатор VLESS-ссылок; решения юзера: голые ссылки по одной на строку / полный тест через прокси / sticky первый живой / dead=3 + recheck 30 мин / fallback снапшот ручного + TG / управление UI+CLI+бот) |
 | **Горячий фикс агрегатора (v635): CGI-парсер `n` в `manage.sh`** — `apiBtn` дописывает `&token=` последним, а жадный `sed 's/.*n=//'` цеплялся за `n=` внутри `token=` и выдавал токен вместо номера сервера, поэтому Web UI при удалении/переключении отвечал `n required (1..pool)`; парсер в `agg_del|agg_set` и `agg_check` теперь привязан к `&n=` (`s/.*&n=//`), в test635 — регресс-тест парсера (в т.ч. воспроизведение ловушки на старом паттерне) | ✓ v635 (баг влит сразу после v634) |
+| **Failover v636: история = факты, порог возврата, настраиваемые адреса проверки + Web-управление** — (1) `record_switch` перенесён в конец фонового блока `switch_to` ПОСЛЕ успешного `kvas vpn set` (при rc≠0 — лог «переключение не удалось», история без записи): раньше писались намерения до факта и дубли при повторных чеках демона, пока активный интерфейс ещё не сменился (пары `awg→vless` через ровно 10с = sleep фонового блока); фоновый блок также сбрасывает оба счётчика. (2) Возврат на primary с резерва/второго резерва — по `FAIL_THRESHOLD` УСПЕХОВ подряд (`_fo_note_primary_ok`, счётчик `/tmp/kvas-failover-succcount`, симметрично уходу с primary; неудача пробы primary сбрасывает) — раньше одна удачная проба возвращала и при нестабильном primary получались флап-качели (история 30.09: 4 переключения за 3 мин). (3) `PROBE_URL1`/`PROBE_URL2` в `kvas.failover.conf` (дефолты 2ip.io/ifconfig.me, есть в init-шаблоне/load/save) — адреса проверки каналов; ответ валидируется на голый IP (`_fo_valid_ip`: IPv4-regex или `:` для IPv6, отсекает HTML/curl-мусор) во всех четырёх пробах (`check_vless`/`check_hysteria`/`check_awg`/`check_tun_interface`); CLI `kvas failover set probe1|probe2 <url>` (валидация http(s)://), валидация `set interval|threshold` (целое ≥1, без ведущих нулей) — раньше любая мусорная строка. (4) Web UI: в карточке Failover под каналами — «Интервал (сек)»/«Порог ошибок» инпуты, дропдауны «Проверка 1/2» из списка из 6 адресов (2ip.io, ifconfig.me, api.ipify.org, icanhazip.com, checkip.amazonaws.com, ipinfo.io/ip; текущее кастомное значение добавляется в список), кнопка «Применить настройки» → CGI `set_interval`/`set_threshold`/`set_probe1`/`set_probe2` (числовая валидация на CGI-стороне) → CLI; `failover_status` отдаёт `probe1`/`probe2`. Изм.: `libs/failover`, `libs/awg` (check_awg), `manage.sh`, `index.html`; PRD §9 переписан, §11 − строка про FAIL_THRESHOLD | ✓ v636 (жалобы на историю 29–30.09: дубли `awg→Kvas-proxy-awg` и `awg→vless`, флап-качели; запрос: адреса проверки + interval/threshold в Web UI) |
 | **Telegram P.8: уведомления (tg_notify + quiet hours)** | ✓ |
 | **Telegram P.8+: interactive bot (English ASCII menu)** | ✓ tested /menu v600–601 |
 | **Telegram: singleton бота + cron keepalive (tg_sender)** | ✓ |
@@ -92,7 +93,7 @@ gh release upload v1.1.9 "C:\Users\Pavel\kvas\kvas_1.1.9_beta-10-<НОМЕР>_al
 - **Меню:** English ASCII клавиатуры (`KB_MAIN` и др.): `Kvas.list|Tags` / `Tunnels|Diagnostics|Help` (v619: +Tunnels — выбор тоннеля из бота). Русская клавиатура в Telegram = sticky от старого ответа, пока не придёт новый reply_markup.
 - **Лог:** `/opt/var/kvas/tg_bot.log` (`START/PRE/POLL/NMSG/MSG/REPLY/SHOW/SEND/SEND_RC/CMD_DONE`).
 - **Критический баг v600:** в `case` busybox `|` — alternation, не литерал. `*|*` матчил всё → `${_rest#*|}` не двигал `_rest` → infinite loop в `tb_kb` (вис на `/menu`). Фикс: `*'|'*`.
-- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624/625/626/627/628/629/630/631/632/633/634/635 — рабочие. Следующий = **636**.
+- **Сожжённые номера:** 577/578/579/591 (упаковка postinst в data)/592 (баг бота)/603 (опечатка `${_ch}` вместо `${_tl_ch}` в tg_send_long)/607 (не чинил tunnel_check: `myip.addr.tools` не резолвился у пользователя, нужен `2ip.io` как в диагностике)/**612 (сломал основной список: dedup-счётчик в `ip4__add_routing_for_home` ловил строку `-j KVAS_MARK2` подстрокой `-j KVAS_MARK` → count=2 → цикл удалял прыжок lane1 br0)**. 608/609/610/611/613/614/615/616/617/618/619/620/621/622/623/624/625/626/627/628/629/630/631/632/633/634/635/636 — рабочие. Следующий = **637**.
 - **/status (v605):** полный вывод — build, туннель (friendly name + state: state-file → Keenetic API probe → `?`), dnsmasq, AdGuard (только при `ADGUARD_ENABLE=true`), Xray, Hysteria, AmneziaWG, failover (mode+daemon), hosts count, free /opt. Раньше была только `build` + `Tunnel: ?` из пустого `tg.tunnel.state`.
 - **Reload-watch fix (v606):** `upgTick` после релоада ждал `max(300, next-now)` = 300мс (next в прошлом) → `system_status` (opkg) не успевал вернуть новую версию → 10 релоадов подряд. Фикс: wait всегда 15с (`<5000 → 15000`, cap `15000`), стоп по смене версии успевает.
 - **Bot update check (v606):** бот сам дёргает `tg_check_kvas_update` из основного цикла (общий rate-limit `tg.updcheck.ts` 1/h с `tg_health`) — релиз объявится даже без cron.15min.
@@ -319,10 +320,13 @@ kvas xray [core [версия]]
 ## 9. Failover (фактическое поведение, libs/failover)
 
 - Демон проверяет PRIMARY/SECONDARY/TERTIARY каскадом (`run_failover_check`), при недоступности — `switch_to`.
-- `switch_to`: лок-файл, фоновый блок `{ sleep 10; kvas vpn set; restart failover } &`, затем `stop_failover_daemon; exit 0` — **это дизайн**: текущий процесс чека завершается, переключение и рестарт демона идут в фоне. Работает.
+- `switch_to`: лок-файл, фоновый блок `{ sleep 10; kvas vpn set; record_switch (при rc=0); сброс счётчиков; restart failover } &`, затем `stop_failover_daemon; exit 0` — **это дизайн**: текущий процесс чека завершается, переключение и рестарт демона идут в фоне. **v636:** история (`record_switch`) пишется ПОСЛЕ фактического применения (`vpn set` rc=0), а не до — иначе копились намерения и дубли при повторных чеках; при rc≠0 — лог без записи в историю.
 - Ручной `kvas vpn set` при включённом failover обновляет PRIMARY — демон не «откатывает» выбор.
 - Если активен интерфейс вне primary/secondary/tertiary — не трогает.
-- `FAIL_THRESHOLD` читается/сохраняется/выводится (`kvas failover set threshold N`), но **в логику `run_failover_check` не встроен** — переключение после первой неудачной проверки. Порог — заглушка/конфиг без эффекта.
+- `FAIL_THRESHOLD` (порог, `kvas failover set threshold N`, целое ≥1): **уход** с primary — после N неудачных проб подряд (`_fo_note_failure`); **возврат** на primary с secondary/tertiary — после N УСПЕХОВ подряд (`_fo_note_primary_ok`, v636; раньше возврат шёл по одной удачной пробе → флап-качели). Счётчики: `/tmp/kvas-failover-failcount` и `/tmp/kvas-failover-succcount`; успех активного канала сбрасывает оба, неудача пробы primary на резерве — succ; после переключения оба сбрасываются фоновым блоком.
+- **Адреса проверки** (`PROBE_URL1`/`PROBE_URL2` в `kvas.failover.conf`, дефолты `https://2ip.io` / `https://ifconfig.me`): curl через socks канала (vless :1097 / hysteria|awg из env) или `--interface` для нативных TUN; ответ валидируется `_fo_valid_ip` на голый IP (IPv4-regex/IPv6-`:`), HTML/curl-мусор = неудача. CLI: `set probe1|probe2 <url>` (только http(s)://).
+- `CHECK_INTERVAL` (сек, целое ≥1, CLI `set interval N`) — пауза между циклами чека.
+- Web UI + CGI: `set_interval`/`set_threshold`/`set_probe1`/`set_probe2` (та же CLI-валидация), `failover_status` отдаёт interval/threshold/probe1/probe2; дропдауны адресов проверки (6 пресетов).
 
 ## 10. Web UI
 
@@ -330,7 +334,7 @@ kvas xray [core [версия]]
 - Auth: `auth` (пароль → md5 → token), далее `check_token` на большинстве endpoints.
 - `set_pass` / `auth` — **без** check_token (осознанно: это вход/установка пароля; LAN-only, по решению пользователя).
 - POST body (upload backup): handler в httpd.sh → `KVAS_POST_BODY`.
-- Карточки: статус системы, VPN (vless/hysteria/awg), failover dropdowns, adblock, parental, закваски, route, диагностика (test/debug/логи), Xray core, upgrade/rollback, backup download/restore upload.
+- Карточки: статус системы, VPN (vless/hysteria/awg), failover (каналы + с v636 интервал/порог/адреса проверки), adblock, parental, закваски, route, диагностика (test/debug/логи), Xray core, upgrade/rollback, backup download/restore upload.
 
 ## 11. Известные особенности (не блокеры)
 
@@ -338,7 +342,6 @@ kvas xray [core [версия]]
 
 | Что | Факт |
 |-----|------|
-| `FAIL_THRESHOLD` | не влияет на логику switch (см. §9) |
 | `&>` (bashism) | ~233 вхождения (vpn:106, check:22, setup:20...); на целевом busybox/ash роутера работает |
 | `set_pass` без токена | SKIP by design (LAN) |
 | `rm_tmp_cache` (upgrade:119) | `find / \| grep '/tmp' \| grep kvas \| xargs rm -rf` — грубо, но фильтруется по kvas; чистит tmp перед установкой |

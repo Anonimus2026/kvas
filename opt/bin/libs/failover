@@ -25,6 +25,8 @@ PRIMARY=vless
 SECONDARY=hysteria
 CHECK_INTERVAL=30
 FAIL_THRESHOLD=2
+PROBE_URL1=https://2ip.io
+PROBE_URL2=https://ifconfig.me
 AUTO_START=yes
 EOF
     fi
@@ -57,9 +59,17 @@ load_failover_conf() {
     CHECK_INTERVAL=$(grep "^CHECK_INTERVAL=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
     FAIL_THRESHOLD=$(grep "^FAIL_THRESHOLD=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
     AUTO_START=$(grep "^AUTO_START=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    # v636: адреса проверки каналов (голый IP в ответе); дефолты — если в conf нет
+    PROBE_URL1=$(grep "^PROBE_URL1=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    PROBE_URL2=$(grep "^PROBE_URL2=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+    [ -z "$PROBE_URL1" ] && PROBE_URL1="https://2ip.io"
+    [ -z "$PROBE_URL2" ] && PROBE_URL2="https://ifconfig.me"
     PRIMARY=$(_fo_canon "$PRIMARY")
     SECONDARY=$(_fo_canon "$SECONDARY")
     TERTIARY=$(_fo_canon "$TERTIARY")
+    # conf мог быть записан старой версией (TERTIARY=desc=PRIMARY) — чистим на чтении
+    [ "$TERTIARY" = "$PRIMARY" ] && TERTIARY=""
+    [ "$TERTIARY" = "$SECONDARY" ] && TERTIARY=""
 }
 
 save_failover_conf() {
@@ -79,6 +89,8 @@ SECONDARY=${SECONDARY:-manual}
 TERTIARY=${TERTIARY:-}
 CHECK_INTERVAL=${CHECK_INTERVAL:-15}
 FAIL_THRESHOLD=${FAIL_THRESHOLD:-2}
+PROBE_URL1=${PROBE_URL1:-https://2ip.io}
+PROBE_URL2=${PROBE_URL2:-https://ifconfig.me}
 AUTO_START=${AUTO_START:-yes}
 EOF
 }
@@ -271,13 +283,25 @@ get_active_iface() {
     echo "none"
 }
 
+# v636: ответ проверки должен быть голым IP (IPv4/IPv6), а не HTML/ошибкой curl.
+# IPv6 — только hex+двоеточия (мин. 2): текст вида "curl: (7) Failed" отсекается.
+_fo_valid_ip() {
+    [ -n "$1" ] || return 1
+    echo "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' && return 0
+    case "$1" in
+        *[!0-9a-fA-F:]*|*' '*|*'<'*) return 1 ;;
+    esac
+    local _cc=$(echo "$1" | tr -cd ':' | wc -c)
+    [ "$_cc" -ge 2 ] 2>/dev/null
+}
+
 # Проверка vless через socks5
 check_vless() {
-    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://127.0.0.1:1097" "https://2ip.io" 2>/dev/null)
-    if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
-        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://127.0.0.1:1097" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
+    if ! _fo_valid_ip "$test_ip"; then
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://127.0.0.1:1097" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
     fi
-    if [ -n "$test_ip" ] && ! echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+    if _fo_valid_ip "$test_ip"; then
         VLESS_IP="$test_ip"
         return 0
     fi
@@ -290,11 +314,11 @@ check_hysteria() {
     [ -f "$env_conf" ] || return 1
     . "$env_conf"
     [ -z "$PROXY_LOCAL_IP" ] || [ -z "$PROXY_LOCAL_PORT_SOCKS" ] && return 1
-    local test_ip=$(curl -s --connect-timeout 6 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://2ip.io" 2>/dev/null)
-    if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
-        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
+    local test_ip=$(curl -s --connect-timeout 6 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
+    if ! _fo_valid_ip "$test_ip"; then
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
     fi
-    if [ -n "$test_ip" ] && ! echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+    if _fo_valid_ip "$test_ip"; then
         HYSTERIA_IP="$test_ip"
         return 0
     fi
@@ -305,11 +329,11 @@ check_hysteria() {
 check_tun_interface() {
     local ent="$1"
     [ -z "$ent" ] && return 1
-    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 --interface "$ent" "https://2ip.io" 2>/dev/null)
-    if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
-        test_ip=$(curl -s --connect-timeout 10 --max-time 20 --interface "$ent" "https://ifconfig.me" 2>/dev/null)
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 --interface "$ent" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
+    if ! _fo_valid_ip "$test_ip"; then
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 --interface "$ent" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
     fi
-    if [ -n "$test_ip" ] && ! echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+    if _fo_valid_ip "$test_ip"; then
         TUN_IP="$test_ip"
         return 0
     fi
@@ -360,13 +384,22 @@ switch_to() {
     fi
     
     log_failover "Переключение на $proto..."
-    record_switch "$from" "$proto" "auto"
     date +%s > "$lockfile"
     
+    # v636: история переключений пишется ПОСЛЕ факта (успешный vpn set),
+    # а не до — иначе в истории копились намерения и дубли при повторных
+    # чеках демона, пока активный интерфейс ещё не сменился.
     {
         sleep 10
-        /opt/apps/kvas/bin/kvas vpn set "$proto"
+        /opt/apps/kvas/bin/kvas vpn set "$proto" >> /opt/var/log/kvas-failover.log 2>&1
+        _fo_sw_rc=$?
+        if [ "$_fo_sw_rc" -eq 0 ]; then
+            record_switch "$from" "$proto" "auto"
+        else
+            log_failover "Переключение на $proto не удалось (vpn set rc=${_fo_sw_rc}) — остаёмся на $from"
+        fi
         rm -f "$lockfile"
+        rm -f "$FAILOVER_FAIL_COUNT_FILE" "$FAILOVER_SUCC_COUNT_FILE"
         if [ -f "$FAILOVER_FLAG" ]; then
             /opt/apps/kvas/bin/kvas failover start >> /opt/var/log/kvas-failover.log 2>&1
         fi
@@ -425,9 +458,46 @@ _fo_threshold_reached() {
     [ "$n" -ge "$thr" ] 2>/dev/null
 }
 
-# Вызывается при УСПЕШНОЙ проверке активного канала — сбрасывает счётчик
+# Вызывается при УСПЕШНОЙ проверке активного канала — сбрасывает счётчики
 _fo_note_success() {
     _fo_reset_fail_count
+    _fo_reset_succ_count
+}
+
+# Счётчик УСПЕХОВ проверки primary, когда активен резерв (для возврата).
+# v636: возврат на primary — по FAIL_THRESHOLD успешных проверок подряд,
+# симметрично уходу с primary (раньше возврат шёл по одной удачной пробе
+# и при нестабильном primary получались флап-качели).
+FAILOVER_SUCC_COUNT_FILE="/tmp/kvas-failover-succcount"
+
+_fo_get_succ_count() {
+    cat "$FAILOVER_SUCC_COUNT_FILE" 2>/dev/null || echo 0
+}
+
+_fo_set_succ_count() {
+    echo "$1" > "$FAILOVER_SUCC_COUNT_FILE" 2>/dev/null
+}
+
+_fo_reset_succ_count() {
+    rm -f "$FAILOVER_SUCC_COUNT_FILE" 2>/dev/null
+}
+
+# Возвращает 0 только когда набран порог успехов подряд — пора возвращаться
+_fo_note_primary_ok() {
+    local thr="${FAIL_THRESHOLD:-2}"
+    local n=$(_fo_get_succ_count)
+    n=$((n + 1))
+    _fo_set_succ_count "$n"
+    if [ "$thr" -le 1 ] 2>/dev/null; then
+        log_failover "Порог возврата=1 — возвращаемся сразу (успех #$n)"
+        return 0
+    fi
+    if [ "$n" -ge "$thr" ] 2>/dev/null; then
+        log_failover "Порог возврата достигнут ($n/$thr) — возвращаемся на primary"
+        return 0
+    fi
+    log_failover "PRIMARY отвечает ($n/$thr) — подтверждаем возврат"
+    return 1
 }
 
 # Вызывается при НЕУДАЧНОЙ проверке — инкрементирует, логирует
@@ -489,9 +559,13 @@ run_failover_check() {
     if [ "$active" = "$secondary" ]; then
         log_failover "Обнаружен $secondary. Проверяем $PRIMARY..."
         if check_protocol "$PRIMARY"; then
-            log_failover "$PRIMARY восстановлен. Возврат."
-            switch_to "$PRIMARY"
+            # v636: возврат по порогу успехов подряд (FAIL_THRESHOLD)
+            if _fo_note_primary_ok; then
+                log_failover "$PRIMARY восстановлен. Возврат."
+                switch_to "$PRIMARY"
+            fi
         else
+            _fo_reset_succ_count
             log_failover "$PRIMARY всё ещё недоступен."
         fi
         return 0
@@ -501,13 +575,19 @@ run_failover_check() {
     if [ -n "$tertiary" ] && [ "$active" = "$tertiary" ]; then
         log_failover "Активен $tertiary (второй резерв). Проверяем выше..."
         if check_protocol "$PRIMARY"; then
-            log_failover "$PRIMARY восстановлен. Возврат."
-            switch_to "$PRIMARY"
-        elif [ "$secondary" != "manual" ] && check_protocol "$secondary"; then
-            log_failover "$secondary восстановлен. Переключение."
-            switch_to "$secondary"
+            # v636: возврат по порогу успехов подряд (FAIL_THRESHOLD)
+            if _fo_note_primary_ok; then
+                log_failover "$PRIMARY восстановлен. Возврат."
+                switch_to "$PRIMARY"
+            fi
         else
-            log_failover "Остаёмся на $tertiary."
+            _fo_reset_succ_count
+            if [ "$secondary" != "manual" ] && check_protocol "$secondary"; then
+                log_failover "$secondary восстановлен. Переключение."
+                switch_to "$secondary"
+            else
+                log_failover "Остаёмся на $tertiary."
+            fi
         fi
         return 0
     fi
@@ -564,6 +644,8 @@ show_failover_status() {
     [ -n "$TERTIARY" ] && echo "Второй резерв: $TERTIARY"
     echo "Интервал: $CHECK_INTERVAL сек"
     echo "Порог: $FAIL_THRESHOLD"
+    echo "Адрес проверки 1: $PROBE_URL1"
+    echo "Адрес проверки 2: $PROBE_URL2"
     echo ""
     
     local active=$(get_active_iface)
@@ -727,19 +809,48 @@ cmd_failover() {
                     echo "Второй резерв: $TERTIARY"
                     ;;
                 interval)
+                    case "${3}" in
+                        ''|*[!0-9]*|0*)
+                            echo "Интервал: целое число секунд >= 1"
+                            return 1
+                            ;;
+                    esac
                     load_failover_conf
-                    CHECK_INTERVAL="${3:-15}"
+                    CHECK_INTERVAL="${3}"
                     save_failover_conf
                     echo "Интервал: $CHECK_INTERVAL сек"
                     ;;
                 threshold)
+                    case "${3}" in
+                        ''|*[!0-9]*|0*)
+                            echo "Порог: целое число >= 1"
+                            return 1
+                            ;;
+                    esac
                     load_failover_conf
-                    FAIL_THRESHOLD="${3:-2}"
+                    FAIL_THRESHOLD="${3}"
                     save_failover_conf
                     echo "Порог: $FAIL_THRESHOLD"
                     ;;
+                probe1|probe2)
+                    case "${3}" in
+                        http://*|https://*) ;;
+                        *)
+                            echo "Адрес проверки должен начинаться с http:// или https://"
+                            return 1
+                            ;;
+                    esac
+                    load_failover_conf
+                    if [ "${2}" = "probe1" ]; then
+                        PROBE_URL1="${3}"
+                    else
+                        PROBE_URL2="${3}"
+                    fi
+                    save_failover_conf
+                    echo "Адрес проверки ${2#probe}: ${3}"
+                    ;;
                 *)
-                    echo "Использование: kvas failover set {primary|secondary|interval|threshold} [значение]"
+                    echo "Использование: kvas failover set {primary|secondary|interval|threshold|probe1|probe2} [значение]"
                     ;;
             esac
             ;;
@@ -779,8 +890,10 @@ cmd_failover() {
             echo "  secondary <name>      - резервный канал (vless|hysteria|<interface>)"
             echo "  set primary <name>    - установить основной"
             echo "  set secondary <name>  - установить резервный"
-            echo "  set interval <N>      - интервал (сек)"
-            echo "  set threshold <N>     - порог ошибок"
+            echo "  set interval <N>      - интервал (сек, >= 1)"
+            echo "  set threshold <N>     - порог ошибок/успехов (>= 1)"
+            echo "  set probe1 <url>      - адрес проверки 1 (должен отдавать голый IP)"
+            echo "  set probe2 <url>      - адрес проверки 2 (фолбэк)"
             echo "  log [N]               - последние N записей"
             echo "  test                  - тест каналов"
             ;;

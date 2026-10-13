@@ -342,6 +342,25 @@ window.addEventListener('error', function(e){
         <select id="foTertiary" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;"></select>
       </div>
       <button class="btn btn-sm" onclick="saveFailoverChannels(this)" style="margin-top:4px;">Применить</button>
+      <div style="margin-top:8px;padding-top:6px;border-top:1px solid #21262d;">
+        <div class="card-row" style="gap:6px;margin-bottom:4px;">
+          <label style="font-size:12px;min-width:90px;">Интервал (сек):</label>
+          <input id="foInterval" type="number" min="1" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
+        </div>
+        <div class="card-row" style="gap:6px;margin-bottom:4px;">
+          <label style="font-size:12px;min-width:90px;">Порог ошибок:</label>
+          <input id="foThreshold" type="number" min="1" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
+        </div>
+        <div class="card-row" style="gap:6px;margin-bottom:4px;">
+          <label style="font-size:12px;min-width:90px;">Проверка 1:</label>
+          <select id="foProbe1" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;"></select>
+        </div>
+        <div class="card-row" style="gap:6px;margin-bottom:4px;">
+          <label style="font-size:12px;min-width:90px;">Проверка 2:</label>
+          <select id="foProbe2" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;"></select>
+        </div>
+        <button class="btn btn-sm" onclick="saveFailoverSettings(this)">Применить настройки</button>
+      </div>
     </div>
     <div id="foInfo" style="font-size:12px;color:#8b949e;margin-top:6px;"></div>
     <div id="foMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:200px;overflow-y:auto;"></div>
@@ -1996,6 +2015,12 @@ function loadFailoverStatus() {
     
     channelsDiv.style.display = 'block';
     
+    // v636: интервал/порог/адреса проверки
+    document.getElementById('foInterval').value = d.interval || 30;
+    document.getElementById('foThreshold').value = d.threshold || 2;
+    fillProbeSelect('foProbe1', d.probe1);
+    fillProbeSelect('foProbe2', d.probe2);
+    
     if (d.enabled === 'manual') {
       el.innerHTML = '<span style="color:#f85149;">Выключено</span>';
     } else {
@@ -2004,6 +2029,48 @@ function loadFailoverStatus() {
       html += '<b>Интервал:</b> ' + (d.interval || '?') + 'с';
       el.innerHTML = html;
     }
+  });
+}
+
+// v636: адреса проверки каналов (должны отдавать голый IP)
+var FO_PROBES = ['https://2ip.io','https://ifconfig.me','https://api.ipify.org','https://icanhazip.com','https://checkip.amazonaws.com','https://ipinfo.io/ip'];
+
+function fillProbeSelect(id, cur) {
+  var sel = document.getElementById(id);
+  if (!sel) return;
+  sel.innerHTML = '';
+  var list = FO_PROBES.slice();
+  if (cur && list.indexOf(cur) === -1) list.unshift(cur);
+  list.forEach(function(u){
+    var o = document.createElement('option'); o.value = u; o.textContent = u;
+    if (u === cur) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+
+function saveFailoverSettings(btn) {
+  var iv = document.getElementById('foInterval').value;
+  var th = document.getElementById('foThreshold').value;
+  var p1 = document.getElementById('foProbe1').value;
+  var p2 = document.getElementById('foProbe2').value;
+  var msgEl = document.getElementById('foMsg');
+  if (!/^[1-9][0-9]*$/.test(iv)) { msgEl.className = 'msg'; msgEl.textContent = 'Интервал: целое число секунд >= 1'; return; }
+  if (!/^[1-9][0-9]*$/.test(th)) { msgEl.className = 'msg'; msgEl.textContent = 'Порог: целое число >= 1'; return; }
+  var base = '/cgi-bin/manage.sh?action=failover&';
+  apiBtn(base + 'cmd=set_interval&val=' + encodeURIComponent(iv), btn, function(d1){
+    if (!d1.ok) { msgEl.textContent = d1.error; return; }
+    apiBtn(base + 'cmd=set_threshold&val=' + encodeURIComponent(th), btn, function(d2){
+      if (!d2.ok) { msgEl.textContent = d2.error; return; }
+      apiBtn(base + 'cmd=set_probe1&val=' + encodeURIComponent(p1), btn, function(d3){
+        if (!d3.ok) { msgEl.textContent = d3.error; return; }
+        apiBtn(base + 'cmd=set_probe2&val=' + encodeURIComponent(p2), btn, function(d4){
+          if (!d4.ok) { msgEl.textContent = d4.error; return; }
+          msgEl.className = 'msg ok';
+          msgEl.textContent = 'Настройки сохранены: интервал ' + iv + 'с, порог ' + th + ', проверка ' + p1 + ' / ' + p2;
+          loadFailoverStatus();
+        });
+      });
+    });
   });
 }
 

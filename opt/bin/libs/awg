@@ -500,11 +500,12 @@ check_awg() {
     # порт/адрес socks берём из env wireproxy (как check_hysteria для hysteria)
     [ -f "$AWG_ENV" ] && . "$AWG_ENV" 2>/dev/null
     [ -z "$PROXY_LOCAL_IP" ] || [ -z "$PROXY_LOCAL_PORT_SOCKS" ] && return 1
-    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://2ip.io" 2>/dev/null)
-    if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
-        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
+    # v636: PROBE_URL1/2 из kvas.failover.conf + валидация ответа на голый IP
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
+    if ! _fo_valid_ip "$test_ip"; then
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
     fi
-    if [ -n "$test_ip" ] && ! echo "$test_ip" | grep -q -E "(Failed|Error|404)"; then
+    if _fo_valid_ip "$test_ip"; then
         AWG_IP="$test_ip"
         return 0
     fi

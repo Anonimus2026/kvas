@@ -691,12 +691,18 @@ main() {
 			secondary=""
 			interval=15
 			threshold=2
+			probe1="https://2ip.io"
+			probe2="https://ifconfig.me"
 			if [ -f "$FAILOVER_CONF" ]; then
 				primary=$(grep "^PRIMARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
 				secondary=$(grep "^SECONDARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
 				tertiary=$(grep "^TERTIARY=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
 				interval=$(grep "^CHECK_INTERVAL=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
 				threshold=$(grep "^FAIL_THRESHOLD=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2)
+				_probe1=$(grep "^PROBE_URL1=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+				_probe2=$(grep "^PROBE_URL2=" "$FAILOVER_CONF" 2>/dev/null | cut -d= -f2-)
+				[ -n "$_probe1" ] && probe1="$_probe1"
+				[ -n "$_probe2" ] && probe2="$_probe2"
 			fi
 			[ -z "$primary" ] && primary="-"
 			[ -z "$secondary" ] && secondary="-"
@@ -709,8 +715,8 @@ main() {
 			if [ -f /opt/apps/kvas/bin/libs/failover ]; then
 				_avail=$(. /opt/apps/kvas/bin/libs/failover 2>/dev/null; get_available_channels 2>/dev/null)
 			fi
-			printf '{"ok":true,"enabled":"%s","primary":"%s","secondary":"%s","tertiary":"%s","interval":"%s","threshold":"%s","daemon":"%s","available":"%s"}\n' \
-				"$(json_str "$failover_mode")" "$(json_str "$primary")" "$(json_str "$secondary")" "$(json_str "$tertiary")" "$interval" "$threshold" "$daemon_running" "$(json_str "$_avail")"
+			printf '{"ok":true,"enabled":"%s","primary":"%s","secondary":"%s","tertiary":"%s","interval":"%s","threshold":"%s","probe1":"%s","probe2":"%s","daemon":"%s","available":"%s"}\n' \
+				"$(json_str "$failover_mode")" "$(json_str "$primary")" "$(json_str "$secondary")" "$(json_str "$tertiary")" "$interval" "$threshold" "$(json_str "$probe1")" "$(json_str "$probe2")" "$daemon_running" "$(json_str "$_avail")"
 			;;
 			failover)
 			check_token "$token"
@@ -744,6 +750,33 @@ main() {
 					out=$($KVAS_BIN failover set tertiary "$_val" 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
 					json_ok "$out"
 					;;
+				set_interval)
+					_val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
+					case "$_val" in
+						''|*[!0-9]*|0*) json_error "interval must be an integer >= 1 (seconds)" ;;
+					esac
+					out=$($KVAS_BIN failover set interval "$_val" 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
+					json_ok "$out"
+					;;
+				set_threshold)
+					_val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
+					case "$_val" in
+						''|*[!0-9]*|0*) json_error "threshold must be an integer >= 1" ;;
+					esac
+					out=$($KVAS_BIN failover set threshold "$_val" 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
+					json_ok "$out"
+					;;
+				set_probe1|set_probe2)
+					_val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
+					_val=$(echo "$_val" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
+					case "$_val" in
+						http://*|https://*) ;;
+						*) json_error "probe url must start with http:// or https://" ;;
+					esac
+					_pnum="${cmd#set_probe}"
+					out=$($KVAS_BIN failover set "probe${_pnum}" "$_val" 2>&1 | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
+					json_ok "$out"
+					;;
 				history)
 					_hf=/opt/var/log/kvas-failover-history.log
 					[ ! -f "$_hf" ] && echo '{"ok":true,"items":[]}' && exit 0
@@ -751,7 +784,7 @@ main() {
 					{ gsub(/\r/,""); if($0=="")next; if(!f)printf ","; f=0; n=split($0,a,"|"); gsub(/\\/,"\\\\",a[1]); gsub(/"/,"\\\"",a[1]); gsub(/\\/,"\\\\",a[2]); gsub(/"/,"\\\"",a[2]); gsub(/\\/,"\\\\",a[3]); gsub(/"/,"\\\"",a[3]); gsub(/\\/,"\\\\",a[4]); gsub(/"/,"\\\"",a[4]); printf "{\"t\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"reason\":\"%s\"}", a[1],a[2],a[3],a[4] }
 					END{printf "]}\n"}' "$_hf" | tail -c 8000
 					;;
-				*) json_error "cmd must be on/off/status/set_primary/set_secondary/set_tertiary/history" ;;
+				*) json_error "cmd must be on/off/status/set_primary/set_secondary/set_tertiary/set_interval/set_threshold/set_probe1/set_probe2/history" ;;
 			esac
 			;;
 		xray_status)
