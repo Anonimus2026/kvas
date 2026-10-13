@@ -1239,13 +1239,18 @@ main() {
 					val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
 					_conf=/opt/etc/opkg.conf
 					[ -f "$_conf" ] || json_error "no /opt/etc/opkg.conf"
+					# v638: зеркало только по http — busybox wget на Keenetic собран без SSL
+					# и отказывается качать https:// («wget: not an http or ftp url»)
 					case "$val" in
 						nju)
-							sed -i 's|http://bin\.entware\.net|https://mirrors.nju.edu.cn/entware|g' "$_conf"
-							sed -i 's|http://pkg\.entware\.net|https://mirrors.nju.edu.cn/entware|g' "$_conf"
+							sed -i 's|http://bin\.entware\.net|http://mirrors.nju.edu.cn/entware|g' "$_conf"
+							sed -i 's|http://pkg\.entware\.net|http://mirrors.nju.edu.cn/entware|g' "$_conf"
+							# уже переключённый https → конвертируем в рабочий http
+							sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://mirrors.nju.edu.cn/entware|g' "$_conf"
 							;;
 						official)
 							sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "$_conf"
+							sed -i 's|http://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "$_conf"
 							;;
 						*) json_error "val must be nju|official" ;;
 					esac
