@@ -269,6 +269,20 @@ window.addEventListener('error', function(e){
     </div>
   </div>
 
+  <!-- Entware repo (v637) -->
+  <div class="card">
+    <h3>Репозиторий Entware</h3>
+    <div class="card-row"><label>Источник:</label><span class="value" id="ewMirror">-</span></div>
+    <div class="card-row"><label>opkg lock:</label><span class="value" id="ewLock">-</span></div>
+    <div class="card-row" style="gap:6px;flex-wrap:wrap;">
+      <button class="btn btn-sm success" onclick="ewSet('nju',this)">Зеркало (nju)</button>
+      <button class="btn btn-sm" onclick="ewSet('official',this)">Официальный</button>
+      <button class="btn btn-sm danger" onclick="ewLockClear(this)">Снять lock</button>
+      <button class="btn btn-sm" onclick="loadEntware()">Обновить</button>
+    </div>
+    <div id="ewMsg" class="msg" style="max-height:80px;overflow-y:auto;"></div>
+  </div>
+
   <!-- Health -->
   <div class="card">
     <h3>Состояние сервисов</h3>
@@ -359,7 +373,7 @@ window.addEventListener('error', function(e){
           <label style="font-size:12px;min-width:90px;">Проверка 2:</label>
           <select id="foProbe2" style="flex:1;padding:4px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;"></select>
         </div>
-        <button class="btn btn-sm" onclick="saveFailoverSettings(this)">Применить настройки</button>
+        <button class="btn btn-sm success" onclick="saveFailoverSettings(this)">Применить настройки</button>
       </div>
     </div>
     <div id="foInfo" style="font-size:12px;color:#8b949e;margin-top:6px;"></div>
@@ -707,6 +721,7 @@ window.addEventListener('error', function(e){
     <button class="btn btn-sm" onclick="loadKvasLog('error')">Ошибки</button>
     <button class="btn btn-sm" onclick="loadKvasLog('info')">Квас</button>
     <button class="btn btn-sm" onclick="loadKvasLog('syslog')">Система</button>
+    <button class="btn btn-sm" onclick="loadKvasLog('upgrade')">Обновление</button>
     <button class="btn btn-sm" onclick="clearKvasLog(this)">Очистить лог ошибок</button>
   </div>
   <pre id="logOutput" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;max-height:400px;overflow-y:auto;font-size:11px;color:#c9d1d9;font-family:monospace;white-space:pre-wrap;margin-top:8px;"><span style="color:#8b949e;">Выберите тип лога...</span></pre>
@@ -880,6 +895,7 @@ function showMain() {
   awgModeLoad();
   loadFailoverStatus();
   loadAgg();
+  loadEntware();
   loadTunnelTestInterfaces();
   loadTags();
   fetchDevices();
@@ -2214,6 +2230,36 @@ function clearKvasLog(btn) {
     } else {
       el.textContent = 'Ошибка: ' + (d.error || 'неизвестная');
     }
+  });
+}
+
+/* ========== ENTWARE REPO (v637) ========== */
+function loadEntware() {
+  api('/cgi-bin/manage.sh?action=opkg&cmd=mirror_status', function(d){
+    if (!d.ok) return;
+    var m = {nju:'зеркало nju', official:'официальный', custom:'другой'};
+    document.getElementById('ewMirror').textContent = (m[d.mirror] || d.mirror || '-') + (d.src ? ' (' + d.src + ')' : '');
+    var lk = document.getElementById('ewLock');
+    if (d.lock === 'busy') { lk.innerHTML = '<span style="color:#f85149;">занят (pid: ' + (d.lock_pids || '?') + ')</span>'; }
+    else { lk.innerHTML = '<span style="color:#3fb950;">свободен</span>'; }
+  });
+}
+function ewSet(val, btn) {
+  var msgEl = document.getElementById('ewMsg');
+  var label = (val === 'nju') ? 'Зеркало nju' : 'Официальный репозиторий';
+  apiBtn('/cgi-bin/manage.sh?action=opkg&cmd=mirror_set&val=' + val, btn, function(d){
+    msgEl.className = d.ok ? 'msg ok' : 'msg err';
+    msgEl.textContent = d.ok ? (d.msg || (label + ': готово')) : (d.error || 'Ошибка');
+    loadEntware();
+  });
+}
+function ewLockClear(btn) {
+  if (!confirm('Убить зависшие процессы opkg и снять lock?')) return;
+  var msgEl = document.getElementById('ewMsg');
+  apiBtn('/cgi-bin/manage.sh?action=opkg&cmd=lock_clear', btn, function(d){
+    msgEl.className = d.ok ? 'msg ok' : 'msg err';
+    msgEl.textContent = d.ok ? (d.msg || 'Lock снят') : (d.error || 'Ошибка');
+    loadEntware();
   });
 }
 

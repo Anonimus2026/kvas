@@ -310,10 +310,15 @@ cd /opt && mkdir -p /opt/packages || {
 print_line
 
 #--------------------------------------------------------------------------------------------------------------
+# v637: лог обновления — туда пишется вывод opkg (причина падения установки больше не «в никуда»)
+UPG_LOG=/opt/var/log/kvas-upgrade.log
+_upg_log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$UPG_LOG" 2>/dev/null; }
+_upg_log "=== upgrade start: ${package_name:-?} ==="
 ready 'Обновляем библиотеку пакетов opkg...'
 {
-	opkg update
-} &>/dev/null && when_ok || when_err
+	# таймаут: мёртвый/недоступный feed не должен висеть бесконечно и держать opkg lock
+	if command -v timeout >/dev/null 2>&1; then timeout 45 opkg update; else opkg update; fi
+} >>"$UPG_LOG" 2>&1 && when_ok || when_err
 
 # удаляем nano, чтобы поставить nano-full
 remove_nano
@@ -349,21 +354,43 @@ _upg_awg_env=/tmp/.kvas_upg_awg_env.$$
 cp -f /opt/apps/kvas/awg/etc/conf/env.sh "$_upg_awg_env" 2>/dev/null
 
 #--------------------------------------------------------------------------------------------------------------
+# v637: ждём снятия opkg lock (до 60с) — недоступный feed держал lock и install падал
+# с «Could not lock» без объяснений; кнопка «Снять lock» есть в Web UI (Репозиторий Entware)
+_upg_wait=0
+while [ -f /opt/tmp/opkg.lock ] && [ "${_upg_wait}" -lt 60 ]; do
+	sleep 5
+	_upg_wait=$((_upg_wait + 5))
+	_upg_log "waiting opkg lock (${_upg_wait}s)..."
+done
+if [ -f /opt/tmp/opkg.lock ]; then
+	_upg_log "opkg lock still busy after 60s - install aborted"
+	print_error "opkg занят (lock /opt/tmp/opkg.lock не снят за 60с)."
+	echo -e "Снимите в Web UI: ${BLUE}Репозиторий Entware -> Снять lock${NOCL}, затем повторите обновление."
+	tg_notify upgrade "Ошибка обновления: занят opkg lock"
+	exit 1
+fi
+
+#--------------------------------------------------------------------------------------------------------------
 # обновление: opkg-reinstall поверх (конфиги /opt/etc сохраняются — без потери настроек)
 if [ -f /opt/bin/kvas ] && kvas 2>/dev/null | grep -q "Настройка пакета не завершена" ; then
 	ready "Удаляем незавершенную ранее установку пакета ..."
 	kvas uninstall "${remove_mode}" yes &>/dev/null && when_ok || when_err
 	ready "Устанавливаем новую версию пакета [${version}]..."
-	{
-		opkg update &> /dev/null
-		opkg install --force-reinstall "/opt/packages/${package_name}"
-	} &>/dev/null && when_ok || { when_err; _tg_upg_fail=1; }
 else
 	ready "Обновляем пакет до версии [${version}] (поверх, без удаления)..."
-	{
-		opkg update &> /dev/null
-		opkg install --force-reinstall "/opt/packages/${package_name}"
-	} &>/dev/null && when_ok || { when_err; _tg_upg_fail=1; }
+fi
+# v637: вывод opkg идёт в UPG_LOG (смотрится в Web UI: Диагностика -> Логи -> Обновление)
+_upg_log "install start ${package_name}"
+if command -v timeout >/dev/null 2>&1; then timeout 45 opkg update >>"$UPG_LOG" 2>&1; else opkg update >>"$UPG_LOG" 2>&1; fi
+if opkg install --force-reinstall "/opt/packages/${package_name}" >>"$UPG_LOG" 2>&1; then
+	_upg_log "install ok"
+	when_ok
+else
+	_upg_rc=$?
+	_upg_log "install FAILED rc=${_upg_rc}"
+	when_err
+	echo -e "    Подробности: ${BLUE}${UPG_LOG}${NOCL} (Web UI: Диагностика -> Логи -> Обновление)"
+	_tg_upg_fail=1
 fi
 
 # Восстанавливаем профиль wireproxy (RESOURCE_PROFILE + лимиты Go) в новый env.sh —

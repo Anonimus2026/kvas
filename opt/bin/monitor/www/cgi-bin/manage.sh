@@ -1216,6 +1216,54 @@ main() {
 			update_info=$(check_updates 2>/dev/null)
 			printf '{"ok":true,"update":"%s"}\n' "$(json_str "$update_info")"
 			;;
+		opkg)
+			check_token "$token"
+			cmd=$(echo "$QUERY_STRING" | sed 's/.*cmd=//; s/&.*//' 2>/dev/null)
+			[ "$cmd" = "$QUERY_STRING" ] && cmd=""
+			case "$cmd" in
+				mirror_status)
+					_conf=/opt/etc/opkg.conf
+					_src1=$(grep '^src/gz ' "$_conf" 2>/dev/null | head -1 | awk '{print $3}')
+					_mirror="custom"
+					case "$_src1" in
+						*mirrors.nju.edu.cn*) _mirror="nju" ;;
+						*bin.entware.net*|*pkg.entware.net*) _mirror="official" ;;
+					esac
+					_lock_pids=$(ps w 2>/dev/null | grep -E 'opkg (update|install|remove)|wget .*opkg' | grep -v grep | awk '{print $1}' | tr '\n' ' ')
+					_lock="free"
+					{ [ -f /opt/tmp/opkg.lock ] || [ -n "$_lock_pids" ]; } && _lock="busy"
+					printf '{"ok":true,"mirror":"%s","src":"%s","lock":"%s","lock_pids":"%s"}\n' \
+						"$_mirror" "$(json_str "$_src1")" "$_lock" "$(json_str "$_lock_pids")"
+					;;
+				mirror_set)
+					val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
+					_conf=/opt/etc/opkg.conf
+					[ -f "$_conf" ] || json_error "no /opt/etc/opkg.conf"
+					case "$val" in
+						nju)
+							sed -i 's|http://bin\.entware\.net|https://mirrors.nju.edu.cn/entware|g' "$_conf"
+							sed -i 's|http://pkg\.entware\.net|https://mirrors.nju.edu.cn/entware|g' "$_conf"
+							;;
+						official)
+							sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "$_conf"
+							;;
+						*) json_error "val must be nju|official" ;;
+					esac
+					out=$(grep '^src/gz ' "$_conf" 2>/dev/null | awk '{print $3}' | tr '\n' ' ')
+					json_ok "mirror: $out"
+					;;
+				lock_clear)
+					# осознанное действие: убиваем зависшие opkg/wget (недоступный feed держит lock)
+					for _p in $(ps w 2>/dev/null | grep -E 'opkg (update|install|remove)|wget .*opkg' | grep -v grep | awk '{print $1}'); do
+						kill -9 "$_p" 2>/dev/null
+					done
+					rm -f /opt/tmp/opkg.lock 2>/dev/null
+					rm -rf /opt/tmp/opkg-* 2>/dev/null
+					json_ok "lock cleared"
+					;;
+				*) json_error "cmd must be mirror_status|mirror_set|lock_clear" ;;
+			esac
+			;;
 		backup)
 			check_token "$token"
 			_out=$($KVAS_BIN backup 2>&1)
@@ -2112,6 +2160,11 @@ EOL2
 				syslog)
 					_log=$(logread 2>/dev/null | tail -100)
 					[ -z "$_log" ] && _log="Системный лог недоступен"
+					;;
+				upgrade)
+					# v637: лог установки/обновления (main/upgrade пишет сюда вывод opkg)
+					_log=$(tail -n 100 /opt/var/log/kvas-upgrade.log 2>/dev/null)
+					[ -z "$_log" ] && _log="Лог обновления пуст (записи появятся после kvas upgrade)"
 					;;
 				*) _log="Неизвестный тип лога" ;;
 			esac
