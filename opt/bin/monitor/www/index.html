@@ -1081,8 +1081,24 @@ function tgGetChat(btn){
   var p='action=tg_getchat&btoken='+encodeURIComponent(document.getElementById('tgToken').value.trim());
   apiBtn('/cgi-bin/manage.sh?'+p, btn, function(d){
     var s=document.getElementById('tgStatus'); if(!s) return;
-    if(d.ok){ document.getElementById('tgChat').value=d.chat_id; s.textContent='chat_id получен'+(d.username?(' (@'+d.username+')'):''); s.style.color='#3fb950'; }
-    else { s.textContent=d.error||'Ошибка'; s.style.color='#f85149'; }
+    var apply=function(j){
+      if(j.ok){ document.getElementById('tgChat').value=j.chat_id; s.textContent='chat_id получен'+(j.username?(' (@'+j.username+')'):''); s.style.color='#3fb950'; }
+      else { s.textContent=j.error||j.msg||'Ошибка'; s.style.color='#f85149'; }
+    };
+    if (d.ok && d.pending) {
+      // v640: getUpdates через SOCKS в фоне (до ~30с) — счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'tg_chat', 0, btn, 'Запрос chat_id', {
+        msgEl: 'tgStatus',
+        render: function(log) {
+          var j; try { j = JSON.parse(log); } catch (e) { j = null; }
+          apply(j || { error: log || 'Ошибка' });
+        },
+        done: function(){}
+      });
+      return;
+    }
+    apply(d);
   }, 30000);
 }
 function tgTest(btn){
@@ -1090,6 +1106,12 @@ function tgTest(btn){
     +'&chat='+encodeURIComponent(document.getElementById('tgChat').value.trim());
   apiBtn('/cgi-bin/manage.sh?'+p, btn, function(d){
     var s=document.getElementById('tgStatus'); if(!s) return;
+    if (d.ok && d.pending) {
+      // v640: отправка через SOCKS в фоне (до ~30с) — счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'tg_test', 0, btn, 'Тест Telegram', { msgEl: 'tgStatus', done: function(){} });
+      return;
+    }
     s.textContent = d.ok ? (d.msg||'Ок') : (d.error||'Ошибка'); s.style.color = d.ok?'#3fb950':'#f85149';
   }, 30000);
 }
@@ -1573,6 +1595,30 @@ function doKvasUpgrade(btn) {
   upgStartWatch(document.getElementById('sysVer').textContent);
 }
 
+function renderSiteTest(d) {
+  var el = document.getElementById('tunnelTestResult');
+  if (!d.ok) {
+    el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + (d.error || 'неизвестная') + '</span>';
+    return;
+  }
+  var httpMap = {'200':'OK','301':'Редирект','302':'Редирект','403':'Запрещено','404':'Не найдено','500':'Ошибка сервера','502':'Шлюз недоступен','000':'Нет ответа'};
+  var httpDesc = httpMap[d.http] || '';
+  var httpColor = d.http === '200' ? '#3fb950' : (d.http === '000' ? '#f85149' : '#f0883e');
+  var ipColor = d.ip === 'нет ответа' ? '#f85149' : '#3fb950';
+  var speedColor = d.speed > 1024 ? '#3fb950' : (d.speed > 100 ? '#f0883e' : '#f85149');
+  var html = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">';
+  html += '<span>IP: <span style="color:' + ipColor + ';font-weight:bold;">' + d.ip + '</span></span>';
+  html += '<span>HTTP: <span style="color:' + httpColor + ';font-weight:bold;">' + d.http + '</span>';
+  if (httpDesc) html += ' <span style="color:#8b949e;font-size:11px;">' + httpDesc + '</span>';
+  html += '</span>';
+  html += '<span>Время: <span style="color:#8b949e;">' + d.time + 's</span></span>';
+  html += '<span>Скорость: <span style="color:' + speedColor + ';font-weight:bold;">' + d.speed + '</span> <span style="color:#8b949e;font-size:11px;">KB/s</span></span>';
+  html += '<span style="color:#8b949e;font-size:11px;">(' + (d.method === 'socks' ? 'SOCKS5' : 'interface') + ')</span>';
+  html += '</div>';
+  el.className = '';
+  el.innerHTML = html;
+}
+
 function tunnelTestSite(btn) {
   var sel = document.getElementById('tunnelTestSelect');
   var iface = sel.value;
@@ -1589,26 +1635,43 @@ function tunnelTestSite(btn) {
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
     clearTimeout(timer); loadingBtn(btn, false);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
-    if (d.ok) {
-      var httpMap = {'200':'OK','301':'Редирект','302':'Редирект','403':'Запрещено','404':'Не найдено','500':'Ошибка сервера','502':'Шлюз недоступен','000':'Нет ответа'};
-      var httpDesc = httpMap[d.http] || '';
-      var httpColor = d.http === '200' ? '#3fb950' : (d.http === '000' ? '#f85149' : '#f0883e');
-      var ipColor = d.ip === 'нет ответа' ? '#f85149' : '#3fb950';
-      var speedColor = d.speed > 1024 ? '#3fb950' : (d.speed > 100 ? '#f0883e' : '#f85149');
-      var html = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">';
-      html += '<span>IP: <span style="color:' + ipColor + ';font-weight:bold;">' + d.ip + '</span></span>';
-      html += '<span>HTTP: <span style="color:' + httpColor + ';font-weight:bold;">' + d.http + '</span>';
-      if (httpDesc) html += ' <span style="color:#8b949e;font-size:11px;">' + httpDesc + '</span>';
-      html += '</span>';
-      html += '<span>Время: <span style="color:#8b949e;">' + d.time + 's</span></span>';
-      html += '<span>Скорость: <span style="color:' + speedColor + ';font-weight:bold;">' + d.speed + '</span> <span style="color:#8b949e;font-size:11px;">KB/s</span></span>';
-      html += '<span style="color:#8b949e;font-size:11px;">(' + (d.method === 'socks' ? 'SOCKS5' : 'interface') + ')</span>';
-      html += '</div>';
-      el.innerHTML = html;
-    } else {
-      el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + (d.error || 'неизвестная') + '</span>';
+    if (d.ok && d.pending) {
+      // v640: цепочка curl в фоне (до ~50с) — счётчик (N×4с) вместо Failed to fetch
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'site_test', 0, btn, 'Проверка сайта', {
+        msgEl: 'tunnelTestResult',
+        render: function(log) {
+          var j; try { j = JSON.parse(log); } catch (e) { j = null; }
+          if (j && j.ok) { renderSiteTest(j); return; }
+          var el2 = document.getElementById('tunnelTestResult');
+          el2.className = 'msg err';
+          el2.textContent = log || 'Ошибка проверки';
+        },
+        done: function(){}
+      });
+      return;
     }
+    if (d.ok) { renderSiteTest(d); }
+    else { el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + (d.error || 'неизвестная') + '</span>'; }
   }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + e.message + '</span>'; });
+}
+
+function renderSpeedTest(d) {
+  var el = document.getElementById('tunnelTestResult');
+  if (!d.ok) {
+    el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + (d.error || 'неизвестная') + '</span>';
+    return;
+  }
+  var speedKB = d.speed;
+  var speedMB = (speedKB / 1024).toFixed(1);
+  var speedColor = speedKB > 1024 ? '#3fb950' : (speedKB > 100 ? '#f0883e' : '#f85149');
+  var html = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">';
+  html += '<span>IP: <span style="color:#3fb950;font-weight:bold;">' + d.ip + '</span></span>';
+  html += '<span>Входящая скорость: <span style="color:' + speedColor + ';font-weight:bold;">' + speedMB + ' MB/s</span> <span style="color:#8b949e;">(' + speedKB + ' KB/s)</span></span>';
+  html += '<span>Время: <span style="color:#8b949e;">' + d.time + 's</span></span>';
+  html += '</div>';
+  el.className = '';
+  el.innerHTML = html;
 }
 
 function tunnelSpeedTest(btn) {
@@ -1624,19 +1687,24 @@ function tunnelSpeedTest(btn) {
   fetch(u, { signal: ctrl.signal }).then(function(r) { return r.text(); }).then(function(t) {
     clearTimeout(timer); loadingBtn(btn, false);
     try { var d = JSON.parse(t); } catch(e) { d = { error: 'JSON parse error' }; }
-    if (d.ok) {
-      var speedKB = d.speed;
-      var speedMB = (speedKB / 1024).toFixed(1);
-      var speedColor = speedKB > 1024 ? '#3fb950' : (speedKB > 100 ? '#f0883e' : '#f85149');
-      var html = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">';
-      html += '<span>IP: <span style="color:#3fb950;font-weight:bold;">' + d.ip + '</span></span>';
-      html += '<span>Входящая скорость: <span style="color:' + speedColor + ';font-weight:bold;">' + speedMB + ' MB/s</span> <span style="color:#8b949e;font-size:11px;">(' + speedKB + ' KB/s)</span></span>';
-      html += '<span>Время: <span style="color:#8b949e;">' + d.time + 's</span></span>';
-      html += '</div>';
-      el.innerHTML = html;
-    } else {
-      el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + (d.error || 'неизвестная') + '</span>';
+    if (d.ok && d.pending) {
+      // v640: замер в фоне (до ~70с) — счётчик (N×4с) вместо Failed to fetch
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'speed', 0, btn, 'Тест скорости', {
+        msgEl: 'tunnelTestResult',
+        render: function(log) {
+          var j; try { j = JSON.parse(log); } catch (e) { j = null; }
+          if (j && j.ok) { renderSpeedTest(j); return; }
+          var el2 = document.getElementById('tunnelTestResult');
+          el2.className = 'msg err';
+          el2.textContent = log || 'Ошибка теста скорости';
+        },
+        done: function(){}
+      });
+      return;
     }
+    if (d.ok) { renderSpeedTest(d); }
+    else { el.innerHTML = '<span style="color:#f85149;">Ошибка: ' + (d.error || 'неизвестная') + '</span>'; }
   }).catch(function(e) { clearTimeout(timer); loadingBtn(btn, false); el.innerHTML = '<span style="color:#f85149;">' + (e.name === 'AbortError' ? 'Превышено время ожидания (90с)' : 'Ошибка: ' + e.message) + '</span>'; });
 }
 
@@ -1811,6 +1879,15 @@ function vpnSetInterface(btn) {
   if (!iface) return;
   apiBtn('/cgi-bin/manage.sh?action=vpn_set&iface=' + encodeURIComponent(iface), btn, function(d){
     var el = document.getElementById('vpnMsg');
+    if (d.ok && d.pending) {
+      // v640: переключение в фоне — опрашиваем vpn_progress, счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll('vpn_set', 0, btn, 'Переключение тонеля', {
+        msgEl: 'vpnMsg',
+        done: function(){ loadSystemStatus(); loadVpnInterfaces(); }
+      });
+      return;
+    }
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.msg;
@@ -1875,6 +1952,12 @@ function svcAct(svc, act, btn) {
 function vpnSet(proto, btn) {
   apiBtn('/cgi-bin/manage.sh?action=vpn_set&proto=' + proto, btn, function(d){
     var el = document.getElementById('vpnMsg');
+    if (d.ok && d.pending) {
+      // v640: переключение в фоне — опрашиваем vpn_progress, счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll('vpn_set', 0, btn, 'Переключение тонеля', { msgEl: 'vpnMsg', done: function(){} });
+      return;
+    }
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.msg;
@@ -2426,6 +2509,15 @@ function adguardInstall(btn) {
     var el0 = document.getElementById('agMsg');
     el0.innerHTML = '<span style="color:#8b949e;">Удаление...</span>';
     apiBtn('/cgi-bin/manage.sh?action=adguard_uninstall', btn, function(d){
+      if (d.ok && d.pending) {
+        // v640: удаление в фоне — опрашиваем vpn_progress, счётчик (N×4с)
+        if (btn) loadingBtn(btn, true);
+        vpnPoll(d.task || 'ag_uninstall', 0, btn, 'Удаление AdGuard Home', {
+          msgEl: 'agMsg',
+          done: function(){ loadAdguardStatus(); loadSystemStatus(); }
+        });
+        return;
+      }
       if (d.ok) {
         el0.className = 'msg ok';
         el0.textContent = d.msg || 'Удалён';
@@ -2441,6 +2533,26 @@ function adguardInstall(btn) {
   var el = document.getElementById('agMsg');
   el.innerHTML = '<span style="color:#8b949e;">Локальная установка... до 120с</span>';
   apiBtn('/cgi-bin/manage.sh?action=adguard_install', btn, function(d){
+    if (d.ok && d.pending) {
+      // v640: opkg в фоне (до ~120с) — опрашиваем vpn_progress, счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'ag_install', 0, btn, 'Установка AdGuard Home', {
+        msgEl: 'agMsg',
+        render: function(log) {
+          var j; try { j = JSON.parse(log); } catch (e) { j = null; }
+          var el2 = document.getElementById('agMsg');
+          if (!j || !j.ok) { el2.className = 'msg err'; el2.textContent = log || 'Ошибка установки'; return; }
+          el2.className = 'msg ok';
+          el2.textContent = j.msg || 'Установлен';
+          if (j.need_setup && j.setup_url) {
+            el2.innerHTML = (j.msg || 'Установлен') + ' — <a href="' + j.setup_url + '" target="_blank" rel="noopener" style="color:#58a6ff;">открыть настройку AdGuard</a>';
+            try { window.open(j.setup_url, '_blank', 'noopener'); } catch (e) {}
+          }
+        },
+        done: function(){ loadAdguardStatus(); loadSystemStatus(); }
+      });
+      return;
+    }
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.msg || 'Установлен';
@@ -2554,7 +2666,10 @@ function vpnPoll(task, n, btn, title, opts) {
       }
       if (btn) loadingBtn(btn, false);
       var log = (p.log || '').replace(/\s+$/, '');
-      if (p.rc === '0') {
+      if (p.rc === '0' && opts.render) {
+        // v640: лог содержит JSON результата (speed/site_test/ag_install) — рендерит вызывающий код
+        try { opts.render(log); } catch (e) { el.className = 'msg err'; el.textContent = log; }
+      } else if (p.rc === '0') {
         el.className = 'msg ok';
         el.textContent = log || (title + ' завершена успешно');
       } else {
@@ -2743,6 +2858,15 @@ function xrayInstall(btn) {
 function doUpdate(btn) {
   apiBtn('/cgi-bin/manage.sh?action=update', btn, function(d){
     var el = document.getElementById('sysMsg');
+    if (d.ok && d.pending) {
+      // v640: update+init в фоне — опрашиваем vpn_progress, счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'update', 0, btn, 'Обновление KVAS', {
+        msgEl: 'sysMsg',
+        done: function(){ loadSystemStatus(); }
+      });
+      return;
+    }
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; loadSystemStatus(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
   });
@@ -2752,6 +2876,15 @@ function doKvasInit(btn) {
   if (!confirm('Перезагрузить KVAS (kvas init)?')) return;
   apiBtn('/cgi-bin/manage.sh?action=kvas_init', btn, function(d){
     var el = document.getElementById('sysMsg');
+    if (d.ok && d.pending) {
+      // v640: init в фоне — опрашиваем vpn_progress, счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'kvas_init', 0, btn, 'Перезапуск KVAS', {
+        msgEl: 'sysMsg',
+        done: function(){ loadSystemStatus(); }
+      });
+      return;
+    }
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; loadSystemStatus(); }
     else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
   });
@@ -2760,6 +2893,12 @@ function doKvasInit(btn) {
 function doBackup(btn) {
   apiBtn('/cgi-bin/manage.sh?action=backup', btn, function(d){
     var el = document.getElementById('sysMsg');
+    if (d.ok && d.pending) {
+      // v640: бэкап в фоне — опрашиваем vpn_progress, счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'backup', 0, btn, 'Создание резервной копии', { msgEl: 'sysMsg', done: function(){} });
+      return;
+    }
     if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg; }
     else { el.className = 'msg err'; el.textContent = d.error || 'error'; }
   });
@@ -2786,6 +2925,29 @@ function doBackupDownload(btn) {
   loadingBtn(btn, true);
   apiBtn('/cgi-bin/manage.sh?action=backup_download', btn, function(d){
     loadingBtn(btn, false);
+    if (d.ok && d.pending) {
+      // v640: backup+tar в фоне — опрашиваем vpn_progress, счётчик (N×4с)
+      if (btn) loadingBtn(btn, true);
+      vpnPoll(d.task || 'backup_dl', 0, btn, 'Создание архива', {
+        msgEl: 'sysMsg',
+        render: function(log) {
+          var j; try { j = JSON.parse(log); } catch (e) { j = null; }
+          var el2 = document.getElementById('sysMsg');
+          if (!j || !j.ok) { el2.className = 'msg err'; el2.textContent = log || 'Ошибка создания архива'; return; }
+          var a = document.createElement('a');
+          a.href = j.url + '?t=' + Date.now();
+          a.download = (j.name || 'kvas_backup') + '.tar.gz';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          el2.className = 'msg ok';
+          el2.innerHTML = '<b>Архив скачан</b><br><b>Файлы в архиве:</b><pre style="font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto;margin-top:4px;">' + String(j.files || '').replace(/\\n/g, '\n') + '</pre>';
+          setTimeout(function(){ api('/cgi-bin/manage.sh?action=backup_cleanup', function(){}); }, 60000);
+        },
+        done: function(){}
+      });
+      return;
+    }
     if (d.ok) {
       var a = document.createElement('a');
       a.href = d.url + '?t=' + Date.now();

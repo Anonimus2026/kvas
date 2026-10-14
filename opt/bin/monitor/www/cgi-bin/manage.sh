@@ -669,7 +669,7 @@ main() {
 			iface=$(echo "$QUERY_STRING" | sed 's/.*iface=//; s/&.*//')
 			[ "$iface" = "$QUERY_STRING" ] && iface=""
 			if [ -n "$iface" ]; then
-				out=$($KVAS_BIN vpn set "$iface" 2>&1)
+				_vpn_arg="$iface"
 			else
 				proto=$(echo "$QUERY_STRING" | sed 's/.*proto=//; s/&.*//')
 				[ "$proto" = "$QUERY_STRING" ] && proto=""
@@ -677,11 +677,17 @@ main() {
 					vless|hysteria) ;;
 					*) json_error "proto must be vless or hysteria" ;;
 				esac
-				out=$($KVAS_BIN vpn set "$proto" 2>&1)
+				_vpn_arg="$proto"
 			fi
-			rc=$?
-			[ $rc -ne 0 ] && json_error "switch failed: $out"
-			json_ok "switched"
+			# v640: фон (как vless_new) — ручное переключение тонеля долбит дольше
+			# httpd-таймаута → «Failed to fetch» в браузере. Результат через vpn_progress.
+			rm -f /tmp/kvas_vpn_set.lock /tmp/kvas_vpn_set.rc /tmp/kvas_vpn_set.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_vpn_set.lock
+				{ $KVAS_BIN vpn set "$_vpn_arg"; echo $? > /tmp/kvas_vpn_set.rc; } > /tmp/kvas_vpn_set.log 2>&1
+				rm -f /tmp/kvas_vpn_set.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"msg":"Переключение тонеля..."}\n'
 			;;
 		failover_status)
 			check_token "$token"
@@ -960,50 +966,73 @@ main() {
 			;;
 		adguard_install)
 			check_token "$token"
-			_busy=""
-			[ -f /opt/tmp/opkg.lock ] && _busy="opkg busy"
-			if [ -z "$_busy" ]; then
-				if [ ! -f /opt/bin/AdGuardHome ]; then
-					opkg update >/dev/null 2>&1
-					opkg install adguardhome-go --force-maintainer >/dev/null 2>&1
-				fi
-				[ -f /opt/bin/AdGuardHome ] || _busy="install failed"
-			fi
-			if [ -z "$_busy" ]; then
-				mkdir -p /opt/etc/AdGuardHome /opt/var/log /opt/var/run
-				if [ -f /opt/apps/kvas/etc/init.d/S99adguard ]; then
-					if [ -f /opt/etc/init.d/S99adguardhome ] && ! grep -q kvas /opt/etc/init.d/S99adguardhome 2>/dev/null; then
-						mkdir -p /opt/var/backups/kvas 2>/dev/null || true
-						mv /opt/etc/init.d/S99adguardhome /opt/var/backups/kvas/S99adguardhome.origin 2>/dev/null || true
+			# v640: opkg update/install до ~45с+ — обрывал httpd (Failed to fetch).
+			# Фон, результат — JSON (msg/port/need_setup) в логе, опрос task=ag_install.
+			rm -f /tmp/kvas_ag_inst.lock /tmp/kvas_ag_inst.rc /tmp/kvas_ag_inst.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_ag_inst.lock
+				{
+					_busy=""
+					[ -f /opt/tmp/opkg.lock ] && _busy="opkg busy"
+					if [ -z "$_busy" ]; then
+						if [ ! -f /opt/bin/AdGuardHome ]; then
+							opkg update >/dev/null 2>&1
+							opkg install adguardhome-go --force-maintainer >/dev/null 2>&1
+						fi
+						[ -f /opt/bin/AdGuardHome ] || _busy="install failed"
 					fi
-					cp /opt/apps/kvas/etc/init.d/S99adguard /opt/etc/init.d/S99adguardhome
-					chmod 755 /opt/etc/init.d/S99adguardhome
-				fi
-			fi
-			if [ -n "$_busy" ]; then
-				printf '{"ok":false,"error":"%s"}\n' "$_busy"
-			elif [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
-				_ag_port=$(awk '/^http:/{h=1;next} /^[a-z]/{h=0} h && $1=="address:"{n=split($2,a,":"); print a[n]; exit}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null)
-				case "$_ag_port" in ''|*[!0-9]*|9753|6060|53) _ag_port=8086 ;; esac
-				printf '{"ok":true,"msg":"AdGuard Home установлен (web :%s)","port":"%s","need_setup":false}\n' "$_ag_port" "$_ag_port"
-			else
-				if ! pidof AdGuardHome >/dev/null 2>&1; then
-					/opt/bin/AdGuardHome -c /opt/etc/AdGuardHome/AdGuardHome.yaml -l /opt/var/log/AdGuardHome.log >/dev/null 2>&1 &
-					sleep 2
-				fi
-				_rip=$(ip -4 addr show 2>/dev/null | awk '/inet 192\.168\.|inet 10\.|inet 172\./{print $2}' | cut -d/ -f1 | head -1)
-				[ -z "$_rip" ] && _rip=$(nvram get lan_ipaddr 2>/dev/null)
-				[ -z "$_rip" ] && _rip=$(uci -q get network.lan.ipaddr 2>/dev/null)
-				[ -z "$_rip" ] && _rip=$(hostname -I 2>/dev/null | awk '{print $1}')
-				[ -z "$_rip" ] && _rip="192.168.1.1"
-				printf '{"ok":true,"msg":"Пакет установлен. Настройте AdGuard в новой вкладке (порт 3000).","need_setup":true,"setup_url":"http://%s:3000","port":"3000"}\n' "$_rip"
-			fi
+					if [ -z "$_busy" ]; then
+						mkdir -p /opt/etc/AdGuardHome /opt/var/log /opt/var/run
+						if [ -f /opt/apps/kvas/etc/init.d/S99adguard ]; then
+							if [ -f /opt/etc/init.d/S99adguardhome ] && ! grep -q kvas /opt/etc/init.d/S99adguardhome 2>/dev/null; then
+								mkdir -p /opt/var/backups/kvas 2>/dev/null || true
+								mv /opt/etc/init.d/S99adguardhome /opt/var/backups/kvas/S99adguardhome.origin 2>/dev/null || true
+							fi
+							cp /opt/apps/kvas/etc/init.d/S99adguard /opt/etc/init.d/S99adguardhome
+							chmod 755 /opt/etc/init.d/S99adguardhome
+						fi
+					fi
+					if [ -n "$_busy" ]; then
+						printf 'ERROR: %s\n' "$_busy"
+						echo 1 > /tmp/kvas_ag_inst.rc
+					elif [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
+						_ag_port=$(awk '/^http:/{h=1;next} /^[a-z]/{h=0} h && $1=="address:"{n=split($2,a,":"); print a[n]; exit}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null)
+						case "$_ag_port" in ''|*[!0-9]*|9753|6060|53) _ag_port=8086 ;; esac
+						printf '{"ok":true,"msg":"AdGuard Home установлен (web :%s)","port":"%s","need_setup":false}\n' "$_ag_port" "$_ag_port"
+						echo 0 > /tmp/kvas_ag_inst.rc
+					else
+						if ! pidof AdGuardHome >/dev/null 2>&1; then
+							/opt/bin/AdGuardHome -c /opt/etc/AdGuardHome/AdGuardHome.yaml -l /opt/var/log/AdGuardHome.log >/dev/null 2>&1 &
+							sleep 2
+						fi
+						_rip=$(ip -4 addr show 2>/dev/null | awk '/inet 192\.168\.|inet 10\.|inet 172\./{print $2}' | cut -d/ -f1 | head -1)
+						[ -z "$_rip" ] && _rip=$(nvram get lan_ipaddr 2>/dev/null)
+						[ -z "$_rip" ] && _rip=$(uci -q get network.lan.ipaddr 2>/dev/null)
+						[ -z "$_rip" ] && _rip=$(hostname -I 2>/dev/null | awk '{print $1}')
+						[ -z "$_rip" ] && _rip="192.168.1.1"
+						printf '{"ok":true,"msg":"Пакет установлен. Настройте AdGuard в новой вкладке (порт 3000).","need_setup":true,"setup_url":"http://%s:3000","port":"3000"}\n' "$_rip"
+						echo 0 > /tmp/kvas_ag_inst.rc
+					fi
+				} > /tmp/kvas_ag_inst.log 2>&1
+				rm -f /tmp/kvas_ag_inst.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"ag_install","msg":"Установка AdGuard Home..."}\n'
 			;;
 		adguard_uninstall)
 			check_token "$token"
-			out=$($KVAS_BIN adguard uninstall 2>&1 | tr -d '\033\r' | sed 's/\[[0-9;]*[a-zA-Z]//g; s/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			[ -z "$out" ] && out="AdGuard Home удален"
-			printf '{"ok":true,"msg":"%s"}\n' "$out"
+			# v640: фон + vpn_progress (task=ag_uninstall), лог = текст результата
+			rm -f /tmp/kvas_ag_uninst.lock /tmp/kvas_ag_uninst.rc /tmp/kvas_ag_uninst.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_ag_uninst.lock
+				{
+					out=$($KVAS_BIN adguard uninstall 2>&1); rc=$?
+					[ -z "$out" ] && out="AdGuard Home удален"
+					printf '%s\n' "$out"
+					echo $rc > /tmp/kvas_ag_uninst.rc
+				} > /tmp/kvas_ag_uninst.log 2>&1
+				rm -f /tmp/kvas_ag_uninst.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"ag_uninstall","msg":"Удаление AdGuard Home..."}\n'
 			;;
 		adguard_on)
 			check_token "$token"
@@ -1094,6 +1123,17 @@ main() {
 				kvas_debug_iptables) _lock=/tmp/kvas_debug_ipt.lock; _rc=/tmp/kvas_debug_ipt.rc; _log=/tmp/kvas_debug_ipt.log ;;
 				list2_add) _lock=/tmp/kvas_list2_add.lock; _rc=/tmp/kvas_list2_add.rc; _log=/tmp/kvas_list2_add.log ;;
 				list2_del) _lock=/tmp/kvas_list2_del.lock; _rc=/tmp/kvas_list2_del.rc; _log=/tmp/kvas_list2_del.log ;;
+				vpn_set) _lock=/tmp/kvas_vpn_set.lock; _rc=/tmp/kvas_vpn_set.rc; _log=/tmp/kvas_vpn_set.log ;;
+				site_test) _lock=/tmp/kvas_site_test.lock; _rc=/tmp/kvas_site_test.rc; _log=/tmp/kvas_site_test.log ;;
+				speed) _lock=/tmp/kvas_speed.lock; _rc=/tmp/kvas_speed.rc; _log=/tmp/kvas_speed.log ;;
+				ag_install) _lock=/tmp/kvas_ag_inst.lock; _rc=/tmp/kvas_ag_inst.rc; _log=/tmp/kvas_ag_inst.log ;;
+				ag_uninstall) _lock=/tmp/kvas_ag_uninst.lock; _rc=/tmp/kvas_ag_uninst.rc; _log=/tmp/kvas_ag_uninst.log ;;
+				tg_test) _lock=/tmp/kvas_tg_test.lock; _rc=/tmp/kvas_tg_test.rc; _log=/tmp/kvas_tg_test.log ;;
+				backup) _lock=/tmp/kvas_backup.lock; _rc=/tmp/kvas_backup.rc; _log=/tmp/kvas_backup.log ;;
+				kvas_init) _lock=/tmp/kvas_init.lock; _rc=/tmp/kvas_init.rc; _log=/tmp/kvas_init.log ;;
+				update) _lock=/tmp/kvas_update.lock; _rc=/tmp/kvas_update.rc; _log=/tmp/kvas_update.log ;;
+				backup_dl) _lock=/tmp/kvas_bak_dl.lock; _rc=/tmp/kvas_bak_dl.rc; _log=/tmp/kvas_bak_dl.log ;;
+				tg_chat) _lock=/tmp/kvas_tg_chat.lock; _rc=/tmp/kvas_tg_chat.rc; _log=/tmp/kvas_tg_chat.log ;;
 				*) json_error "task required" ;;
 			esac
 			_running="false"
@@ -1180,17 +1220,41 @@ main() {
 			;;
 		update)
 			check_token "$token"
-			out=$($KVAS_BIN update 2>&1; $KVAS_BIN init 2>&1)
-			rc=$?
-			[ $rc -ne 0 ] && json_error "update failed: $out"
-			json_ok "update done"
+			# v640: update+init долго (обновление списков, перезапуск) — фон + vpn_progress (task=update)
+			rm -f /tmp/kvas_update.lock /tmp/kvas_update.rc /tmp/kvas_update.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_update.lock
+				{
+					out=$($KVAS_BIN update 2>&1; $KVAS_BIN init 2>&1); rc=$?
+					if [ $rc -ne 0 ]; then
+						printf 'update failed: %s\n' "$out"
+					else
+						printf 'update done\n'
+					fi
+					echo $rc > /tmp/kvas_update.rc
+				} > /tmp/kvas_update.log 2>&1
+				rm -f /tmp/kvas_update.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"update","msg":"Обновление KVAS..."}\n'
 			;;
 		kvas_init)
 			check_token "$token"
-			out=$($KVAS_BIN init 2>&1)
-			rc=$?
-			[ $rc -ne 0 ] && json_error "init failed: $out"
-			json_ok "kvas init done"
+			# v640: init перезапускает сервисы и тянет (до ~60с+) — фон + vpn_progress (task=kvas_init)
+			rm -f /tmp/kvas_init.lock /tmp/kvas_init.rc /tmp/kvas_init.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_init.lock
+				{
+					out=$($KVAS_BIN init 2>&1); rc=$?
+					if [ $rc -ne 0 ]; then
+						printf 'init failed: %s\n' "$out"
+					else
+						printf 'kvas init done\n'
+					fi
+					echo $rc > /tmp/kvas_init.rc
+				} > /tmp/kvas_init.log 2>&1
+				rm -f /tmp/kvas_init.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"kvas_init","msg":"Перезапуск KVAS..."}\n'
 			;;
 		upgrade)
 			check_token "$token"
@@ -1271,11 +1335,21 @@ main() {
 			;;
 		backup)
 			check_token "$token"
-			_out=$($KVAS_BIN backup 2>&1)
-			_rc=$?
-			_out=$(printf '%s' "$_out" | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g; s/\\/\\\\/g; s/"/\\"/g')
-			[ $_rc -ne 0 ] && json_error "backup failed: $_out"
-			json_ok "$_out"
+			# v640: фон + vpn_progress (task=backup), лог = текст результата
+			rm -f /tmp/kvas_backup.lock /tmp/kvas_backup.rc /tmp/kvas_backup.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_backup.lock
+				{
+					_out=$($KVAS_BIN backup 2>&1)
+					_rc=$?
+					_out=$(printf '%s' "$_out" | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
+					[ $_rc -ne 0 ] && printf 'backup failed: %s\n' "$_out"
+					[ $_rc -eq 0 ] && printf '%s\n' "$_out"
+					echo $_rc > /tmp/kvas_backup.rc
+				} > /tmp/kvas_backup.log 2>&1
+				rm -f /tmp/kvas_backup.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"backup","msg":"Создание резервной копии..."}\n'
 			;;
 		restore)
 			check_token "$token"
@@ -1302,14 +1376,29 @@ main() {
 			;;
 		backup_download)
 			check_token "$token"
-			$KVAS_BIN backup >/dev/null 2>&1
-			_dir=$(ls -dt /opt/kvas_backup_* 2>/dev/null | head -1)
-			[ -z "$_dir" ] && json_error "backup creation failed"
-			_name=$(basename "$_dir")
-			tar -czf /opt/apps/kvas/bin/monitor/www/kvas_backup.tar.gz -C /opt "$_name" 2>/dev/null
-			_files=$(tar -tzf /opt/apps/kvas/bin/monitor/www/kvas_backup.tar.gz 2>/dev/null | head -30)
-			_files=$(echo "$_files" | tr -d '\033\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
-			printf '{"ok":true,"url":"/kvas_backup.tar.gz","name":"%s","files":"%s"}\n' "$_name" "$_files"
+			# v640: kvas backup + tar — фон + vpn_progress (task=backup_dl),
+			# лог = JSON {url,name,files} для рендера на клиенте
+			rm -f /tmp/kvas_bak_dl.lock /tmp/kvas_bak_dl.rc /tmp/kvas_bak_dl.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_bak_dl.lock
+				{
+					$KVAS_BIN backup >/dev/null 2>&1
+					_dir=$(ls -dt /opt/kvas_backup_* 2>/dev/null | head -1)
+					if [ -z "$_dir" ]; then
+						printf 'backup creation failed\n'
+						echo 1 > /tmp/kvas_bak_dl.rc
+					else
+						_name=$(basename "$_dir")
+						tar -czf /opt/apps/kvas/bin/monitor/www/kvas_backup.tar.gz -C /opt "$_name" 2>/dev/null
+						_files=$(tar -tzf /opt/apps/kvas/bin/monitor/www/kvas_backup.tar.gz 2>/dev/null | head -30)
+						_files=$(echo "$_files" | tr -d '\033\r\n' | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+						printf '{"ok":true,"url":"/kvas_backup.tar.gz","name":"%s","files":"%s"}\n' "$_name" "$_files"
+						echo 0 > /tmp/kvas_bak_dl.rc
+					fi
+				} > /tmp/kvas_bak_dl.log 2>&1
+				rm -f /tmp/kvas_bak_dl.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"backup_dl","msg":"Создание архива..."}\n'
 			;;
 		backup_cleanup)
 			check_token "$token"
@@ -2276,20 +2365,37 @@ EOL2
 				fi
 			fi
 			if [ "${_lc_used}" = false ]; then
-			# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl)
-			_gu=$(tg_curl "https://api.telegram.org/bot${_bt}/getUpdates")
-			if [ -z "$_gu" ]; then
-				json_error "нет ответа: Telegram недоступен напрямую и через SOCKS тоннеля (порт/тоннель живы?)"
-			fi
-			if ! echo "$_gu" | grep -q '"ok":true'; then
-				_err=$(echo "$_gu" | jq -r '.description // empty' 2>/dev/null)
-				[ -n "$_err" ] || _err="проверьте токен"
-				json_error "Telegram: ${_err}"
-			fi
-			_cid=$(echo "$_gu" | jq -r '[.result[]? | (.message.chat.id // .my_chat_member.chat.id // .edited_message.chat.id // empty)] | last // empty' 2>/dev/null)
-			[ -n "$_cid" ] && [ "$_cid" != "null" ] || json_error "сообщений нет — напишите боту /start и повторите"
-			_uname=$(echo "$_gu" | jq -r '[.result[]? | (.message.from.username // empty)] | last // empty' 2>/dev/null)
-			printf '{"ok":true,"chat_id":"%s","username":"%s"}\n' "$(json_str "$_cid")" "$(json_str "$_uname")"
+			# v640: tg_curl getUpdates до ~30с (SOCKS) — фон + vpn_progress (task=tg_chat),
+			# лог = JSON {ok,chat_id,username} либо текст ошибки
+			rm -f /tmp/kvas_tg_chat.lock /tmp/kvas_tg_chat.rc /tmp/kvas_tg_chat.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_tg_chat.lock
+				{
+					# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl)
+					_gu=$(tg_curl "https://api.telegram.org/bot${_bt}/getUpdates")
+					if [ -z "$_gu" ]; then
+						printf 'нет ответа: Telegram недоступен напрямую и через SOCKS тоннеля (порт/тоннель живы?)\n'
+						echo 1 > /tmp/kvas_tg_chat.rc
+					elif ! echo "$_gu" | grep -q '"ok":true'; then
+						_err=$(echo "$_gu" | jq -r '.description // empty' 2>/dev/null)
+						[ -n "$_err" ] || _err="проверьте токен"
+						printf 'Telegram: %s\n' "$_err"
+						echo 1 > /tmp/kvas_tg_chat.rc
+					else
+						_cid=$(echo "$_gu" | jq -r '[.result[]? | (.message.chat.id // .my_chat_member.chat.id // .edited_message.chat.id // empty)] | last // empty' 2>/dev/null)
+						if [ -z "$_cid" ] || [ "$_cid" = "null" ]; then
+							printf 'сообщений нет — напишите боту /start и повторите\n'
+							echo 1 > /tmp/kvas_tg_chat.rc
+						else
+							_uname=$(echo "$_gu" | jq -r '[.result[]? | (.message.from.username // empty)] | last // empty' 2>/dev/null)
+							printf '{"ok":true,"chat_id":"%s","username":"%s"}\n' "$(json_str "$_cid")" "$(json_str "$_uname")"
+							echo 0 > /tmp/kvas_tg_chat.rc
+						fi
+					fi
+				} > /tmp/kvas_tg_chat.log 2>&1
+				rm -f /tmp/kvas_tg_chat.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"tg_chat","msg":"Запрос chat_id из Telegram..."}\n'
 			fi
 			;;
 		tg_test)
@@ -2300,21 +2406,33 @@ EOL2
 			[ -n "$_cg" ] || _cg=$(sed -n 's/^TG_CHAT_ID=//p' "$KVAS_CONF_FILE" 2>/dev/null | head -1)
 			[ -n "$_bt" ] || json_error "укажите токен бота"
 			[ -n "$_cg" ] || json_error "укажите chat_id"
-			# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl);
-			# sendMessage — форма с --data-urlencode (JSON -d уходит как form и text теряется)
-			_resp=$(tg_curl "https://api.telegram.org/bot${_bt}/sendMessage" \
-				--data-urlencode "chat_id=${_cg}" \
-				--data-urlencode "text=KVAS: тест уведомлений — OK")
-			if [ -z "$_resp" ]; then
-				json_error "нет ответа: Telegram недоступен напрямую и через SOCKS тоннеля"
-			fi
-			if echo "$_resp" | grep -q '"ok":true'; then
-				json_ok "Тест отправлен — проверьте чат"
-			else
-				_err=$(echo "$_resp" | jq -r '.description // "ошибка Telegram"' 2>/dev/null)
-				[ -n "$_err" ] && [ "$_err" != "null" ] || _err="нет ответа от Telegram"
-				json_error "Telegram: ${_err}"
-			fi
+			# v640: фон (tg_curl через SOCKS до ~30с) + vpn_progress (task=tg_test),
+			# лог = текст результата/ошибки
+			rm -f /tmp/kvas_tg_test.lock /tmp/kvas_tg_test.rc /tmp/kvas_tg_test.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_tg_test.lock
+				{
+					# Telegram заблокирован напрямую — через SOCKS тоннеля (tg_curl);
+					# sendMessage — форма с --data-urlencode (JSON -d уходит как form и text теряется)
+					_resp=$(tg_curl "https://api.telegram.org/bot${_bt}/sendMessage" \
+						--data-urlencode "chat_id=${_cg}" \
+						--data-urlencode "text=KVAS: тест уведомлений — OK")
+					if [ -z "$_resp" ]; then
+						printf 'нет ответа: Telegram недоступен напрямую и через SOCKS тоннеля\n'
+						echo 1 > /tmp/kvas_tg_test.rc
+					elif echo "$_resp" | grep -q '"ok":true'; then
+						printf 'Тест отправлен — проверьте чат\n'
+						echo 0 > /tmp/kvas_tg_test.rc
+					else
+						_err=$(echo "$_resp" | jq -r '.description // "ошибка Telegram"' 2>/dev/null)
+						[ -n "$_err" ] && [ "$_err" != "null" ] || _err="нет ответа от Telegram"
+						printf 'Telegram: %s\n' "$_err"
+						echo 1 > /tmp/kvas_tg_test.rc
+					fi
+				} > /tmp/kvas_tg_test.log 2>&1
+				rm -f /tmp/kvas_tg_test.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"tg_test","msg":"Отправка теста в Telegram..."}\n'
 			;;
 		tg_bot_restart)
 			check_token "$token"
@@ -2407,24 +2525,33 @@ EOL2
 					_curl_opt="--interface $_ent"
 					;;
 			esac
-			# 1. IP туннеля — через IP-сервис
-			local _tunnel_ip=$(curl -s --max-time 10 $_curl_opt "https://2ip.io" 2>/dev/null)
-			[ -z "$_tunnel_ip" ] && _tunnel_ip=$(curl -s --max-time 15 $_curl_opt "https://ifconfig.me" 2>/dev/null)
-			# Проверяем что это IP
-			echo "$_tunnel_ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || _tunnel_ip="нет ответа"
-			# 2. HTTP код сайта через туннель
-			local _http=$(curl -s --max-time 10 $_curl_opt -o /dev/null -w '%{http_code}' "https://${_site}" 2>/dev/null)
-			# 3. Время отклика
-			local _time=$(curl -s --max-time 10 $_curl_opt -o /dev/null -w '%{time_total}' "https://${_site}" 2>/dev/null)
-			[ -z "$_http" ] && _http="000"
-			[ -z "$_time" ] && _time="0"
-			# 4. Скорость скачивания (KB/s) — через Cloudflare speed test
-			local _speed="0"
-			_speed=$(curl -s --max-time 15 $_curl_opt -o /dev/null -w '%{speed_download}' "https://speed.cloudflare.com/__down?bytes=1048576" 2>/dev/null)
-			[ -z "$_speed" ] || [ "$_speed" = "0" ] && _speed=$(curl -s --max-time 15 $_curl_opt -o /dev/null -w '%{speed_download}' "https://nbg1-speed.hetzner.com/1MB.bin" 2>/dev/null)
-			[ -z "$_speed" ] && _speed="0"
-			_speed=$(echo "$_speed" | awk '{printf "%.0f", $1/1024}')
-			printf '{"ok":true,"ip":"%s","http":"%s","time":"%s","speed":"%s","method":"%s"}\n' "$_tunnel_ip" "$_http" "$_time" "$_speed" "$_method"
+			# v640: фон — цепочка curl до ~50с обрывала httpd-таймаут (Failed to fetch),
+			# результат — JSON одной строкой в логе, опрос через vpn_progress (task=site_test)
+			rm -f /tmp/kvas_site_test.lock /tmp/kvas_site_test.rc /tmp/kvas_site_test.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_site_test.lock
+				{
+					# 1. IP туннеля — через IP-сервис
+					_tunnel_ip=$(curl -s --max-time 10 $_curl_opt "https://2ip.io" 2>/dev/null)
+					[ -z "$_tunnel_ip" ] && _tunnel_ip=$(curl -s --max-time 15 $_curl_opt "https://ifconfig.me" 2>/dev/null)
+					echo "$_tunnel_ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || _tunnel_ip="нет ответа"
+					# 2. HTTP код сайта через туннель
+					_http=$(curl -s --max-time 10 $_curl_opt -o /dev/null -w '%{http_code}' "https://${_site}" 2>/dev/null)
+					# 3. Время отклика
+					_time=$(curl -s --max-time 10 $_curl_opt -o /dev/null -w '%{time_total}' "https://${_site}" 2>/dev/null)
+					[ -z "$_http" ] && _http="000"
+					[ -z "$_time" ] && _time="0"
+					# 4. Скорость скачивания (KB/s)
+					_speed=$(curl -s --max-time 15 $_curl_opt -o /dev/null -w '%{speed_download}' "https://speed.cloudflare.com/__down?bytes=1048576" 2>/dev/null)
+					{ [ -z "$_speed" ] || [ "$_speed" = "0" ]; } && _speed=$(curl -s --max-time 15 $_curl_opt -o /dev/null -w '%{speed_download}' "https://nbg1-speed.hetzner.com/1MB.bin" 2>/dev/null)
+					[ -z "$_speed" ] && _speed="0"
+					_speed=$(echo "$_speed" | awk '{printf "%.0f", $1/1024}')
+					printf '{"ok":true,"ip":"%s","http":"%s","time":"%s","speed":"%s","method":"%s"}\n' "$_tunnel_ip" "$_http" "$_time" "$_speed" "$_method"
+					echo 0 > /tmp/kvas_site_test.rc
+				} > /tmp/kvas_site_test.log 2>&1
+				rm -f /tmp/kvas_site_test.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"site_test","msg":"Проверка сайта..."}\n'
 			;;
 		tunnel_speed_test)
 			check_token "$token"
@@ -2443,15 +2570,26 @@ EOL2
 					_curl_opt="--interface $_ent"
 					;;
 			esac
-			local _tunnel_ip=$(curl -s --max-time 10 $_curl_opt "https://2ip.io" 2>/dev/null)
-			[ -z "$_tunnel_ip" ] && _tunnel_ip="нет ответа"
-			local _result=$(curl -s --max-time 60 $_curl_opt -o /dev/null -w '%{speed_download} %{time_total}' "$_url" 2>/dev/null)
-			local _speed=$(echo "$_result" | awk '{print $1}')
-			local _time=$(echo "$_result" | awk '{print $2}')
-			[ -z "$_speed" ] && _speed="0"
-			[ -z "$_time" ] && _time="0"
-			_speed=$(echo "$_speed" | awk '{printf "%.0f", $1/1024}')
-			printf '{"ok":true,"ip":"%s","speed":"%s","time":"%s"}\n' "$_tunnel_ip" "$_speed" "$_time"
+			# v640: фон — 100MB+IP-цепочка до ~70с обрывала httpd-таймаут (Failed to fetch),
+			# результат — JSON в логе, опрос через vpn_progress (task=speed)
+			rm -f /tmp/kvas_speed.lock /tmp/kvas_speed.rc /tmp/kvas_speed.log 2>/dev/null || true
+			(
+				touch /tmp/kvas_speed.lock
+				{
+					_tunnel_ip=$(curl -s --max-time 10 $_curl_opt "https://2ip.io" 2>/dev/null)
+					[ -z "$_tunnel_ip" ] && _tunnel_ip="нет ответа"
+					_result=$(curl -s --max-time 60 $_curl_opt -o /dev/null -w '%{speed_download} %{time_total}' "$_url" 2>/dev/null)
+					_speed=$(echo "$_result" | awk '{print $1}')
+					_time=$(echo "$_result" | awk '{print $2}')
+					[ -z "$_speed" ] && _speed="0"
+					[ -z "$_time" ] && _time="0"
+					_speed=$(echo "$_speed" | awk '{printf "%.0f", $1/1024}')
+					printf '{"ok":true,"ip":"%s","speed":"%s","time":"%s"}\n' "$_tunnel_ip" "$_speed" "$_time"
+					echo 0 > /tmp/kvas_speed.rc
+				} > /tmp/kvas_speed.log 2>&1
+				rm -f /tmp/kvas_speed.lock 2>/dev/null || true
+			) >/dev/null 2>&1 &
+			printf '{"ok":true,"pending":true,"task":"speed","msg":"Тест скорости..."}\n'
 			;;
 		*)
 			json_error "unknown action"

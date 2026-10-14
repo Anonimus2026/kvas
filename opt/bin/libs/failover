@@ -626,8 +626,35 @@ run_failover_check() {
     fi
     
     # Если active — какой-то другой интерфейс (не PRIMARY, не SECONDARY, не TERTIARY)
-    # Не трогаем — пользователь выбрал вручную через kvas vpn set
-    log_failover "Активен $active (не primary/secondary/tertiary). Оставляем как есть."
+    # v640: раньше оставляли как есть без проверок — мёртвый «чужой» интерфейс
+    # висел в конфиге вечно и демон вообще не проверял каналы (переключений не было).
+    # Теперь: жив — не трогаем (ручной выбор); отвалился — перебираем каналы,
+    # автовозврата на чужой интерфейс нет (switch_to перезаписывает PRIMARY,
+    # возврат только вручную: kvas vpn set <iface>).
+    local cur_ent=$(get_config_value INFACE_ENT 2>/dev/null)
+    local cur_alive=0
+    if [ -n "$cur_ent" ] && /opt/sbin/ip link show "$cur_ent" 2>/dev/null | grep -q '<.*UP'; then
+        if check_tun_interface "$cur_ent"; then
+            cur_alive=1
+        fi
+    fi
+    if [ "$cur_alive" = 1 ]; then
+        log_failover "Активен $active (не primary/secondary/tertiary) и работает. Оставляем как есть."
+        return 0
+    fi
+    log_failover "Активный $active вне каналов недоступен. Проверяем каналы..."
+    if check_protocol "$PRIMARY"; then
+        log_failover "$PRIMARY доступен. Переключение."
+        switch_to "$PRIMARY"
+    elif [ "$secondary" != "manual" ] && check_protocol "$secondary"; then
+        log_failover "Переключение на $secondary..."
+        switch_to "$secondary"
+    elif [ -n "$tertiary" ] && check_protocol "$tertiary"; then
+        log_failover "Переключение на $tertiary..."
+        switch_to "$tertiary"
+    else
+        log_failover "Ни один канал не доступен. Ожидаем."
+    fi
     return 0
 }
 
