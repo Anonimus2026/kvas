@@ -594,9 +594,15 @@ case "${1}" in
 						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< update_iptables (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< update_iptables (${_d}s)" >> "$LOG"
 						
 						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> start_failover_daemon" >&2; echo "[KVAS_SET] $_t >>> start_failover_daemon" >> "$LOG"
-						start_failover_daemon > /dev/null 2>&1 &
-						echo $! > /var/run/kvas-failover.pid
-						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< failover daemon запущен PID $! (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< failover daemon запущен PID $! (${_d}s)" >> "$LOG"
+						# v639: guard как в 'failover on' — раньше демон стартовал без проверки,
+						# pidfile перетирался и старый демон оставался сиротой (два демона → дубли истории)
+						if [ -f /var/run/kvas-failover.pid ] && kill -0 "$(cat /var/run/kvas-failover.pid 2>/dev/null)" 2>/dev/null; then
+							_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< failover daemon уже запущен PID $(cat /var/run/kvas-failover.pid) (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< failover daemon уже запущен PID $(cat /var/run/kvas-failover.pid) (${_d}s)" >> "$LOG"
+						else
+							start_failover_daemon > /dev/null 2>&1 &
+							echo $! > /var/run/kvas-failover.pid
+							_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< failover daemon запущен PID $! (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< failover daemon запущен PID $! (${_d}s)" >> "$LOG"
+						fi
 						
 						_t=$(_ts); echo "[KVAS_SET] $_t === Переключение на $proto завершено ===" >&2; echo "[KVAS_SET] $_t === Переключение на $proto завершено ===" >> "$LOG"
 						;;

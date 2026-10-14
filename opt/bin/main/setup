@@ -451,8 +451,10 @@ rm_package_files() {
 		rm_file /opt/bin/kvas
 		rm_dir /opt/etc/xray
 		rm_file /opt/var/log/kvas-failover.log
+		rm_file /opt/var/log/kvas-failover-history.log
+		rm_file /opt/var/log/kvas-failover-history.log.stamp
 		rm_file /var/run/kvas-failover.pid
-		rm_file /tmp/kvas-failover-switch.lock
+		rm -rf /tmp/kvas-failover-switch.lock
 		rm_file /tmp/kvas-vpn-set.log
 	} && when_ok || when_bad
 }
