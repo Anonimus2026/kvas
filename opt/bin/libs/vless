@@ -202,9 +202,11 @@ vless_link_parse() {
     fi
 
     # Генерируем конфиг в зависимости от типа подключения
-    # flow нужен ТОЛЬКО для reality + НЕ xhttp
+    # flow нужен ТОЛЬКО для reality + НЕ xhttp (v641: и НЕ grpc — xray отклоняет
+    # flow на grpc, тоннель не поднимался: строчку flow приходилось удалять руками;
+    # tcp/ws/h2 и все tls-ветки получают конфиг побайтово как раньше)
     local need_flow="no"
-    if [ "${vless_security}" = "reality" ] && [ "${vless_network}" != "xhttp" ]; then
+    if [ "${vless_security}" = "reality" ] && [ "${vless_network}" != "xhttp" ] && [ "${vless_network}" != "grpc" ]; then
         need_flow="yes"
     fi
 
