@@ -1,7 +1,7 @@
 # PRD: KVAS
 
 **Версия:** 1.1.9_beta-10-640
-**Дата:** 14.10.2026
+**Дата:** 16.10.2026
 **Репозиторий:** https://github.com/Anonimus2026/kvas
 **Release:** https://github.com/Anonimus2026/kvas/releases/tag/v1.1.9
 **Оригинал:** https://github.com/qzeleza/kvas
@@ -514,6 +514,25 @@ kvas xray [core [версия]]
 - Клиент: TUN (system-wide) или SOCKS5, split-tunneling, kill switch; официальный CLI (Linux/macOS/Windows), GUI (iOS/Android); для Keenetic есть гайд `artemevsevev/TrustTunnel-Keenetic`.
 - **Кандидат в kvas как «4-й канал»:** вопрос интеграции — подходит ли SOCKS5-режим клиента как исходящий канал kvas или нужна отдельная ветка в `libs/`; конфликт порта 443 с панелью/REALITY — второй IP либо иной порт (+ UDP под QUIC).
 - Статус: только зафиксировано; не начато.
+
+## 12.4. На будущее: Tailscale — exit-node через тоннель (исследование; записано 16.10.2026, не начато)
+
+**Сценарий (решение от 16.10.2026):** exit-node через тоннель — второй egress поверх текущего канала KVAS. В failover PRIMARY/SECONDARY не встраивать (TS едет поверх чужого туннеля, «каналом» не является). Subnet router / mesh / доступ к LAN извне — вторичные режимы.
+
+**Техфакты (исследовано 16.10.2026):**
+- Паттерн как у hysteria/awg/xray: качать static-сборку по архе из releases (детект архитектуры `main:1496-1505`: mipsel→mipsle_softfloat, aarch64→arm64; у Tailscale есть linux_mipsle/arm/arm64) — пакет не раздуется.
+- Userspace wireguard-go, kernel WG не нужен (как wireproxy у awg). tailscaled: ~30MB tgz / ~50-100MB установлено → только при наличии USB/ext-storage (`check_space.sh` как у awg).
+- Headless login: authkey (без браузера на роутере) либо свой Headscale на VPS; демон как сервис (S99 + watchdog), карточка Web UI по образцу Aggregator.
+- MVP: VPS `tailscale up --advertise-exit-node` + на Keenetic tailscaled `--exit-node=vps --accept-dns=false` (весь трафик роутера через VPS) либо exit-node только для выбранных устройств.
+
+**Доступность РФ (проверено 16.10.2026 с машины разработчика):** login/controlplane/pkgs.tailscale.com → 302/200, derp*.tailscale.com:443 → TCP open — не заблокировано (если поднят тоннель KVAS — тест шёл через него).
+
+**Риски:**
+1. Вендор-гео-блок: 02.10.2024 Tailscale Inc. отключила РФ («Service unavailable for legal reasons», tailscale#13648) — откатили, но обещали повторить → официальный control plane ненадёжен, кандидат — headscale на VPS.
+2. DPI: чистый WireGuard детектируется, обфускации нет (открытые FR tailscale#10696, #13119 — AmneziaWG не реализованы) → прямые P2P могут рваться; фолбэк DERP (443, трафик выглядит как HTTPS) обычно спасает, но добавляет latency.
+3. Ресурсы: ~50-100MB флеша, userspace-шифрование грузит CPU.
+
+**Статус:** только зафиксировано; не начато; забыто до отдельной команды.
 
 ## 13. Авторы
 
