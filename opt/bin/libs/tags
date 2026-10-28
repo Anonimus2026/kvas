@@ -440,19 +440,31 @@ cmd_update_tags_domain_list() {
     if [ "${_force}" = force ] ; then
         mv -f /opt/tmp/tags.list /opt/etc/tags.list
     else
-        local _diff=$(diff /opt/etc/tags.list  /opt/tmp/tags.list  | grep -E '^\+\[' | tr -d +)
-        if [ -n "${_diff}" ] ; then
+        local _new_sections
+        _new_sections=$(awk '
+            FNR == 1 { fileno++ }
+            fileno == 1 {
+                if ($0 ~ /^[[:space:]]*\[/) local_sections[$0] = 1
+                next
+            }
+            /^[[:space:]]*\[/ {
+                current = ($0 in local_sections) ? "" : $0
+            }
+            current != "" { print }
+        ' "${TAGS_FILE}" /opt/tmp/tags.list)
+
+        if [ -n "${_new_sections}" ] ; then
+            local _diff=$(echo "${_new_sections}" | grep -E '^[[:space:]]*\[')
             print_line
             echo -e "В список были добавлены следущие закваски:\n${_diff}"
             print_line
-            printf "%s" "${_diff}"
-            mv -f /opt/tmp/tags.list /opt/etc/tags.list
+            [ -n "$(tail -c1 "${TAGS_FILE}")" ] && echo >> "${TAGS_FILE}"
+            echo "${_new_sections}" >> "${TAGS_FILE}"
         else
             print_line
             echo -e "В удаленном списке на ${BLUE}GitHub${NOCL} новых заквасок ${RED}не обнаружено${NOCL}."
-            rm -f /opt/tmp/tags.list
         fi
-
+        rm -f /opt/tmp/tags.list
     fi
 }
 
