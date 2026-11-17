@@ -3636,6 +3636,7 @@ cmd_import_hosts() {
 	cmd_ads_status | grep -q ВКЛЮЧЕН && ads_list_hosts_update >/dev/null 2>&1
 
 	# Быстрое обновление: dnsmasq ipset-таблица + HUP (вместо cmd_kvas_init "update" = 30с)
+	/opt/apps/kvas/bin/main/ipset &>/dev/null
 	/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
 	kill -HUP "$(pidof dnsmasq)" 2>/dev/null
 	when_ok "УСПЕШНО"
