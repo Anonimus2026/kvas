@@ -424,7 +424,10 @@ case "$action" in
 		command -v logread >/dev/null 2>&1 && echo -n 'true' || echo -n 'false'
 		if command -v logread >/dev/null 2>&1; then
 			echo -n ',"logread_dnsmasq_lines":'
-			logread 2>/dev/null | grep -c 'dnsmasq.*from' 2>/dev/null || echo -n '0'
+			# v659: grep -c exit 1 при 0 совпадений -> старый "|| echo -n 0" писал "00" (битый JSON)
+			_n=$(logread 2>/dev/null | grep -c 'dnsmasq.*from' 2>/dev/null || true)
+			case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+			echo -n "$_n"
 			echo -n ',"logread_dnsmasq_sample":"'
 			json_escape "$(logread 2>/dev/null | grep 'dnsmasq.*from' | tail -3)"
 			echo -n '"'
@@ -471,7 +474,10 @@ case "$action" in
 		echo -n ',"proc_match_count":'
 		if [ -f /proc/net/nf_conntrack ] && [ -n "$ips" ]; then
 			_kvas_pat=$(echo "$ips" | sed 's/\./\\./g; s/,/|/g')
-			grep -c -E "src=${_kvas_pat}|dst=${_kvas_pat}" /proc/net/nf_conntrack 2>/dev/null || echo -n '0'
+			# v659: то же исправление "00" -> валидное число
+			_n=$(grep -c -E "src=${_kvas_pat}|dst=${_kvas_pat}" /proc/net/nf_conntrack 2>/dev/null || true)
+			case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+			echo -n "$_n"
 		else
 			echo -n '0'
 		fi

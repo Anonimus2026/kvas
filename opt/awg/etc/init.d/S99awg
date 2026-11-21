@@ -15,6 +15,8 @@ ACTIVE_FLAG="/var/run/wireproxy.active"
 
 case "$1" in
     start)
+        # v667: «Стоп» (веб/CLI) должен пережить перезагрузку — флаг выключения
+        [ -f /opt/var/kvas/svc.awg.disabled ] && { echo "AmneziaWG выключен пользователем — автозапуск пропущен"; exit 0; }
         [ "$ENABLED" != "yes" ] && exit 0
         if [ ! -f "$CONF" ]; then
             echo "Конфигурация $CONF не найдена. Сначала выполните: kvas awg new"
@@ -23,6 +25,17 @@ case "$1" in
         if [ ! -x "$PROG" ]; then
             echo "Бинарник $PROG не найден. Выполните: kvas awg install"
             exit 1
+        fi
+        # v675: сирота — живой wireproxy при мёртвом/удалённом pidfile: порт
+        # 10818 занят, старт падал с «address already in use», а статус врал
+        # «остановлен». Убиваем сироту до запуска.
+        if ! { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }; then
+            _orph=$(pidof wireproxy 2>/dev/null)
+            if [ -n "$_orph" ]; then
+                echo "Найдена сирота wireproxy (pid: $_orph) — убиваю для освобождения порта."
+                kill $_orph 2>/dev/null
+                sleep 1
+            fi
         fi
         if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
             echo "AmneziaWG (wireproxy) уже запущен."
@@ -55,12 +68,18 @@ case "$1" in
         ;;
     stop)
         # 1. Принудительная остановка мониторинга
+        # v674: killall watchdog.sh убивал И чужой watchdog (hysteria) — при любом
+        # рестарте AmneziaWG (kvas init/upgrade/failover) мониторинг соседа гиб молча,
+        # и упавший ночью туннель уже не воскресал. Свой — только по pidfile;
+        # чужой переживёт рестарт и сам завершится по своему ACTIVE_FLAG (≤35с)
         rm -f "$ACTIVE_FLAG"
         if [ -f "$WATCHDOG_PID" ]; then
-            kill "$(cat "$WATCHDOG_PID" 2>/dev/null)" 2>/dev/null
+            # v675: рестарт по инициативе самого watchdog'а — не убивать себя
+            # (kill своего pid обрывал stop между stop и start → сироты)
+            _wpid=$(cat "$WATCHDOG_PID" 2>/dev/null)
+            [ -n "$_wpid" ] && [ "$_wpid" != "$$" ] && kill "$_wpid" 2>/dev/null
             rm -f "$WATCHDOG_PID"
         fi
-        killall watchdog.sh 2>/dev/null
 
         # 2. Остановка основного демона wireproxy
         if [ -f "$PIDFILE" ]; then

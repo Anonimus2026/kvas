@@ -1,0 +1,29 @@
+#!/bin/sh
+# v643/v655: снимок системного лога для Web UI.
+# logread в CGI-контексте Keenetic (httpd) молчит — сокет syslogd недоступен.
+# Источники (по убыванию приоритета):
+#   1. /var/log/messages (syslogd файл — доступен всегда)
+#   2. dmesg (ядро, без syslogd)
+#   3. logread (если вдруг доступен)
+OUT=/opt/var/log/kvas-syslog.log
+mkdir -p /opt/var/log 2>/dev/null
+
+# Собираем из нескольких источников
+{
+	# 1. syslog файл (основной — работает из CGI)
+	[ -r /var/log/messages ] && tail -200 /var/log/messages 2>/dev/null
+	# 2. dmesg (дополнительно — ядро/сеть)
+	dmesg 2>/dev/null | tail -50
+	# 3. logread (если доступен)
+	logread 2>/dev/null | tail -100
+	/usr/sbin/logread 2>/dev/null | tail -100
+} | awk '!seen[$0]++' | tail -200 > "${OUT}.tmp" 2>/dev/null
+
+if [ -s "${OUT}.tmp" ]; then
+	mv -f "${OUT}.tmp" "${OUT}"
+else
+	rm -f "${OUT}.tmp"
+	# v655: если ничего нет — пишем хотя бы маркер, чтобы UI не говорил «пусто»
+	echo "[$(date '+%Y-%m-%d %H:%M:%S')] syslog snapshot: no sources available (messages/dmesg/logread empty)" > "${OUT}" 2>/dev/null
+fi
+exit 0

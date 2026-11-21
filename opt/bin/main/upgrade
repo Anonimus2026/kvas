@@ -455,10 +455,13 @@ else
 			sleep 3
 			;;
 	esac
-	# Включаем dns-override если не включен
-	curl -s "http://localhost:79/rci/opkg/dns-override" | grep -q true || {
-		rci_post '[{"opkg": {"dns-override": true}},{"system": {"configuration": {"save": true}}}]' &>/dev/null
-	}
+	# v645: dns-override должен быть ВЫКЛЮЧЕН — иначе Keenetic перехватывает
+	# DNS-запросы мимо dnsmasq, ipset не заполняется, тоннель не работает.
+	# Раньше здесь стояло dns-override: true (баг) — после upgrade всё ломалось.
+	if curl -s "http://localhost:79/rci/opkg/dns-override" | grep -q true; then
+		rci_post '[{"opkg": {"dns-override": false}},{"system": {"configuration": {"save": true}}}]' &>/dev/null
+		echo 'Отключаем DNS override провайдера (dns-override: false)'
+	fi
 	echo 'Тестируем настройки...'
 	kvas test upgrade
 fi

@@ -539,8 +539,14 @@ ip4__mark__create_chain() {
 	{
 		if ! ip4__chain__is_exist "${TABLE_MARK}" "${CHAIN_MARK}" ; then
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -N "${CHAIN_MARK}" 2>/dev/null
-		elif save_iptables | grep -F -- "-A ${CHAIN_MARK}" | grep -qF -- "--set-mark"; then
+		elif save_iptables | grep -F -- "-A ${CHAIN_MARK}" | grep -qE -- '--set-(x)?mark'; then
 			# chain already populated — skip re-append (fixes duplicate rules on every netfilter event)
+			# v673: iptables-save печатает MARK как --set-xmark — раньше guard не матчил никогда
+			# v674: цепочка цела, НО Keenetic мог вычистить ip rule/таблицу 200 —
+			# восстанавливаем маршруты перед выходом (функции идемпотентны, проверяют
+			# существование); иначе помеченный трафик уходит в чёрную дыру
+			ip4__route__add_table
+			ip4__rule__add_mark_to_table
 			return 0
 		else
 			# chain exists but empty/incomplete — flush and rebuild
@@ -579,13 +585,37 @@ ip4__mark__create_chain() {
 	} &>/dev/null || error "[${FUNCNAME}] Возникли ошибки во время маркировки трафика для VPN"
 }
 
+# v670: вкл/выкл Списка 2 (флаг ставит `kvas list2 off`, снимает `kvas list2 on`)
+ip4__mark2__is_enabled() {
+	[ ! -f "${LIST2_DISABLED_FILE:-/opt/var/kvas/list2.disabled}" ]
+}
+
+# снятие Списка 2: вход в PREROUTING, цепочка, ip rule 1777/1779, таблица 201
+# (идемпотентно — можно вызывать при каждом refresh, пока стоит флаг)
+ip4__mark2__disable() {
+	ip4__chain__delete_jump "${TABLE_MARK}" "${CHAIN_MARK2}" 2>/dev/null
+	/opt/sbin/iptables -w -t "${TABLE_MARK}" -F "${CHAIN_MARK2}" 2>/dev/null
+	ip4__rule2__delete_mark_to_table
+	ip4__route2__flush_table
+	return 0
+}
+
 # Цепочка Списка 2: трафик из KVAS_LIST2 получает MARK2 и уходит в таблицу 201
 ip4__mark2__create_chain() {
+	# v670: выключен — никакой пересборки; заодно приберёмся, если флаг
+	# поставили, пока правила ещё были созданы
+	ip4__mark2__is_enabled || { ip4__mark2__disable; return 1; }
 	{
 		if ! ip4__chain__is_exist "${TABLE_MARK}" "${CHAIN_MARK2}" ; then
 			/opt/sbin/iptables -w -t "${TABLE_MARK}" -N "${CHAIN_MARK2}" 2>/dev/null
-		elif save_iptables | grep -F -- "-A ${CHAIN_MARK2}" | grep -qF -- "--set-mark"; then
+		elif save_iptables | grep -F -- "-A ${CHAIN_MARK2}" | grep -qE -- '--set-(x)?mark'; then
 			# chain already populated — skip re-append
+			# v673: как и у KVAS_MARK — матчат оба формата --set-mark/--set-xmark
+			# v674: как и у KVAS_MARK — route/rule (201 + фоллбэк) восстанавливаем
+			# перед выходом: guard не должен оставлять чёрную дыру
+			ip4__route2__add_table
+			ip4__rule2__add_mark_to_table
+			ip4__rule2_fallback__add_mark_to_table
 			return 0
 		else
 			# chain exists but empty/incomplete — flush and rebuild
@@ -665,7 +695,8 @@ ip4__add_routing_for_home() {
 		return
 	fi
 
-	log_warning "Подключение перенаправления трафика для домашней сети в тоннель ${3}"
+	# v673: periodic ndm rewrite сносит PREROUTING-прыжки — re-add штатный, не событие
+	log_info "Подключение перенаправления трафика для домашней сети в тоннель ${3}"
 
 	/opt/sbin/iptables -A PREROUTING -w -t "${table}" -i "${net_interface}" -m set --match-set "${IPSET_TABLE_NAME}" dst -j "${chain_name}"
 }
@@ -681,6 +712,8 @@ ip4__mark__add_routing_for_home() {
 
 # Список 2: вход в KVAS_MARK2 — строго ВЫШЕ правил lane1 (приоритет при пересечении списков)
 ip4__mark2__add_routing_for_home() {
+	# v670: выключен — вход не добавляем
+	ip4__mark2__is_enabled || return 0
 	local table="${TABLE_MARK}"
 	local chain="${CHAIN_MARK2}"
 	local net_interface=$(get_local_inface)
@@ -696,7 +729,8 @@ ip4__mark2__add_routing_for_home() {
 		return
 	fi
 
-	log_warning "Подключение перенаправления трафика Списка 2 для домашней сети в тоннель $(ip4__lane2__get_tunnel)"
+	# v673: periodic ndm rewrite сносит PREROUTING-прыжки — re-add штатный, не событие
+	log_info "Подключение перенаправления трафика Списка 2 для домашней сети в тоннель $(ip4__lane2__get_tunnel)"
 
 	if [ -n "${_lane1_num}" ]; then
 		# вставка вплотную перед первым правилом lane1
@@ -893,7 +927,8 @@ ip4__add_routing() {
 		return
 	fi
 
-	log_warning "Подключение перехвата трафика по${submessage}"
+	# v673: periodic ndm rewrite сносит PREROUTING-прыжки — re-add штатный, не событие
+	log_info "Подключение перехвата трафика по${submessage}"
 
 	# atomic -C check before append (race with concurrent hooks)
 	if ! /opt/sbin/iptables -C PREROUTING -w -t "${table}" $(echo "${iptables_filter}") -j "${chain_name}" 2>/dev/null; then
@@ -1073,9 +1108,28 @@ ip4_mark_vpn_network() {
 			done
 		}
 	} &>/dev/null
+	# v642: rc хвоста (MASQUERADE/гостевые) не должен врать об ошибке — ядро правил
+	# уже применено в ip4__mark__create_chain; пустой default-route в момент init
+	# или отказ гостевого -A давали ложную «Создаем iptables правила ОШИБКА»
+	return 0
 }
 
 ip4_firewall_set_all_rules() {
+	# v673: ndm запускает netfilter.d хуки параллельно (mangle + nat) — два прохода
+	# гоняли flush/rebuild одних и тех же цепочек, отсюда [E] маркировки в логе.
+	# Атомарный lock; ждём до 30с, потом работаем без лока (лучше поздно, чем никогда).
+	local _lock="/tmp/kvas-fw-rules.lock"
+	local _waited=0
+	while ! mkdir "${_lock}" 2>/dev/null; do
+		# сломанный лок (старше 60с) — сносим
+		if [ "$(($(date +%s) - $(stat -c %Y "${_lock}" 2>/dev/null || echo 0)))" -gt 60 ] 2>/dev/null; then
+			rm -rf "${_lock}" 2>/dev/null
+			continue
+		fi
+		[ "${_waited}" -ge 30 ] && break
+		sleep 1
+		_waited=$((_waited + 1))
+	done
 	if is_shadowsocks_enabled ; then
 		ip4__shadowsocks__create_chain &>/dev/null
 
@@ -1088,6 +1142,11 @@ ip4_firewall_set_all_rules() {
 	else
 		ip4_mark_vpn_network
 	fi
+	# v673: rc ветки должен дойти до вызывающего (vpn:46 проверяет его) —
+	# rm -and-reset перетирал бы его
+	local _rc=$?
+	rm -rf "${_lock}" 2>/dev/null
+	return "${_rc}"
 }
 
 
@@ -1387,7 +1446,7 @@ ip4__lane2__get_tunnel() {
 	local lane2_tun
 	lane2_tun=$(get_config_value 'LANE2_TUNNEL')
 	case "${lane2_tun}" in
-		vless|hysteria|awg) echo "${lane2_tun}" ;;
+		vless|hysteria|awg|aggregator) echo "${lane2_tun}" ;;
 		'')
 			echo 'current' ;;
 		*)
@@ -1406,9 +1465,11 @@ ip4__lane2__get_iface() {
 	fi
 	local cli_name
 	case "${lane2_tun}" in
-		vless)    cli_name='Proxy21' ;;
-		hysteria) cli_name='Proxy41' ;;
-		awg)      cli_name='Proxy42' ;;
+		vless)     cli_name='Proxy21' ;;
+		hysteria)  cli_name='Proxy41' ;;
+		awg)       cli_name='Proxy42' ;;
+		# v670: aggregator обслуживается тем же SOCKS Proxy21 (порт 1097)
+		aggregator) cli_name='Proxy21' ;;
 		*)        cli_name="${lane2_tun}" ;;
 	esac
 	awk -F'|' -v c="${cli_name}" '$1==c {print $2; exit}' "${INFACE_NAMES_FILE}" 2>/dev/null
@@ -1448,7 +1509,7 @@ ip4__route2__add_table() {
 	# нативные тоннели Keenetic — та же семантика, что у основного списка (lane1)
 	local gateway_ip=''
 	case "${lane2_tun}" in
-		vless|hysteria|awg) ;;
+		vless|hysteria|awg|aggregator) ;;
 		*) gateway_ip=$(get_config_value 'ADDR_MAN') ;;
 	esac
 	if [ -n "${gateway_ip}" ] ; then

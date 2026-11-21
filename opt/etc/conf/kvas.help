@@ -108,7 +108,7 @@ kvas aggregator add vless://...  - добавить ссылку в пул
 kvas aggregator del <N>      - удалить ссылку №N из пула
 kvas aggregator on           - включить: полный тест, применение первого живого
 kvas aggregator off          - выключить: откат на ручной VLESS-конфиг
-kvas aggregator check [N]    - проверить ссылку №N (без N - активную + мёртвые)
+kvas aggregator check [N|all] - проверить №N; без N - активную + мёртвые; all - весь пул (~3 мин/нажатие)
 kvas aggregator set <N>      - переключиться на ссылку №N
 Прим.: пул - файл /opt/etc/kvas.aggregator (одна ссылка на строку, # - комментарий);
 dead помечается после 3 неответов подряд, re-check каждые 30 мин (cron);

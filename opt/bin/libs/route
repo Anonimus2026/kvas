@@ -487,19 +487,22 @@ DEVICES
 				fi
 				echo -n "Имя интерфейса (br1, br2...): "
 				read guest_iface
-				if [ -n "${guest_iface}" ]; then
-					local current=$(get_config_value "INFACE_GUEST_ENT")
-					if echo ",${current}," | grep -qi ",${guest_iface},"; then
-						echo "Сеть ${guest_iface} уже в списке."
-					else
-						if [ -z "${current}" ]; then
-							set_config_value "INFACE_GUEST_ENT" "${guest_iface}"
+					if [ -n "${guest_iface}" ]; then
+						local current=$(get_config_value "INFACE_GUEST_ENT")
+						if echo ",${current}," | grep -qi ",${guest_iface},"; then
+							echo "Сеть ${guest_iface} уже в списке."
 						else
-							set_config_value "INFACE_GUEST_ENT" "${current},${guest_iface}"
+							if [ -z "${current}" ]; then
+								set_config_value "INFACE_GUEST_ENT" "${guest_iface}"
+							else
+								set_config_value "INFACE_GUEST_ENT" "${current},${guest_iface}"
+							fi
+							echo "Гостевая сеть ${guest_iface} добавлена."
+							# v670: применяем сразу — раньше сеть начинала работать
+							# только после ручного «r) Применить»
+							cmd_route_refresh
 						fi
-						echo "Гостевая сеть ${guest_iface} добавлена."
 					fi
-				fi
 				echo -n "Enter..."; read dummy
 				;;
 			N)
@@ -520,6 +523,8 @@ DEVICES
 								set_config_value "INFACE_GUEST_ENT" "${new_list}"
 								echo "Гостевая сеть ${guest_iface} удалена."
 							fi
+							# v670: применяем сразу (как при добавлении)
+							cmd_route_refresh
 						else
 							echo "Сеть ${guest_iface} не найдена."
 						fi

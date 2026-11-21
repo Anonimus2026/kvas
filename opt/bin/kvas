@@ -79,6 +79,7 @@ case "${1}" in
 	test|check) _require check ;;
 	reset|init) _require vpn ;;
 	version|ver) : ;;
+	memtop) : ;;
 	help|-h|--h|"") _require vpn ;;
 	upgrade|update|rollback) : ;;
 	*) _require vpn ;;
@@ -130,15 +131,20 @@ case "${1}" in
 			[ -n "$_dom" ] && cmd_add_one_host "$_dom" "no" "$_wild" && _added=true
 		done
 		if $_added; then
-			update_ipset refresh &>/dev/null
-			if [ -f /opt/etc/init.d/S56dnsmasq ]; then
-				/opt/etc/init.d/S56dnsmasq restart &>/dev/null
-			else
-				/opt/etc/init.d/S99adguardhome restart &>/dev/null
-			fi
-			for _dom in $_domains; do
-				[ -n "$_dom" ] && ipset__fill_by_domain "$_dom" &>/dev/null
-			done
+			# v650: сначала прогрев нового домена (ipset наполняется за секунды,
+			# сайт через туннель работает сразу), потом refresh + reload dnsmasq.
+			# v649: всё в ФОНЕ — приглашение возвращается мгновенно.
+			# v651: вместо полного S56dnsmasq restart — regen + kill -HUP
+			# (паттерн manage.sh): полный рестарт в фоне мог оставить
+			# dnsmasq мёртвым → падал DNS всего роутера.
+			(
+				for _dom in $_domains; do
+					[ -n "$_dom" ] && ipset__fill_by_domain "$_dom" &>/dev/null
+				done
+				update_ipset refresh &>/dev/null
+				/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+				kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+			) </dev/null &
 		fi
 		;;
 	del | rm  )
@@ -182,16 +188,17 @@ case "${1}" in
 				_deleted=true
 				when_ok "УДАЛЕН"
 			else
-				when_bad "НЕТ В СПИСКЕ"
+				when_alert "НЕТ В СПИСКЕ"
 			fi
 		done
 		if $_deleted; then
-			update_ipset refresh &>/dev/null
-			if [ -f /opt/etc/init.d/S56dnsmasq ]; then
-				/opt/etc/init.d/S56dnsmasq restart &>/dev/null
-			else
-				/opt/etc/init.d/S99adguardhome restart &>/dev/null
-			fi
+			# v651: regen + kill -HUP вместо фонового полного рестарта
+			# (v649) — рестарт в фоне мог уронить DNS всего роутера
+			(
+				update_ipset refresh &>/dev/null
+				/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+				kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+			) </dev/null &
 		fi
 		;;
 
@@ -425,13 +432,18 @@ case "${1}" in
 	aggregator)
 		case "${2}" in
 			add)		agg_cmd_add "${3}" ;;
+			addfile)	agg_cmd_addfile "${3}" ;;
 			del|rm)		agg_cmd_del "${3}" ;;
 			list)		agg_cmd_list ;;
 			on)			agg_cmd_on ;;
 			off)		agg_cmd_off ;;
 			check)		agg_cmd_check "${3}" ;;
+			purge)		agg_cmd_purge ;;
+			clear)		agg_cmd_clear ;;
+			fastprobe)	agg_fastprobe ;;
 			set)		agg_cmd_set "${3}" ;;
 			cron)		agg_cron ;;
+			unlock)		rm -f /tmp/kvas-aggregator.lock && printf 'Aggregator: lock removed\n' ;;
 			status|*)	agg_status_line; printf '\n' ;;
 		esac
 			;;
@@ -500,8 +512,34 @@ case "${1}" in
 	vpn)
 		case "${2}" in
 			set)
+				# v686: libs/failover в этой команде не грузилась (dispatch поднимает
+				# только vpn/update/check) — stop/load/save/record_switch/… были НЕ
+				# определены в этом процессе и молча не делали ничего (no-op), а
+				# `echo $! > /var/run/kvas-failover.pid` записывал PID уже мёртвого
+				# подпроцесса → битый pidfile и «потерянная» история переключений.
+				_require failover
 				case "${3}" in
+					aggregator)
+						# v654: aggregator как тоннель — включаем агрегатор
+						. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null
+						agg_cmd_on
+						;;
 					vless|hysteria|awg)
+						# v665: взаимное исключение переключений. Раньше каждый клик UI
+						# (и параллельный CLI/failover) запускал СВОЙ полный init
+						# (dnsmasq/ipset/xray) — 3 параллельных kvas vpn set = load ~10,
+						# CPU 100% на роутере (снимок процессов пользователя v664).
+						if [ -f /tmp/kvas-vpn-set.run ]; then
+							_vsrpid=$(cat /tmp/kvas-vpn-set.run 2>/dev/null)
+							case "${_vsrpid}" in ''|*[!0-9]*) _vsrpid="" ;; esac
+							if [ -n "${_vsrpid}" ] && kill -0 "${_vsrpid}" 2>/dev/null; then
+								echo "[KVAS_SET] $(date '+%H:%M:%S') переключение уже идёт (pid ${_vsrpid}) — отмена второго" >&2
+								exit 1
+							fi
+							rm -f /tmp/kvas-vpn-set.run
+						fi
+						echo $$ > /tmp/kvas-vpn-set.run
+						trap 'rm -f /tmp/kvas-vpn-set.run' EXIT INT TERM
 						LOG="/tmp/kvas-vpn-set.log"
 						: > "$LOG"
 						
@@ -547,6 +585,61 @@ case "${1}" in
 							ls -la /opt/etc/ 2>&1 | while IFS= read -r line; do _t=$(_ts); echo "[KVAS_SET] $_t   $line" >&2; echo "[KVAS_SET] $_t   $line" >> "$LOG"; done
 						fi
 						
+						# v667: выбранное состояние должно пережить перезагрузку:
+						# выбранному протоколу — снять флаг выключения (гвард S97/S99
+						# пропустит автозапуск), остальным — выставить (исключены из
+						# автозапуска и failover). Флаги — ДО switch_vpn_on/S97 start.
+						# v668: при включённом failover НЕ гасим невыбранные тоннели —
+						# secondary должен оставаться готовым (архитектура failover);
+						# исключение из failover — только явной кнопкой Стоп.
+						mkdir -p /opt/var/kvas
+						_fo_on=0
+						[ -f /opt/etc/kvas-failover-enabled ] && _fo_on=1
+						if [ "${_fo_on}" != "1" ]; then
+						case "$proto" in
+							hysteria)
+								rm -f /opt/var/kvas/svc.hysteria.disabled
+								touch /opt/var/kvas/svc.awg.disabled /opt/var/kvas/svc.vless.disabled
+								;;
+							awg)
+								rm -f /opt/var/kvas/svc.awg.disabled
+								touch /opt/var/kvas/svc.hysteria.disabled /opt/var/kvas/svc.vless.disabled
+								;;
+							*)
+								rm -f /opt/var/kvas/svc.vless.disabled
+								touch /opt/var/kvas/svc.hysteria.disabled /opt/var/kvas/svc.awg.disabled
+								;;
+						esac
+						else
+							# failover on: выбранному снять флаг, чужие не трогать
+							case "$proto" in
+								hysteria) rm -f /opt/var/kvas/svc.hysteria.disabled ;;
+								awg)      rm -f /opt/var/kvas/svc.awg.disabled ;;
+								*)        rm -f /opt/var/kvas/svc.vless.disabled ;;
+							esac
+						fi
+
+						# v686: причина переключения и активный канал ДО переключения —
+						# нужны для истории (record_switch) и для решений об очереди
+						# failover/агрегаторе. reason пробрасывают switch_to (auto),
+						# agg_tunnel_capture (agg); по умолчанию — manual (CLI/Web/бот).
+						_reason="${KVAS_SWITCH_REASON:-manual}"
+						_from=$(get_active_iface 2>/dev/null)
+						[ -n "${_from}" ] || _from="unknown"
+						_t=$(_ts); echo "[KVAS_SET] $_t reason=${_reason} from=${_from} proto=${proto}" >&2; echo "[KVAS_SET] $_t reason=${_reason} from=${_from} proto=${proto}" >> "$LOG"
+
+						# v686: ручное переключение на не-vless тоннель при включённом
+						# агрегаторе → гасим агрегатор. Иначе ENABLED=1, а тоннель уходит
+						# на hysteria/awg: бейдж «Aggregator» в UI и реальный выход IP
+						# расходятся (жалоба 1). Авто-переключения (reason=auto/agg)
+						# агрегатор НЕ трогают — он главный, возврат авто (решение юзера).
+						if [ "${_reason}" = "manual" ] && [ "${proto}" != "vless" ] && \
+							grep -q '^ENABLED=1$' /opt/var/kvas/aggregator.state 2>/dev/null; then
+							_t=$(_ts); echo "[KVAS_SET] $_t >>> aggregator авто-Off (ручное переключение на ${proto})" >&2; echo "[KVAS_SET] $_t >>> aggregator авто-Off (ручное переключение на ${proto})" >> "$LOG"
+							. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null && agg_cmd_off || true
+							echo "Агрегатор выключен: ручное переключение на ${proto}"
+						fi
+
 						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> stop_failover_daemon" >&2; echo "[KVAS_SET] $_t >>> stop_failover_daemon" >> "$LOG"
 						stop_failover_daemon > /dev/null 2>&1
 						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< stop_failover_daemon (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< stop_failover_daemon (${_d}s)" >> "$LOG"
@@ -580,15 +673,38 @@ case "${1}" in
 						if [ "$proto" = "awg" ]; then
 							_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> service_action S99awg start" >&2; echo "[KVAS_SET] $_t >>> service_action S99awg start" >> "$LOG"
 							service_action S99awg start > /dev/null 2>&1
-							_d=$(( $(_sec) - $(_s) )); _t=$(_ts); echo "[KVAS_SET] $_t <<< service_action S99awg start (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< service_action S99awg start (${_d}s)" >> "$LOG"
+							_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< service_action S99awg start (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< service_action S99awg start (${_d}s)" >> "$LOG"
+						fi
+						# v667: невыбранные тоннели гасим (процесс + их автозапуск уже
+						# закрыт флагами выше) — «выбранный остаётся, остальные off»
+						# v668: только при выключенном failover (см. _fo_on выше)
+						if [ "${_fo_on}" != "1" ]; then
+							if [ "$proto" != "hysteria" ] && [ -f /opt/apps/kvas/hysteria/etc/init.d/S99hysteria ]; then
+								service_action S99hysteria stop > /dev/null 2>&1
+							fi
+							if [ "$proto" != "awg" ] && [ -f /opt/apps/kvas/awg/etc/init.d/S99awg ]; then
+								service_action S99awg stop > /dev/null 2>&1
+							fi
 						fi
 						
-						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> load_failover_conf + save" >&2; echo "[KVAS_SET] $_t >>> load_failover_conf + save" >> "$LOG"
+						# v686: очередь failover обновляется ТОЛЬКО при ручном переключении.
+						# (1) раньше блок вызывал НЕ определённые здесь load/save_failover_conf
+						# и молча ничего не делал (см. _require выше); (2) с подключённой
+						# libs/failover он перетирал бы PRIMARY при КАЖДОМ авто-переключении
+						# failover (reason=auto) и при возврате агрегатора (reason=agg) —
+						# настроенная юзером очередь «исчезала» (жалоба 3).
+						if [ "${_reason}" = "manual" ] && [ -f /opt/etc/kvas-failover-enabled ]; then
+						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> load_failover_conf + save (manual)" >&2; echo "[KVAS_SET] $_t >>> load_failover_conf + save (manual)" >> "$LOG"
 						load_failover_conf
+						# v675: новый primary == текущему secondary — меняем каналы
+						# местами, а не роняем secondary в пустой (раньше save при
+						# равенстве чистил SECONDARY: старый основной «исчезал»
+						# из failover, оставался только мёртвый hysteria)
+						[ "$SECONDARY" = "$proto" ] && SECONDARY="$PRIMARY"
 						PRIMARY="$proto"
 						save_failover_conf
 						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< PRIMARY обновлён на $proto (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< PRIMARY обновлён на $proto (${_d}s)" >> "$LOG"
-						
+						fi
 						_s=$(_sec); _t=$(_ts); echo "[KVAS_SET] $_t >>> update_iptables" >&2; echo "[KVAS_SET] $_t >>> update_iptables" >> "$LOG"
 						update_iptables
 						_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< update_iptables (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< update_iptables (${_d}s)" >> "$LOG"
@@ -604,6 +720,20 @@ case "${1}" in
 							_d=$(( $(_sec) - _s )); _t=$(_ts); echo "[KVAS_SET] $_t <<< failover daemon запущен PID $! (${_d}s)" >&2; echo "[KVAS_SET] $_t <<< failover daemon запущен PID $! (${_d}s)" >> "$LOG"
 						fi
 						
+						# v686: история переключений — ПО ФАКТУ (активный канал подтверждён)
+						# и для ВСЕХ причин. Раньше record_switch вызывался только из
+						# фонового блока switch_to (reason=auto, после sleep 10) —
+						# ручные переключения и переключения агрегатора в историю не
+						# попадали вовсе (жалоба 3: «failover теряет историю»).
+						_after=$(get_active_iface 2>/dev/null)
+						if [ "${_after}" = "${proto}" ]; then
+							if [ -n "${_from}" ] && [ "${_from}" != "${proto}" ]; then
+								record_switch "${_from}" "${proto}" "${_reason}"
+							fi
+						else
+							_t=$(_ts); echo "[KVAS_SET] $_t !! переключение не подтверждено (активен '${_after:-?}') — история без записи" >&2; echo "[KVAS_SET] $_t !! переключение не подтверждено (активен '${_after:-?}') — история без записи" >> "$LOG"
+						fi
+
 						_t=$(_ts); echo "[KVAS_SET] $_t === Переключение на $proto завершено ===" >&2; echo "[KVAS_SET] $_t === Переключение на $proto завершено ===" >> "$LOG"
 						;;
 					*)
@@ -619,12 +749,35 @@ case "${1}" in
 						done < "${INFACE_NAMES_FILE}" 2>/dev/null
 						if [ -n "${_found_ent}" ]; then
 							is_install_stage=no
+							# v686: причина + активный канал ДО переключения (история)
+							_reason="${KVAS_SWITCH_REASON:-manual}"
+							_from=$(get_active_iface 2>/dev/null)
+							[ -n "${_from}" ] || _from="unknown"
+							# v686: ручное переключение на чужой интерфейс при включённом
+							# агрегаторе → гасим его (см. ветку proto выше: ENABLED=1 при
+							# тоннеле мимо VLESS = бейдж и реальный IP расходятся)
+							_found_is_vless=0
+							case "${_found_cli}" in *Proxy21*|*vless*) _found_is_vless=1 ;; esac
+							if [ "${_reason}" = "manual" ] && [ "${_found_is_vless}" = "0" ] && \
+								grep -q '^ENABLED=1$' /opt/var/kvas/aggregator.state 2>/dev/null; then
+								. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null && agg_cmd_off || true
+								echo "Агрегатор выключен: ручное переключение на ${_found_cli}"
+							fi
+							# v683: был дубль update_iptables + all_services_restart — switch_vpn_on
+							# уже делает cmd_kvas_init "no_reset" (iptables + ipset + adblock + все
+							# сервисы). Два полных init подряд = гонка рестарта dnsmasq («Starting
+							# dnsmasq... failed» в логе юзера после обновления на 682).
 							switch_vpn_on "${_found_ent}" "${_found_cli}"
-							update_iptables
-							all_services_restart
+							# v686: история по факту — токен, который вернул бы get_active_iface
+							_after=$(get_active_iface 2>/dev/null)
+							if [ -n "${_after}" ] && [ "${_after}" != "${_from}" ]; then
+								record_switch "${_from}" "${_after}" "${_reason}"
+							fi
 							# Если failover включён — обновляем PRIMARY = выбранный вручную канал
 							# Используем тот же формат что get_active_iface (vless/hysteria/описание)
-							if [ -f /opt/etc/kvas-failover-enabled ]; then
+							# v686: только для ручного переключения (reason=manual) — авто-переключение
+							# failover/агрегатора не должно переписывать настроенную юзером очередь.
+							if [ "${_reason}" = "manual" ] && [ -f /opt/etc/kvas-failover-enabled ]; then
 								case "${_found_cli}" in
 									*Proxy21*) _new_primary="vless" ;;
 									*Proxy41*) _new_primary="hysteria" ;;
@@ -675,6 +828,12 @@ case "${1}" in
 			port) 			cmd_dnsmasq_port_change "${3}" ;;
 			ip) 			cmd_dnsmasq_dns_change "${3}";;
 			on)				cmd_adguardhome_off ;;
+			# v684: раньше подкоманд не было — `kvas dnsmasq start` падал в
+			# ветку статуса и печатал «НЕ НАСТРОЕН» от AdGuard, не запуская
+			# службу; лечился только ручной /opt/etc/init.d/S56dnsmasq start
+			start)			cmd_dnsmasq_start ;;
+			stop)			cmd_dnsmasq_stop ;;
+			restart)		cmd_dnsmasq_restart ;;
 			status | *) 	exit_when_adguard_on status;
 							[ "${status}" = 0 ] && {
 								cmd_dnsmasq_listen_show;
@@ -748,6 +907,8 @@ case "${1}" in
 			tunnel)       cmd_list2_tunnel "${3}" ;;
 			tunnel-list)  cmd_list2_tunnel_list ;;
 			list)         cmd_list2_list ;;
+			on)           cmd_list2_on ;;
+			off)          cmd_list2_off ;;
 			"" | status | *)  cmd_list2_status ;;
 		esac
 		;;
@@ -807,6 +968,26 @@ case "${1}" in
 			iptables) cmd_debug_iptables     ;;
 			*)        cmd_print_debug "${2}" ;;
 		esac
+		;;
+
+	memtop)
+		# v690: топ потребителей памяти RSS+Swap — инцидент 16.11 (RAM 934/1024,
+		# пожиратель за 6 дней не был пойман): одной командой видно, кто растёт
+		echo "=== Память (КБ) ==="
+		free 2>/dev/null
+		echo ""
+		printf '%-34s %8s %8s %8s\n' "PROCESS" "RSS" "SWAP" "TOTAL"
+		for _d in /proc/[0-9]*; do
+			[ -r "${_d}/status" ] || continue
+			_n=$(sed -n 's/^Name:[[:space:]]*//p' "${_d}/status" 2>/dev/null)
+			_r=$(sed -n 's/^VmRSS:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${_d}/status" 2>/dev/null)
+			_s=$(sed -n 's/^VmSwap:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${_d}/status" 2>/dev/null)
+			[ -n "${_r}" ] || _r=0
+			[ -n "${_s}" ] || _s=0
+			_t=$((_r + _s))
+			[ "${_t}" -gt 0 ] 2>/dev/null || continue
+			printf '%8d %8d %8d %s\n' "${_r}" "${_s}" "${_t}" "${_n}"
+		done | sort -k3 -rn | head -20 | awk '{name=""; for(i=4;i<=NF;i++) name=name (i>4?" ":"") $i; printf "%-34s %8s %8s %8s\n", name, $1, $2, $3}'
 		;;
 
 	test | check) cmd_test_warning "${2}"

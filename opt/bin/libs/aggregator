@@ -20,7 +20,32 @@ AGG_FAIL_MAX=3
 AGG_RECHECK_SEC=1800
 AGG_PROBE_URL1="https://${DOMAIN_FOR_CHECK}"
 AGG_PROBE_URL2="https://ifconfig.me"
+# v663: литеральный IP без DNS — третья, самая надёжная проба живости тоннеля
+AGG_PROBE_URL3="https://1.1.1.1/cdn-cgi/trace"
 AGG_LOCK=/tmp/kvas-aggregator.lock
+# v663: Off ставит abort-метку времени; ожидающие лок воркеры после пробуждения
+# сверяются с ней и завершаются — иначе после снятия лока вся очередь действий
+# (on/set/check/…) просыпалась и поднимала новые тоннеля уже при выключенном агрегаторе
+AGG_ABORT_FILE=/opt/var/kvas/aggregator.abort
+# v661: предсказуемость — скан ограничен N полными тестами за запуск (иначе
+# 50 мёртвых кандидатов = 20-25 мин удержания лока + рестарты xray);
+# user-действия ждут лок до AGG_WAIT_LOCK_SEC, а не падают с «another run»
+AGG_SCAN_MAX=5
+AGG_RECHECK_MAX=3
+AGG_WAIT_LOCK_SEC=120
+# v664: бюджет по времени для полного прогона пула («Проверить всё») —
+# лок держится не дольше N секунд, нажатие продолжает с места остановки
+AGG_CHECK_BUDGET_SEC=180
+# v659: warm standby — экраньё кандидатов на TCP-коннект (без xray-restart),
+# чтобы при отказе активного сразу переключиться на проверенный сервер
+AGG_SB_RECHECK_SEC=600
+AGG_SB_TESTS_MAX=2
+# v669: deep-screening — полный VLESS-тест кандидата во временном xray
+# (изолированный socks-порт) перед постановкой в STANDBY; TCP-живой, но
+# VLESS-мёртвый кандидат больше не занимает слот резерва
+AGG_SB_DEEP=1
+AGG_SB_DEEP_FAIL_MAX=3
+AGG_SB_DEEP_PORT=10977
 
 # ---------------- state ----------------
 
@@ -49,6 +74,92 @@ agg_enabled(){ [ "$(agg_get ENABLED)" = "1" ]; }
 
 agg_active_idx(){ local _a; _a=$(agg_get ACTIVE); [ -n "${_a}" ] || _a=0; printf '%s' "${_a}"; }
 
+# ---------------- infra guard (v674) ----------------
+# Прямая (БЕЗ соксов) проба сети роутера. Раньше любая глобальная просадка
+# (ребут/WAN/DNS/пропал curl) считалась отказом тоннеля: fastprobe за 2 минуты
+# метил active в dead, emergency — standby с первой же неудачи, «Проверить всё» —
+# весь прогон с первой упавшей проверки → «все тоннели мертвы» при рабочем пуле.
+# Кэш 60с на результат (успех и провал) — fastprobe бежит каждую минуту.
+AGG_WAN_CACHE=/tmp/agg.wan.state
+AGG_WAN_CACHE_SEC=60
+agg_wan_ok(){
+	local _now _ts _res _c _rc
+	_now=$(date +%s)
+	if [ -f "${AGG_WAN_CACHE}" ]; then
+		_ts=""; _res=""
+		read -r _ts _res < "${AGG_WAN_CACHE}" 2>/dev/null || true
+		case "${_ts}" in ''|*[!0-9]*) _ts=0 ;; esac
+		if [ $((_now - _ts)) -lt "${AGG_WAN_CACHE_SEC}" ]; then
+			[ "${_res}" = "ok" ]
+			return $?
+		fi
+	fi
+	_rc=fail
+	_c=$(command -v curl 2>/dev/null); [ -n "${_c}" ] || { [ -x /opt/bin/curl ] && _c=/opt/bin/curl; }
+	if [ -n "${_c}" ]; then
+		"${_c}" -s --connect-timeout 4 -m 6 -o /dev/null "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null
+		case "$?" in 0|18|52|55|56) _rc=ok ;; esac
+	fi
+	printf '%s %s\n' "${_now}" "${_rc}" > "${AGG_WAN_CACHE}" 2>/dev/null
+	[ "${_rc}" = "ok" ]
+}
+
+# ---------------- local guard (v676) ----------------
+# Все пробы идут через ОДИН общий socks xray (PROXY_VLESS_PORT): если сам xray
+# мёртв или порт не слушает, падают ВСЕ пробы при живом WAN — раньше это уводило
+# active→standby→scan в dead по цепочке и пул уходил в fallback («все тоннели
+# dead» при живом канале и рабочем пуле). Проверка дешёвая (/proc/net/tcp, без
+# nc/curl, кэш не нужен): state 0A=LISTEN, свой порт. Если /proc недоступен —
+# считаем живым (не мешаем пометкам: доказать отказ локального нельзя).
+agg_local_ok(){
+	local _hex _f
+	case "${PROXY_VLESS_PORT}" in ''|*[!0-9]*) return 0 ;; esac
+	[ "${PROXY_VLESS_PORT}" -le 65535 ] 2>/dev/null || return 0
+	_hex=$(printf '%04X' "${PROXY_VLESS_PORT}")
+	for _f in /proc/net/tcp /proc/net/tcp6; do
+		[ -r "${_f}" ] || continue
+		grep -iqE "^[[:space:]]*[0-9]+:[[:space:]]*[0-9a-f]+:${_hex}[[:space:]]+[0-9a-f]+:[0-9a-f]+[[:space:]]+0A" "${_f}" 2>/dev/null && return 0
+	done
+	[ -e /proc/net/tcp ] || return 0
+	return 1
+}
+
+# v676: автолечение общего компонента: socks не слушает → верифицированный
+# рестарт xray (раньше agg_xray_restart_quiet молча возвращал 0, даже если
+# сервис не поднялся — это было невидимо), дождаться поднятия порта; при провале
+# — жёсткий stop+start. Cooldown — fastprobe бежит раз в 60с, не крутим
+# рестарты без остановки.
+AGG_HEAL_COOLDOWN_SEC=120
+agg_heal_local(){
+	local _now _last _i
+	# xray не обязан работать, когда агрегатор выключен и active сброшен
+	agg_enabled || [ "$(agg_active_idx)" != "0" ] || return 1
+	_now=$(date +%s)
+	_last=$(agg_get LOCALHEAL_TS); [ -n "${_last}" ] || _last=0
+	[ $((_now - _last)) -ge "${AGG_HEAL_COOLDOWN_SEC}" ] || return 1
+	agg_set LOCALHEAL_TS "${_now}"
+	printf 'Aggregator: local socks (%s) is down - healing xray (restart)\n' "${PROXY_VLESS_PORT}"
+	agg_xray_restart_quiet
+	_i=0
+	while [ "${_i}" -lt 6 ]; do
+		if agg_local_ok; then sleep 1; return 0; fi
+		sleep 1
+		_i=$((_i + 1))
+	done
+	printf 'Aggregator: xray port still down after restart - stop/start\n'
+	service_action S97xray stop >/dev/null 2>&1
+	sleep 1
+	service_action S97xray start >/dev/null 2>&1
+	_i=0
+	while [ "${_i}" -lt 6 ]; do
+		if agg_local_ok; then sleep 1; return 0; fi
+		sleep 1
+		_i=$((_i + 1))
+	done
+	printf 'Aggregator: healing failed (port %s still down)\n' "${PROXY_VLESS_PORT}"
+	return 1
+}
+
 # ---------------- pool ----------------
 
 agg_pool_init(){
@@ -74,21 +185,317 @@ agg_is_dead(){ # $1=index
 	[ -n "${_d}" ] && [ "${_d}" != "0" ]
 }
 
+# ---------------- warm standby (v659) ----------------
+# Цель: при отказе активного сервера НЕ сканировать пул поштучно, а сразу
+# применить заранее проверенный кандидат (STANDBY/STANDBY2).
+# Экраньё — только TCP-коннект к host:port ссылки (nc -z), никаких
+# перезапусков xray: активное соединение не дёргается.
+
+agg_link_hp(){ # $1=link -> "host port" (пусто, если не разобрать)
+	local _hp
+	_hp=$(printf '%s' "$1" | sed 's|^vless://||; s|^[^@]*@||; s|[/?#].*$||')
+	case "${_hp}" in
+		\[*\]*)
+			printf '%s %s' "$(printf '%s' "${_hp}" | sed 's|^\[\([^]]*\)\].*|\1|')" \
+				"$(printf '%s' "${_hp}" | sed 's|.*\]:||')"
+			;;
+		*:*)
+			printf '%s %s' "${_hp%%:*}" "${_hp##*:}"
+			;;
+		*) : ;;
+	esac
+}
+
+# v672: недостающие инструменты для TCP-экраньё ставим СКРИПТОМ (opkg), не вручную.
+# Попытка раз в сутки (TCP_TOOL_TS), бюджет 30с (без ожидания мёртвого зеркала).
+# Возвращает 0, если после установки появился рабочий nc (или curl).
+AGG_TCP_TOOL_RETRY_SEC=86400
+AGG_TCP_TOOL_BUDGET_SEC=30
+agg_ensure_tcp_tools(){
+	local _ts _now _had_curl _pid _wd _p
+	_now=$(date +%s)
+	_ts=$(agg_get TCP_TOOL_TS); [ -n "${_ts}" ] || _ts=0
+	[ $((_now - _ts)) -lt ${AGG_TCP_TOOL_RETRY_SEC} ] && return 1
+	agg_set TCP_TOOL_TS "${_now}"
+	command -v opkg >/dev/null 2>&1 || [ -x /opt/bin/opkg ] || return 1
+	_had_curl=$(command -v curl 2>/dev/null); [ -n "${_had_curl}" ] || { [ -x /opt/bin/curl ] && _had_curl=1; }
+	( for _p in curl ncat netcat netcat-openbsd openbsd-netcat; do
+		opkg install "${_p}" >/dev/null 2>&1 || true
+	done ) &
+	_pid=$!
+	# v672: бюджет через watchdog (а не опрос kill -0 — zombie держал бы полные 30с)
+	( sleep "${AGG_TCP_TOOL_BUDGET_SEC}"; kill -KILL "${_pid}" 2>/dev/null ) &
+	_wd=$!
+	wait "${_pid}" 2>/dev/null
+	kill "${_wd}" 2>/dev/null || true
+	wait "${_wd}" 2>/dev/null || true
+	# v692: ncat тоже считается успехом (и по PATH, и по абсолютному пути —
+	# у cron/CGI урезанный PATH, command -v может не найти /opt/bin/ncat)
+	if command -v ncat >/dev/null 2>&1 || [ -x /opt/bin/ncat ]; then return 0; fi
+	if command -v nc >/dev/null 2>&1; then return 0; fi
+	if [ -z "${_had_curl}" ] && command -v curl >/dev/null 2>&1; then return 0; fi
+	return 1
+}
+
+agg_link_tcp(){ # $1=link -> 0=up, 1=refused/timeout, 2=tooling unusable (нет nc/curl)
+	local _rc _ncat_ok
+	_agg_link_tcp_do "$1"; _rc=$?
+	if [ "${_AGG_TCP_RETRY:-0}" != "1" ]; then
+		# v692: rc=2 (нет инструментов) ИЛИ просто нет ncat — ставим скриптом.
+		# У opportunistic-вызова внутри ensure свой суточный гейт TCP_TOOL_TS
+		# и бюджет 30с: пока ncat не появится, каждый следующий вызов дёшев.
+		_ncat_ok=0
+		command -v ncat >/dev/null 2>&1 && _ncat_ok=1
+		[ -x /opt/bin/ncat ] && _ncat_ok=1
+		if [ "${_rc}" = "2" ] || [ "${_ncat_ok}" = "0" ]; then
+			if agg_ensure_tcp_tools; then
+				# rc=2 → инструментов не было, перепроверяем сразу;
+				# иначе ncat просто доустановился — текущий вердикт уже рабочий
+				[ "${_rc}" = "2" ] || return ${_rc}
+				_AGG_TCP_RETRY=1
+				_agg_link_tcp_do "$1"; _rc=$?
+				_AGG_TCP_RETRY=0
+				return ${_rc}
+			fi
+		fi
+	fi
+	return ${_rc}
+}
+
+_agg_link_tcp_do(){ # $1=link -> 0=up, 1=refused/timeout, 2=tooling unusable
+	local _host _port _err _rc _nc _curl _tc
+	set -- $(agg_link_hp "$1")
+	_host="$1"; _port="$2"
+	[ -n "${_host}" ] && [ -n "${_port}" ] || return 1
+	case "${_port}" in ''|*[!0-9]*) return 1 ;; esac
+	# v662: cron/CGI могут иметь урезанный PATH — ищем инструменты и по абсолютным путям
+	_nc=$(command -v nc 2>/dev/null); [ -n "${_nc}" ] || { [ -x /opt/bin/nc ] && _nc=/opt/bin/nc; }
+	# v692: ncat (Entware) поддерживает -z/-w в отличие от busybox nc — приоритет
+	[ ! -x /opt/bin/ncat ] || _nc=/opt/bin/ncat
+	_curl=$(command -v curl 2>/dev/null); [ -n "${_curl}" ] || { [ -x /opt/bin/curl ] && _curl=/opt/bin/curl; }
+	[ -n "${_curl}" ] || { [ -x /usr/bin/curl ] && _curl=/usr/bin/curl; }
+	# 1-й метод: nc -z (быстрый)
+	if [ -n "${_nc}" ]; then
+		_err=$("${_nc}" -z -w 4 "${_host}" "${_port}" 2>&1 >/dev/null); _rc=$?
+		if [ "${_rc}" -eq 0 ]; then
+			return 0
+		fi
+		# busybox nc без -z печатает usage: это НЕ отказ сервера — пробуем curl.
+		# v672: «not found» (кэш command -v при удалённом nc / битый syml — exec
+		# rc=127) — тоже НЕ отказ сервера: инструмент недоступен → к curl.
+		case "${_err}" in
+			*[Uu]sage*|*invalid*|*Invalid*|*nknown*|*unrecognized*|*bad\ option*|*not\ found*|*No\ such\ file*) : ;;
+			*) return 1 ;;
+		esac
+	fi
+	# 2-й метод: curl telnet://. Коды: 28(timeout, TCP установлен)=alive, 0/52/56=alive,
+	# 7(refused)=dead, 6(DNS)=dead. Любые прочие (1/2=protocol not supported,
+	# 3/55/56 и т.п.) — НЕ отказ и НЕ «нет инструмента»: идём к http-методу (v672:
+	# раньше rc=1 здесь объявлял «нет nc/curl» и HTTP-фоллбек не срабатывал вовсе).
+	if [ -n "${_curl}" ]; then
+		"${_curl}" -s -m 4 -o /dev/null "telnet://${_host}:${_port}" 2>/dev/null; _rc=$?
+		case "${_rc}" in
+			0|28|52|56) return 0 ;;
+			6|7) return 1 ;;
+			*) : ;;   # v662: rc=2 (нет telnet); v672: и прочие — к http-методу
+		esac
+		# 3-й метод: curl http:// — TCP connect успешен, сервер отвечает/закрывает
+		# (0/18/52/55/56=alive); 28=connect-timeout, 7=refused, 6=DNS (dead).
+		# v692: rc=28 ≠ всегда «порт закрыт»: при УЖЕ установленном TCP-соединении
+		# (time_connect>0) это тайм-аут ожидания HTTP-ответа — VLESS-сервер молчит
+		# на HTTP, но порт жив (инцидент v691: рабочие серверы шли в DEAD через
+		# TCP-префильтр v689, полный isolated test не запускался).
+		_tc=$("${_curl}" -s --connect-timeout 3 -m 5 -o /dev/null -w '%{time_connect}' "http://${_host}:${_port}/" 2>/dev/null); _rc=$?
+		case "${_rc}" in
+			0|18|52|55|56) return 0 ;;
+			6|7) return 1 ;;
+			28)
+				case "${_tc}" in
+					''|0|0.0|0.000000) return 1 ;;
+					*) return 0 ;;
+				esac
+				;;
+			*) return 2 ;;
+		esac
+	fi
+	return 2
+}
+
+agg_sb_next(){ # rotate: next candidate idx after SBIDX, skipping active/dead -> prints idx
+	local _total _start _act _k _i
+	_total=$(agg_pool_count)
+	[ "${_total}" -gt 0 ] || return 1
+	_start=$(agg_get SBIDX); case "${_start}" in ''|*[!0-9]*) _start=0 ;; esac
+	_act=$(agg_active_idx)
+	_k=0; _i="${_start}"
+	while [ "${_k}" -lt "${_total}" ]; do
+		_i=$((_i + 1))
+		[ "${_i}" -gt "${_total}" ] && _i=1
+		if [ "${_i}" != "${_act}" ] && ! agg_is_dead "${_i}"; then
+			agg_set SBIDX "${_i}"
+			printf '%s' "${_i}"
+			return 0
+		fi
+		_k=$((_k + 1))
+	done
+	return 1
+}
+
+# v669: deep-screening — полный VLESS-тест кандидата БЕЗ переключения активного:
+# временный xray на изолированном порту (AGG_SB_DEEP_PORT), проба socks5h
+# (URL1 → URL3), убийство инстанса. Сам dead НЕ метит — вердикт для standby-слота.
+# v689: человекочитаемая причина отказа изолированного/deep-теста. Раньше все
+# три причины возвращали одинаковый rc=1 («#49 dead (isolated test failed,
+# rc=1)») — при пуле в 156 серверов с «все rc=1» невозможно было понять, мертвы
+# серверы или сломана сама проверка (parse / не поднялся xray / не прошли пробы /
+# закрыт порт).
+_agg_why(){
+	case "${_AGG_DEEP_REASON:-}" in
+		parse) printf 'parse fail (bad link)' ;;
+		xray)  printf 'xray start fail' ;;
+		probe) printf 'probe fail (server IP check)' ;;
+		tcp)   printf 'tcp fail (port closed)' ;;
+		*)     printf 'rc=1' ;;
+	esac
+}
+
+agg_sb_deep(){ # $1=link -> 0 ok, 1 fail, 2 no-xray/curl; _AGG_DEEP_REASON=parse|xray|probe
+	local _link="$1" _cfg=/tmp/agg.sbdeep.$$.json _pid _ip _ok=0
+	_AGG_DEEP_REASON=""
+	[ -x "${XRAY}" ] || return 2
+	command -v curl >/dev/null 2>&1 || return 2
+	# v671: под-шелл — vless_link_parse делает exit 1 на битой ссылке, раньше это
+	# ВЫХОДИЛО из всего fastprobe-прогона и standby не строился молча
+	( vless_link_parse "${_link}" "${_cfg}" ) >/dev/null 2>&1 || {
+		rm -f "${_cfg}"; _AGG_DEEP_REASON=parse; return 1; }
+	# изолированный socks-порт: в шаблоне ровно один "port": "1097" (inbound socks)
+	sed -i "s/\"port\": \"${PROXY_VLESS_PORT}\"/\"port\": \"${AGG_SB_DEEP_PORT}\"/" "${_cfg}"
+	"${XRAY}" run -c "${_cfg}" >/dev/null 2>&1 &
+	_pid=$!
+	sleep 2
+	if kill -0 "${_pid}" 2>/dev/null; then
+		_ip=$(curl -s --connect-timeout 5 --max-time 12 -x "socks5h://127.0.0.1:${AGG_SB_DEEP_PORT}" "${AGG_PROBE_URL1}" 2>/dev/null)
+		echo "${_ip}" | grep -qE "${IP_FILTER}" && _ok=1
+		if [ "${_ok}" = "0" ]; then
+			_ip=$(curl -sk --connect-timeout 5 --max-time 10 -x "socks5h://127.0.0.1:${AGG_SB_DEEP_PORT}" "${AGG_PROBE_URL3}" 2>/dev/null)
+			echo "${_ip}" | grep -qE "${IP_FILTER}" && _ok=1
+		fi
+	else
+		# инстанс упал на старте — кандидат мёртв
+		_ok=0
+		_AGG_DEEP_REASON=xray
+	fi
+	# v689: инстанс жив, но ни одна проба не вернула IP — причина «probe»
+	# (раньше это не отличалось от parse/xray: все три = rc=1)
+	[ "${_ok}" = "1" ] || [ "${_AGG_DEEP_REASON}" = "xray" ] || _AGG_DEEP_REASON=probe
+	kill "${_pid}" 2>/dev/null
+	sleep 1
+	kill -9 "${_pid}" 2>/dev/null
+	wait "${_pid}" 2>/dev/null
+	rm -f "${_cfg}"
+	[ "${_ok}" = "1" ]
+}
+
+agg_sb_round(){ # v659/v660: TCP-screening; v669: deep-test перед STANDBY
+	local _t=0 _idx _link _prev _act _st _rc _ok=0 _tested=0 _drc _df _sb
+	# v674: при упавшем WAN TCP-экраньё копит ложные fails по кандидатам → dead
+	agg_wan_ok || { agg_set SBERR nowan; return 0; }
+	# защита от устаревших слотов (active мог смениться)
+	_act=$(agg_active_idx)
+	_st=$(agg_get STANDBY)
+	[ "${_st}" = "${_act}" ] && agg_set STANDBY 0
+	_st=$(agg_get STANDBY2)
+	[ "${_st}" = "${_act}" ] && agg_set STANDBY2 0
+	# кандидаты есть? (только active в пуле — частый случай)
+	_idx=$(agg_sb_next) || { agg_set SBERR no_spare; return 0; }
+	while [ "${_t}" -lt "${AGG_SB_TESTS_MAX}" ]; do
+		_link=$(agg_pool_get "${_idx}")
+		[ -n "${_link}" ] || break
+		_t=$((_t + 1)); _tested=$((_tested + 1))
+		_rc=0
+		agg_link_tcp "${_link}" || _rc=$?
+		if [ "${_rc}" -eq 0 ]; then
+			# v669: deep-screening: TCP жив ≠ VLESS жив. Провал deep — не ставим
+			# в standby, не метим dead сразу: 3 подряд → agg_count_fail (путь к dead)
+			if [ "${AGG_SB_DEEP}" != "0" ]; then
+				_drc=0
+				agg_sb_deep "${_link}" || _drc=$?
+				if [ "${_drc}" = "2" ]; then
+					agg_set SBERR no_deep_tool
+					return 0
+				elif [ "${_drc}" != "0" ]; then
+					_df=$(agg_get "SBDF_${_idx}"); [ -n "${_df}" ] || _df=0
+					_df=$((_df + 1))
+					agg_set "SBDF_${_idx}" "${_df}"
+					agg_set "TCP_${_idx}" 0
+					# v678: причина fail — в agg.last.log (через stdout CGI-прогона)
+					# v689: + конкретная причина deep (parse/xray/probe)
+					printf 'Aggregator: screening #%s: deep fail (SBDF=%s, %s)\n' "${_idx}" "${_df}" "$(_agg_why)"
+					if [ "${_df}" -ge "${AGG_SB_DEEP_FAIL_MAX}" ]; then
+						agg_count_fail "${_idx}"
+						agg_set "SBDF_${_idx}" 0
+					fi
+					agg_set SBERR "deep_failed#${_idx}"
+					_idx=$(agg_sb_next) || break
+					continue
+				fi
+				agg_set "SBDF_${_idx}" 0
+			fi
+			_prev=$(agg_get STANDBY)
+			case "${_prev}" in ''|0) : ;; *) [ "${_prev}" != "${_idx}" ] && agg_set STANDBY2 "${_prev}" ;; esac
+			agg_set STANDBY "${_idx}"
+			agg_set "TCP_${_idx}" "$(date +%s)"
+			_ok=1
+			# v678: причина fail/success — в agg.last.log (через stdout CGI-прогона)
+			printf 'Aggregator: screening #%s ok -> standby\n' "${_idx}"
+			break
+		fi
+		# nc/curl не смогли проверить: экраньё невозможен, выйти НЕ метя dead
+		[ "${_rc}" -eq 2 ] && { agg_set SBERR no_tcp_tool; return 0; }
+		# TCP не отвечает: медленный путь к DEAD (resurrect — cron.15min)
+		agg_set "TCP_${_idx}" 0
+		# v678: причина fail — в agg.last.log
+		printf 'Aggregator: screening #%s: tcp fail\n' "${_idx}"
+		agg_count_fail "${_idx}"
+		_idx=$(agg_sb_next) || break
+	done
+	if [ "${_ok}" = "1" ]; then
+		agg_set SBERR ""
+	elif [ "${_tested}" -gt 0 ]; then
+		# v669: не затирать информативный deep_failed#N
+		_sb=$(agg_get SBERR)
+		case "${_sb}" in
+			deep_failed*) : ;;
+			*) agg_set SBERR all_failed ;;
+		esac
+	fi
+	return 0
+}
+
 agg_count_fail(){ # $1=index: +1 fail, mark dead at AGG_FAIL_MAX
 	local _f
+	# v674: choke-point — при инфраструктурном отказе fails не копим: защита
+	# sb_round/scan и любых будущих путей от массового «все dead» при упавшем WAN
+	agg_wan_ok || return 0
 	_f=$(agg_get "FAIL_$1"); [ -n "${_f}" ] || _f=0
 	_f=$((_f + 1))
 	agg_set "FAIL_$1" "${_f}"
 	if [ "${_f}" -ge "${AGG_FAIL_MAX}" ]; then
 		agg_set "DEAD_$1" "$(date +%s)"
 		agg_set "FAIL_$1" 0
+		# v678: причина пометки — в agg.last.log (через stdout CGI-прогона)
+		printf 'Aggregator: #%s marked dead (fails>=%s)\n' "$1" "${AGG_FAIL_MAX}"
 	fi
 	return 0
 }
 
 # ---------------- xray / probe ----------------
 
-agg_xray_restart(){
+# v671: чистый рестарт xray БЕЗ перезахвата тоннеля. Нужен для ВАЛИДАЦИИ
+# (check / check all / dead re-test): раньше agg_test_link звал agg_xray_restart,
+# который при включённом агрегаторе делал `kvas vpn set vless` и сбрасывал
+# текущий захваченный тоннель (например, failover'ом выбранный hysteria) на vless.
+agg_xray_restart_quiet(){
 	if [ -x "${XRAY_INIT}" ]; then
 		"${XRAY_INIT}" restart >/dev/null 2>&1 || service_action S97xray restart >/dev/null 2>&1
 	else
@@ -98,29 +505,150 @@ agg_xray_restart(){
 			service_action S97xray start >/dev/null 2>&1
 		}
 	fi
-	# re-bind Keenetic VPN interface to socks (same as start_vless), only when
-	# vless is the current tunnel - do not switch a foreign tunnel silently
-	local _cli
+	return 0
+}
+
+# v672: перезахват тоннеля (re-bind Keenetic VPN interface to socks, same as
+# start_vless) — БЕЗ рестарта xray. Вызывается ТОЛЬКО когда сервер уже выбран
+# (победитель скана / Вкл / failover / restore): раньше это гонялось на каждом
+# кандидате ещё до проверки — тяжёлый `kvas vpn set` внутри скана сбрасывал
+# чужой захваченный тоннель и рвал пробы («проверки остальных не срабатывают»,
+# «переключился на другой тоннель» без живого результата).
+# v686: результат ВЕРИФИЦИРУЕТСЯ (INFACE_CLI) и при отказе повторяется. Раньше
+# `|| true` молча глотал неудачу `kvas vpn set`: ENABLED=1, а тоннель оставался
+# на hysteria/awg — бейдж UI показывал «Aggregator», реальный выход шёл мимо
+# (жалоба 1: «IP не совпадает»). Причина=agg: не трогает очередь failover.
+agg_tunnel_capture(){
+	local _cli _agg_en _do=0 _try=0
+	_cli=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	_agg_en=$(agg_get ENABLED 2>/dev/null)
+	case "${_cli}" in
+		Proxy21|vless|t2s21) _do=1 ;;
+		# v688: явная «Вкл» на сервере — ENABLED ставится ПОСЛЕ apply, без форса
+		# capture тоннель оставался на прежнем интерфейсе (конфиг xray менялся,
+		# трафик шёл мимо — жалоба: «кнопка Вкл не включает выбранный vless»)
+		*) if [ "${_agg_en}" = "1" ] || [ "${AGG_FORCE_CAPTURE:-0}" = "1" ]; then _do=1; fi ;;
+	esac
+	[ "${_do}" = "1" ] || return 0
+	while [ "${_try}" -lt 2 ]; do
+		KVAS_SWITCH_REASON=agg /opt/apps/kvas/bin/kvas vpn set vless >/dev/null 2>&1 || true
+		_cli=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+		case "${_cli}" in
+			Proxy21|vless|t2s21) return 0 ;;
+		esac
+		_try=$((_try + 1))
+		printf 'Aggregator: tunnel bind did not stick (INFACE_CLI=%s) - retry %s/2\n' "${_cli:-empty}" "${_try}"
+	done
+	printf 'Aggregator: WARNING: VLESS tunnel is not active (INFACE_CLI=%s) - traffic bypasses the aggregator\n' "${_cli:-empty}"
+	return 0
+}
+
+# ---------------- авто-возврат тоннеля (v686) ----------------
+# Агрегатор самолечится (fastprobe/cron снова видят живой сервер), но тоннель
+# Keenetic мог остаться на hysteria/awg после ухода failover — раньше никто не
+# возвращал его назад: ENABLED=1, а IP на роутере — чужой (жалоба 1).
+# Решение пользователя: «агрегатор главный, возврат авто».
+AGG_RETURN_SEC=60
+agg_tunnel_return(){
+	agg_enabled || return 0
+	local _now _last _prim _cli _old
+	# идёт собственное переключение (lock switch_to) — не вмешиваемся
+	[ -d /tmp/kvas-failover-switch.lock ] && return 0
+	_cli=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	case "${_cli}" in
+		Proxy21|vless|t2s21) return 0 ;;
+	esac
+	# failover включён и его основной канал не vless — уважаем выбор пользователя
+	if [ -f /opt/etc/kvas-failover-enabled ]; then
+		_prim=$(grep '^PRIMARY=' /opt/etc/kvas.failover.conf 2>/dev/null | cut -d= -f2-)
+		case "${_prim}" in
+			""|vless|*vless*) : ;;
+			*) return 0 ;;
+		esac
+	fi
+	# не чаще раза в AGG_RETURN_SEC (страховка от качелей с failover)
+	_now=$(date +%s)
+	_last=$(agg_get RETURN_TS); [ -n "${_last}" ] || _last=0
+	[ $((_now - _last)) -ge "${AGG_RETURN_SEC}" ] || return 0
+	agg_set RETURN_TS "${_now}"
+	_old="${_cli}"
+	printf 'Aggregator: tunnel is on %s while the aggregator is ON - returning to VLESS\n' "${_old:-none}"
+	agg_tunnel_capture
 	_cli=$(sed -n 's/^INFACE_CLI=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
 	case "${_cli}" in
 		Proxy21|vless|t2s21)
-			/opt/apps/kvas/bin/kvas vpn set vless >/dev/null 2>&1 || true
+			tg_notify aggregator "Aggregator VLESS: tunnel returned to VLESS (was ${_old:-none})"
+			;;
+		*)
+			printf 'Aggregator: return failed (INFACE_CLI=%s) - failover keeps control\n' "${_cli:-empty}"
 			;;
 	esac
 	return 0
+}
+
+agg_xray_restart(){
+	agg_xray_restart_quiet
+	agg_tunnel_capture
 }
 
 agg_cfg_test(){ # xray -test on current config
 	"${XRAY}" run -test -c "${VLESS_CONFIG_FILE}" 2>&1 | grep -q "Configuration OK"
 }
 
-agg_probe(){ # live probe through local xray socks (no restart)
-	local _ip
-	_ip=$(curl -s --connect-timeout 5 --max-time 12 -x "socks5://127.0.0.1:${PROXY_VLESS_PORT}" "${AGG_PROBE_URL1}" 2>/dev/null)
-	echo "${_ip}" | grep -qE "${IP_FILTER}" && return 0
-	_ip=$(curl -s --connect-timeout 6 --max-time 12 -x "socks5://127.0.0.1:${PROXY_VLESS_PORT}" "${AGG_PROBE_URL2}" 2>/dev/null)
-	echo "${_ip}" | grep -qE "${IP_FILTER}" && return 0
+# v676: одна попытка пробы (тело старой agg_probe). 0 = жив / 1 = пробы упали
+# при живом WAN (виноваты сервера) / 2 = инфраструктурный отказ (нет WAN).
+_agg_probe_run(){
+	local _ip _src="" _ok=0
+	# v663: socks5h — DNS разрешается ЧЕРЕЗ тоннель, а не локальным DNS роутера
+	# (AdGuard/dnsmasq). Раньше socks5:// + локальный DNS на 2ip.io/ifconfig.me
+	# давал false-negative после рестарта xray → ложный dead → каскад переключений
+	# → fallback на manual при рабочем тоннеле (сайты открывались, пробы падали).
+	_ip=$(curl -s --connect-timeout 5 --max-time 12 -x "socks5h://127.0.0.1:${PROXY_VLESS_PORT}" "${AGG_PROBE_URL1}" 2>/dev/null)
+	echo "${_ip}" | grep -qE "${IP_FILTER}" && { _ok=1; _src=probe1; }
+	if [ "${_ok}" = "0" ]; then
+		_ip=$(curl -s --connect-timeout 6 --max-time 12 -x "socks5h://127.0.0.1:${PROXY_VLESS_PORT}" "${AGG_PROBE_URL2}" 2>/dev/null)
+		echo "${_ip}" | grep -qE "${IP_FILTER}" && { _ok=1; _src=probe2; }
+	fi
+	if [ "${_ok}" = "0" ]; then
+		# v663: третья проба — литеральный IP (Cloudflare trace): не требует DNS ни на
+		# роутере, ни на сервере; работает когда 2ip.io/ifconfig.me недоступны с данного exit
+		_ip=$(curl -sk --connect-timeout 5 --max-time 10 -x "socks5h://127.0.0.1:${PROXY_VLESS_PORT}" "${AGG_PROBE_URL3}" 2>/dev/null)
+		echo "${_ip}" | grep -qE "${IP_FILTER}" && { _ok=1; _src=trace; }
+	fi
+	# v664: результат пробы в state — UI показывает «проба HH:MM ok (probe1)»,
+	# чтобы сравнивать «агрегатор видит живой» vs «сайты не открываются»
+	agg_set PROBE_TS "$(date +%s)"
+	# v674: socks упал И прямая проба (без туннеля) тоже — инфраструктурный отказ
+	# (WAN/DNS/нет curl), НЕ мёртвый тоннель: rc=2, вызывающие ничего не метят
+	if [ "${_ok}" = "0" ] && ! agg_wan_ok; then
+		agg_set PROBE_OK 0
+		agg_set PROBE_SRC infra
+		return 2
+	fi
+	agg_set PROBE_OK "${_ok}"
+	agg_set PROBE_SRC "${_src}"
+	[ "${_ok}" = "1" ] && return 0
 	return 1
+}
+
+# v676: обёртка с local-guard: пробы упали при живом WAN и socks даже не слушает —
+# это отказ ОБЩЕГО компонента (xray), а не серверов: автолечение (верифицированный
+# рестарт + повторная проба); не вылечилось → rc=2 (НЕ метим никого), как infra.
+agg_probe(){ # live probe through local xray socks (no restart)
+	local _prc=0 _psrc
+	_agg_probe_run || _prc=$?
+	[ "${_prc}" = "1" ] || return ${_prc}
+	agg_local_ok && return 1
+	agg_set PROBE_SRC localsocks
+	agg_set PROBE_OK 0
+	agg_heal_local || return 2
+	if _agg_probe_run; then
+		agg_set PROBE_SRC healed
+		return 0
+	fi
+	_psrc=$(agg_get PROBE_SRC)
+	[ "${_psrc}" = "infra" ] || agg_set PROBE_SRC localsocks
+	return 2
 }
 
 agg_parse_cfg(){ # $1=link: rewrite config in a subshell (parse exits on invalid link)
@@ -128,8 +656,13 @@ agg_parse_cfg(){ # $1=link: rewrite config in a subshell (parse exits on invalid
 }
 
 # apply link and KEEP it on success; restore previous config on failure
+# v672: кандидат тестируется ЧИСТО (quiet-рестарт, без перезахвата тоннеля);
+# перезахват (agg_tunnel_capture) — только когда сервер ПРОВЕРЕН ЖИВЫМ. Раньше
+# полный agg_xray_restart гонялся и для упавших кандидатов → лишние переключения
+# тоннеля и срывы проб при активном active.
+# v674: 0 = live applied, 1 = тест упал, 2 = инфраструктурный отказ (сеть лежит)
 agg_try_apply(){ # $1=link -> 0 if live server applied
-	local _link="$1" _bak=/tmp/agg.cfg.$$
+	local _link="$1" _bak=/tmp/agg.cfg.$$ _prc=0
 	agg_state_init
 	[ -f "${VLESS_CONFIG_FILE}" ] || cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}" 2>/dev/null
 	cp -f "${VLESS_CONFIG_FILE}" "${_bak}" 2>/dev/null
@@ -139,35 +672,127 @@ agg_try_apply(){ # $1=link -> 0 if live server applied
 	if ! agg_cfg_test; then
 		cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null; rm -f "${_bak}"; return 1
 	fi
-	agg_xray_restart
+	agg_xray_restart_quiet
 	sleep 2
-	if agg_probe; then
+	agg_probe || _prc=$?
+	if [ "${_prc}" = "0" ]; then
 		rm -f "${_bak}"
+		agg_tunnel_capture
 		return 0
 	fi
 	cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null
 	rm -f "${_bak}"
-	agg_xray_restart
+	agg_xray_restart_quiet
 	sleep 1
-	return 1
+	return ${_prc}
 }
 
 # full test: apply -> probe -> ALWAYS restore previous config
+# v671: только quiet-рестарты — валидация НЕ перехватывает тоннель (см. agg_xray_restart_quiet)
+# v674: 0 = жив, 1 = тест упал, 2 = инфраструктурный отказ (вызывающие не метят dead)
+# v678: НЕ используется для проверки неактивных — заменён на agg_isolated_test
+# (оставлен для ручной отладки/совместимости)
 agg_test_link(){ # $1=link -> 0 if live
-	local _link="$1" _bak=/tmp/agg.cfg.$$ _rc=1
+	local _link="$1" _bak=/tmp/agg.cfg.$$ _rc=1 _prc=0
 	agg_state_init
 	[ -f "${VLESS_CONFIG_FILE}" ] || cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}" 2>/dev/null
 	cp -f "${VLESS_CONFIG_FILE}" "${_bak}" 2>/dev/null
 	if agg_parse_cfg "${_link}" && agg_cfg_test; then
-		agg_xray_restart
+		agg_xray_restart_quiet
 		sleep 2
-		agg_probe && _rc=0
+		_prc=0
+		agg_probe || _prc=$?
+		if [ "${_prc}" = "0" ]; then
+			_rc=0
+		elif [ "${_prc}" = "2" ]; then
+			_rc=2
+		fi
 	fi
 	cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null
 	rm -f "${_bak}"
-	agg_xray_restart
+	agg_xray_restart_quiet
 	sleep 1
 	return ${_rc}
+}
+
+# v678: изолированный полный тест кандидата — ВТОРОЙ экземпляр xray на
+# AGG_SB_DEEP_PORT (тот же механизм, что agg_sb_deep). Общий рабочий xray
+# НЕ переконфигурируется и НЕ перезапускается: активный тоннель не рвётся
+# на 15-30с при проверке каждого неактивного (раньше check/sweep/resurrect
+# шли через agg_try_apply/test_link — замена конфига общего xray и два
+# его рестарта на каждый кандидат). Контракт rc: 0=жив, 1=мёртв,
+# 2=нет инструментов ИЛИ сеть лежит (контракт infra прежних веток сохранён:
+# wan-guard до и после теста).
+agg_isolated_test(){ # $1=link -> 0 жив / 1 мёртв / 2 infra
+	local _rc=0 _trc=0 _hp _h _p
+	agg_wan_ok || return 2
+	_AGG_DEEP_REASON=""
+	# v689: TCP-префильтр — закрытый порт отсекается за 1-4с вместо 8-17с deep;
+	# открытый порт ≠ VLESS жив, поэтому deep-тест всё равно выполняется.
+	# Паттерн уже одобрен в standby-скрининге (agg_sb_round).
+	agg_link_tcp "$1" || _trc=$?
+	if [ "${_trc}" = "1" ]; then
+		# порт не число / ссылка без host:port — это битая ссылка, а не «закрытый порт»
+		_hp=$(agg_link_hp "$1")
+		_h=${_hp%% *}; _p=${_hp##* }
+		if [ -n "${_h}" ] && [ -n "${_p}" ] && [ "${_p}" -eq "${_p}" ] 2>/dev/null; then
+			_AGG_DEEP_REASON=tcp
+		else
+			_AGG_DEEP_REASON=parse
+		fi
+		_rc=1
+	else
+		agg_sb_deep "$1" || _rc=$?
+	fi
+	if [ "${_rc}" = "1" ] && ! agg_wan_ok; then
+		return 2
+	fi
+	# v689: последняя ошибка в state (показывается в UI-инфо-строке)
+	[ "${_rc}" = "1" ] && agg_set LASTERR "$(date '+%d.%m %H:%M') ${_AGG_DEEP_REASON:-fail}"
+	return ${_rc}
+}
+
+# v678: применить УЖЕ проверенного изолированно кандидата: конфиг + quiet-restart
+# + перезахват тоннеля. Вызывается ТОЛЬКО после agg_isolated_test rc=0
+# (победитель скана / standby / ручной set) — активный тоннель прерывается
+# ровно один раз на штатное переключение. При отказе parse/cfg_test конфиг
+# ВОССТАНАВЛИВАЕТСЯ из бэкапа (как в agg_try_apply) и rc=1, без рестарта.
+# v682: при переключении тоннеля (`kvas vpn set` -> cmd_kvas_init ->
+# all_services_restart) рестарт DNS-служб может завершиться ошибкой и dnsmasq
+# не поднимется (пользователь: «после включения агрегатора отключился dnsmasq,
+# помогло kvas dnsmasq on»). Лечим после каждого apply и в cron-тике.
+_agg_dns_heal(){
+	local _d=/opt/etc/init.d/S56dnsmasq
+	# AdGuard-режим: dnsmasq не должен работать — не трогаем
+	grep -q '^ADGUARD_ENABLE=true' "${KVAS_CONF_FILE}" 2>/dev/null && return 0
+	[ -f "${_d}" ] || return 0
+	"${_d}" status 2>/dev/null | grep -q alive && return 0
+	printf 'Aggregator: dnsmasq is down after tunnel switch - restarting\n'
+	# v685: sanitize отсутствующих listen-address (IP туннельных интерфейсов
+	# пропадают вместе с тоннелем) + битый pid-файл; libs/vpn может быть не
+	# загружен в этом шелле — guard
+	command -v dns_preflight >/dev/null 2>&1 && dns_preflight
+	"${_d}" restart >/dev/null 2>&1 || true
+	return 0
+}
+
+agg_apply_link(){ # $1=idx $2=link -> 0 ok
+	local _bak=/tmp/agg.cfg.$$
+	agg_state_init
+	[ -f "${VLESS_CONFIG_FILE}" ] || cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}" 2>/dev/null
+	cp -f "${VLESS_CONFIG_FILE}" "${_bak}" 2>/dev/null
+	if ! agg_parse_cfg "$2"; then
+		cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null; rm -f "${_bak}"; return 1
+	fi
+	if ! agg_cfg_test; then
+		cp -f "${_bak}" "${VLESS_CONFIG_FILE}" 2>/dev/null; rm -f "${_bak}"; return 1
+	fi
+	rm -f "${_bak}"
+	agg_xray_restart_quiet
+	sleep 2
+	agg_tunnel_capture
+	_agg_dns_heal
+	return 0
 }
 
 # ---------------- manual fallback ----------------
@@ -178,9 +803,40 @@ agg_snapshot_manual(){ # remember user's manual config before first aggregator a
 	cp -f "${VLESS_CONFIG_FILE}" "${AGG_MANUAL_FILE}"
 }
 
+# v652: bootstrap VLESS from pool if no tunnel configured
+agg_ensure_vless(){ # -> 0 if xray binary + config template ready (or created)
+	# xray binary
+	if [ ! -x "${XRAY}" ]; then
+		# try install if opkg available
+		command -v opkg >/dev/null 2>&1 && opkg install xray >/dev/null 2>&1
+		[ -x "${XRAY}" ] || { printf 'Aggregator: xray not found (kvas xray core)\n'; return 1; }
+	fi
+	# config template -> live config
+	if [ ! -f "${VLESS_CONFIG_FILE}" ]; then
+		[ -f "${VLESS_CONFIG_ORIGINAL_FILE}" ] || {
+			printf 'Aggregator: VLESS template not found (%s)\n' "${VLESS_CONFIG_ORIGINAL_FILE}"; return 1; }
+		cp "${VLESS_CONFIG_ORIGINAL_FILE}" "${VLESS_CONFIG_FILE}"
+	fi
+	# register vless in interface list (for "vpn set vless" to work)
+	if [ -f /opt/etc/inface_equals ] && ! grep -qE '^(Proxy21|vless|t2s21)\|' /opt/etc/inface_equals 2>/dev/null; then
+		local _n
+		_n=$(grep -c '|' /opt/etc/inface_equals 2>/dev/null || echo 0)
+		[ "${_n}" -gt 0 ] 2>/dev/null || _n=0
+		printf 'Proxy%s|vless|VLESS\n' "${_n}" >> /opt/etc/inface_equals 2>/dev/null || true
+	fi
+	return 0
+}
+
 agg_pre_enable(){ # called before first apply while disabled
 	agg_enabled && return 0
-	[ -f "${VLESS_CONFIG_FILE}" ] || { printf 'Aggregator: VLESS config not found (run kvas vless new first)\n'; return 1; }
+	# v652: bootstrap VLESS if no config (pool becomes the tunnel)
+	if [ ! -f "${VLESS_CONFIG_FILE}" ]; then
+		agg_ensure_vless || return 1
+		# take first pool link as base config so probe can succeed
+		local _link
+		_link=$(agg_pool_get 1)
+		[ -n "${_link}" ] && { agg_parse_cfg "${_link}" || true; }
+	fi
 	rm -f "${AGG_MANUAL_FILE}"
 	agg_snapshot_manual || { printf 'Aggregator: cannot snapshot manual config\n'; return 1; }
 	return 0
@@ -189,33 +845,196 @@ agg_pre_enable(){ # called before first apply while disabled
 agg_restore_manual(){
 	[ -f "${AGG_MANUAL_FILE}" ] || return 1
 	cp -f "${AGG_MANUAL_FILE}" "${VLESS_CONFIG_FILE}"
-	agg_xray_restart
+	# v683: раньше здесь agg_xray_restart (= quiet + agg_tunnel_capture) — при
+	# выключенном failover capture гонял `kvas vpn set vless`, который ставит
+	# svc.hysteria.disabled/svc.awg.disabled (kvas:590-604) → тоннели исчезали
+	# из списка failover после отключения агрегатора, плюс тяжёлый полный init
+	# (двойной DNS-restart → падение dnsmasq). Биндинг Proxy21/socks не меняется
+	# (снимок — VLESS) — перезахват не нужен, только рестарт с восстановленным
+	# конфигом.
+	agg_xray_restart_quiet
 	sleep 1
+	return 0
+}
+
+# ---------------- fast-fail probe (v658) ----------------
+# Быстрая проверка активного сервера каждую минуту (cron.1min).
+# Лёгкий agg_probe (curl через socks), БЕЗ полного теста/xray-restart.
+# 2 неудачи подряд → немедленный emergency scan — худший случай ~2 мин
+# вместо 3x15 мин = 45 мин.
+AGG_FAST_FAIL_MAX=2
+AGG_FAST_PROBE_SEC=60
+
+# v679: cron-джобы агрегатора (в т.ч. этот fastprobe) могут отсутствовать после
+# clear/uninstall/переноса (setup удаляет /opt/etc/cron.15min/aggregator, ставят
+# только postinst или TG-настройки). Без cron.15min мёртвые не воскресают и
+# auto-recovery при ACTIVE=0 не работает: пользователь жмёт «Проверить всё»,
+# видит живых, а переключения нет (LASTCHECK=0 при работающем fastprobe —
+# верный признак). Самовосстановление симлинков раз в сутки; пути —
+# переменные (тестируемость).
+AGG_CRON_1MIN_DIR=/opt/etc/cron.1min
+AGG_CRON_15MIN_DIR=/opt/etc/cron.15min
+# v688: пакет cron 4.1-7 ставит crontab БЕЗ строки cron.15min (только cron.1min),
+# а vixie-cron читает /opt/etc/crontab ТОЛЬКО при старте — HUP не помогает и
+# автоперечитывания нет. Все 15-мин задачи (тик подписки агрегатора, tg_health)
+# не выполнялись никогда. Пути — переменные (тестируемость).
+AGG_CRONTAB=/opt/etc/crontab
+AGG_RUN_PARTS=/opt/bin/run-parts
+AGG_CRON_INIT=/opt/etc/init.d/S10cron
+_agg_cron_restart(){ # рестарт через init-скрипт (kill — страховка, если restart не сработал)
+	[ -x "${AGG_CRON_INIT}" ] || return 0
+	"${AGG_CRON_INIT}" restart >/dev/null 2>&1 || {
+		kill "$(pidof cron)" 2>/dev/null
+		sleep 1
+		"${AGG_CRON_INIT}" start >/dev/null 2>&1
+	}
+}
+_agg_cron_heal(){
+	local _now _last
+	# v688: дешёвые проверки ДО 24-часового гейта — чиним незамедлительно,
+	# без лог-спама (append выполняется только при отсутствии строки)
+	if [ -f "${AGG_CRONTAB}" ] && ! grep -q "${AGG_CRON_15MIN_DIR}" "${AGG_CRONTAB}" 2>/dev/null; then
+		printf '*/15 * * * * root %s %s\n' "${AGG_RUN_PARTS}" "${AGG_CRON_15MIN_DIR}" >> "${AGG_CRONTAB}"
+		printf 'Aggregator: crontab has no %s line - added, restarting cron\n' "${AGG_CRON_15MIN_DIR}"
+		_agg_cron_restart
+	fi
+	# v688: run-parts нужен и cron.1min (fastprobe) — симлинк из пакета cron
+	[ -e "${AGG_RUN_PARTS}" ] || ln -sf "${AGG_RUN_PARTS}-vixie" "${AGG_RUN_PARTS}" 2>/dev/null
+	pidof cron >/dev/null 2>&1 || _agg_cron_restart
+	_now=$(date +%s)
+	_last=$(agg_get CRONHEAL); [ -n "${_last}" ] || _last=0
+	[ $((_now - _last)) -lt 86400 ] && return 0
+	agg_set CRONHEAL "${_now}"
+	mkdir -p "${AGG_CRON_1MIN_DIR}" "${AGG_CRON_15MIN_DIR}" 2>/dev/null
+	[ -e "${AGG_CRON_15MIN_DIR}/aggregator" ] || [ -L "${AGG_CRON_15MIN_DIR}/aggregator" ] || \
+		ln -sf /opt/apps/kvas/bin/main/aggregator_cron "${AGG_CRON_15MIN_DIR}/aggregator" 2>/dev/null
+	[ -e "${AGG_CRON_1MIN_DIR}/aggregator_fastprobe" ] || [ -L "${AGG_CRON_1MIN_DIR}/aggregator_fastprobe" ] || \
+		ln -sf /opt/apps/kvas/bin/main/aggregator_fastprobe "${AGG_CRON_1MIN_DIR}/aggregator_fastprobe" 2>/dev/null
+	return 0
+}
+
+agg_fastprobe(){
+	agg_enabled || return 0
+	# не чаще раза в 60с (страховка от ручных вызовов)
+	local _now _last
+	_now=$(date +%s)
+	_last=$(agg_get FASTLAST); [ -n "${_last}" ] || _last=0
+	[ $((_now - _last)) -ge "${AGG_FAST_PROBE_SEC}" ] || return 0
+	# v664: FASTLAST пишем в теле (после взятия лока) — раньше слот засчитывался
+	# до лока: если лок был занят (check/scan), проба терялась без проверки
+	AGG_LOCK_TAG=fastprobe agg_locked _agg_fastprobe_body
+	return 0
+}
+
+_agg_fastprobe_body(){
+	local _act _f _now _sbl _prc _psrc
+	agg_set FASTLAST "$(date +%s)"
+	_agg_cron_heal
+	_act=$(agg_active_idx)
+	[ "${_act}" != "0" ] || return 0   # manual fallback — нечего проверять
+	_prc=0
+	agg_probe || _prc=$?
+	if [ "${_prc}" = "0" ]; then
+		# жив — сбросить счётчик
+		agg_set "FAIL_${_act}" 0
+		# v686: сервер жив — если тоннель ушёл мимо агрегатора (failover), возвращаем
+		# его: раньше самовосстановление чинило только сервер, тоннель оставался
+		# на чужом интерфейсе (бейдж Aggregator врал, жалоба 1)
+		agg_tunnel_return
+		# v659: warm-standby screening (TCP, без рестартов) раз в AGG_SB_RECHECK_SEC,
+		# только пока актив здоров — на отказе переключимся сразу
+		_now=$(date +%s)
+		_sbl=$(agg_get SBLAST); [ -n "${_sbl}" ] || _sbl=0
+		if [ $((_now - _sbl)) -ge "${AGG_SB_RECHECK_SEC}" ]; then
+			agg_set SBLAST "${_now}"
+			agg_sb_round
+		fi
+		return 0
+	fi
+	# v674: инфраструктурный отказ (сеть/инструменты лежат) — НЕ инкрементируем,
+	# НЕ метим dead, НЕ уходим в emergency: тоннель тут ни при чём
+	[ "${_prc}" = "2" ] && return 0
+	# неудача: инкремент
+	_f=$(agg_get "FAIL_${_act}"); [ -n "${_f}" ] || _f=0
+	_f=$((_f + 1))
+	agg_set "FAIL_${_act}" "${_f}"
+	if [ "${_f}" -ge "${AGG_FAST_FAIL_MAX}" ]; then
+		# 2+ неудачи подряд → немедленный emergency scan
+		agg_set "DEAD_${_act}" "$(date +%s)"
+		agg_set "FAIL_${_act}" 0
+		_psrc=$(agg_get PROBE_SRC)
+		tg_notify aggregator "Aggregator VLESS: fast-fail #${_act} (${_f} probes, last: ${_psrc:-unknown}) - emergency switch"
+		agg_emergency "${_act}"
+	fi
 	return 0
 }
 
 # ---------------- selection core ----------------
 
-# scan pool starting at $1 (wraps), skipping dead unless $2=keep
+# ---------------- recovery rotation (v689) ----------------
+# Раньше ВСЕ recovery-пути стартовали с #1: sweep-recovery, cron при ACTIVE=0,
+# хвост check, fallback sweep. При пуле из сотен серверов, где первые десятки
+# мертвы, живые (#60+) были недостижимы — «переключиться не смог». Ротация
+# использует CHECKIDX (тот же индекс, что у «Проверить всё»): лок сериализует
+# прогоны, а remap при purge/fetch индекс уже переносит.
+_agg_rot_start(){ # -> стартовый индекс из CHECKIDX (валидация 1..total)
+	local _s _total
+	_total=$(agg_pool_count)
+	_s=$(agg_get CHECKIDX); case "${_s}" in ''|*[!0-9]*) _s=1 ;; esac
+	[ "${_s}" -ge 1 ] 2>/dev/null && [ "${_s}" -le "${_total}" ] 2>/dev/null || _s=1
+	printf '%s' "${_s}"
+}
+_agg_rot_advance(){ # $1=start: после прогона из AGG_SCAN_MAX окон — следующий старт
+	local _total _n
+	_total=$(agg_pool_count)
+	[ "${_total}" -gt 0 ] || return 0
+	_n=$(( ($1 + ${AGG_SCAN_MAX:-5} - 1) % _total + 1 ))
+	agg_set CHECKIDX "${_n}"
+}
+
+# scan pool starting at $1 (wraps), skipping dead unless $2=all/keep
 # first full-test success becomes ACTIVE; success notify handled by caller
+# v661: не больше AGG_SCAN_MAX полных тестов за запуск — лок держится ~1-2 мин
 agg_scan(){ # $1=start [$2=all]
-	local _total _i _k=0 _link _start _all="${2:-skip}"
+	local _total _i _k=0 _link _start _all="${2:-skip}" _max _tr
+	_max="${AGG_SCAN_MAX:-5}"
 	_total=$(agg_pool_count)
 	[ "${_total}" -gt 0 ] || return 1
 	_start="$1"
 	case "${_start}" in ''|*[!0-9]*) _start=1 ;; esac
 	[ "${_start}" -ge 1 ] && [ "${_start}" -le "${_total}" ] || _start=1
 	_i="${_start}"
-	while [ "${_k}" -lt "${_total}" ]; do
+	while [ "${_k}" -lt "${_max}" ]; do
 		if [ "${_all}" = "all" ] || ! agg_is_dead "${_i}"; then
 			_link=$(agg_pool_get "${_i}")
-			if [ -n "${_link}" ] && agg_try_apply "${_link}"; then
-				agg_set "DEAD_${_i}" 0
-				agg_set "FAIL_${_i}" 0
-				agg_set ACTIVE "${_i}"
-				return 0
+			_tr=1
+			if [ -n "${_link}" ]; then
+				_tr=0
+				# v678: изолированный тест — общий xray не переконфигурируется
+				agg_isolated_test "${_link}" || _tr=$?
 			fi
-			[ -n "${_link}" ] && agg_count_fail "${_i}"
+			if [ "${_tr}" = "0" ]; then
+				if agg_apply_link "${_i}" "${_link}"; then
+					agg_set "DEAD_${_i}" 0
+					agg_set "FAIL_${_i}" 0
+					agg_set ACTIVE "${_i}"
+					agg_set "ALIVE_${_i}" "$(date +%s)"   # v672: метка живости для UI
+					return 0
+				fi
+				printf 'Aggregator: #%s isolated ok, but apply failed - trying next\n' "${_i}"
+				# v678: isolated-вердикт ЖИВ — сбой применения это НЕ fail
+				# кандидата: не копим fails и не печатаем «test failed»
+				_tr=0
+			fi
+			# v674: инфраструктурный отказ — скан бессмысленен, fails не копим
+			if [ "${_tr}" = "2" ]; then
+				printf 'Aggregator: infra down (no tools or network) - scan aborted\n'
+				return 1
+			fi
+			if [ "${_tr}" = "1" ] && [ -n "${_link}" ]; then
+				agg_count_fail "${_i}"
+				printf 'Aggregator: #%s isolated test failed (%s)\n' "${_i}" "$(_agg_why)"
+			fi
 		fi
 		_i=$((_i + 1))
 		[ "${_i}" -gt "${_total}" ] && _i=1
@@ -224,25 +1043,97 @@ agg_scan(){ # $1=start [$2=all]
 	return 1
 }
 
-agg_fallback(){ # no live server: manual config + TG
-	agg_set ACTIVE 0
-	agg_restore_manual || true
-	tg_notify aggregator "Aggregator VLESS: no live servers, fallback to manual VLESS config"
-	printf 'Aggregator: pool exhausted, fallback to manual config\n'
+# v676: при all-dead — немедленный полный перескан всего пула (включая dead):
+# каждый тест делает quiet-рестарт xray и часто чинит ОБЩУЮ причину отказа.
+# Раньше пул уходил в manual и ждал cron (AGG_RECHECK_SEC=30 мин) либо ручного
+# «Проверить всё» — пользовательское «нажал пересканировать всё и ожило».
+# Cooldown: если пул действительно мёртв — не штормим сканами каждую минуту.
+AGG_FALLBACK_SWEEP_SEC=600
+agg_fallback_sweep(){
+	local _now _last _st _rc
+	agg_enabled || return 1
+	[ "$(agg_pool_count)" -gt 0 ] || return 1
+	_now=$(date +%s)
+	_last=$(agg_get FALLBACK_SWEEP_TS); [ -n "${_last}" ] || _last=0
+	[ $((_now - _last)) -ge "${AGG_FALLBACK_SWEEP_SEC}" ] || return 1
+	agg_set FALLBACK_SWEEP_TS "${_now}"
+	# v689: старт ротируется (раньше всегда #1 — живые за первыми 5 недостижимы)
+	_st=$(_agg_rot_start)
+	agg_scan "${_st}" all; _rc=$?
+	_agg_rot_advance "${_st}"
+	return ${_rc}
 }
 
-agg_emergency(){ # $1=dead active idx: shift to next alive (sticky order)
+agg_fallback(){ # no live server: manual config + TG
+	local _psrc
+	# v676: последний живой только что помечен dead — пробуем воскресить пул
+	# прямо сейчас (см. agg_fallback_sweep) вместо ухода в manual до cron
+	if agg_fallback_sweep; then
+		agg_set SBLAST 0   # v676: новый active — сразу скрининг standby
+		printf 'Aggregator: last server dead - immediate full sweep recovered #%s\n' "$(agg_active_idx)"
+		tg_notify aggregator "Aggregator VLESS: all servers marked dead - immediate full sweep recovered #$(agg_active_idx)"
+		return 0
+	fi
+	agg_set ACTIVE 0
+	agg_restore_manual || true
+	_psrc=$(agg_get PROBE_SRC)
+	tg_notify aggregator "Aggregator VLESS: no live servers, fallback to manual VLESS config (last probe: ${_psrc:-unknown})"
+	printf 'Aggregator: pool exhausted (last probe reason: %s), fallback to manual config\n' "${_psrc:-unknown}"
+}
+
+agg_emergency(){ # $1=dead active idx: warm standby first, then sequential scan
+	local _slot=0 _sb _link _key _tr
+	# v674: сеть лежит — ничего не трогаем: не метим standby, не сканируем,
+	# не уводим пул в fallback по инфраструктурной причине
+	agg_wan_ok || return 1
+	# v659: сначала проверенные заранее кандидаты (TCP-скрининг) — переключение
+	# за одну попытку apply (~5с) вместо поштучного скана пула
+	while [ "${_slot}" -lt 2 ]; do
+		if [ "${_slot}" -eq 0 ]; then _key=STANDBY; else _key=STANDBY2; fi
+		_sb=$(agg_get "${_key}")
+		_slot=$((_slot + 1))
+		case "${_sb}" in ''|*[!0-9]*|0) continue ;; esac
+		[ "${_sb}" = "$1" ] && continue
+		agg_is_dead "${_sb}" && continue
+		_link=$(agg_pool_get "${_sb}")
+		[ -n "${_link}" ] || continue
+		# v678: изолированный тест standby + однократное применение победителя
+		_tr=0
+		agg_isolated_test "${_link}" || _tr=$?
+		if [ "${_tr}" = "0" ] && agg_apply_link "${_sb}" "${_link}"; then
+			agg_set ACTIVE "${_sb}"
+			agg_set STANDBY 0
+			agg_set SBLAST 0   # v659: сразу отскринить новый standby
+			agg_set "ALIVE_${_sb}" "$(date +%s)"   # v672: метка живости для UI
+			tg_notify aggregator "Aggregator VLESS: server #${1} failed, warm standby #${_sb} applied"
+			printf 'Aggregator: switched to standby #%s\n' "${_sb}"
+			return 0
+		fi
+		# v674: инфраструктурный отказ — standby НЕ метим dead, выходим
+		if [ "${_tr}" = "2" ]; then
+			agg_set "${_key}" 0
+			return 1
+		fi
+		# standby не прошёл изолированный тест — честно пометить dead и очистить слот
+		agg_set "DEAD_${_sb}" "$(date +%s)"
+		agg_set "${_key}" 0
+		printf 'Aggregator: standby #%s isolated test failed (%s) - marked dead\n' "${_sb}" "$(_agg_why)"
+	done
 	if agg_scan $(($1 + 1)); then
-		tg_notify aggregator "Aggregator VLESS: server #${1} failed 3 checks, switched to #$(agg_active_idx)"
+		tg_notify aggregator "Aggregator VLESS: server #${1} failed, switched to #$(agg_active_idx)"
 		printf 'Aggregator: switched to #%s\n' "$(agg_active_idx)"
 		return 0
 	fi
+	# v674: сеть упала посреди emergency — не уводим рабочий пул в fallback
+	agg_wan_ok || return 1
 	agg_fallback
 	return 1
 }
 
 agg_fail_active(){ # $1=active idx: probe fail accounting
 	local _f
+	# v674: choke-point — без WAN/инструментов активного не метим (см. agg_count_fail)
+	agg_wan_ok || return 0
 	_f=$(agg_get "FAIL_$1"); [ -n "${_f}" ] || _f=0
 	_f=$((_f + 1))
 	agg_set "FAIL_$1" "${_f}"
@@ -257,22 +1148,125 @@ agg_fail_active(){ # $1=active idx: probe fail accounting
 # ---------------- CLI / shared commands ----------------
 
 # single-run lock: no overlapping scans/restarts (cron, CLI, Web UI share it)
+# v652: trap INT/TERM/EXIT — Ctrl+C не оставляет лок
+# v661: лок пишет «epoch tag» (кто держит)
+# v662: формат «epoch tag pid» — dead-владелец (kill -9/краш) снимается сам;
+#       trap удаляет лок только если в нём наш pid (не чужой); OFF убивает держателя
 agg_locked(){ # $1=impl func, args...
-	local _f="$1" _age _rc
+	local _f="$1" _age _rc _tag _lts _ltag _lpid
 	shift
+	_tag="${AGG_LOCK_TAG:-cmd}"
 	if [ -f "${AGG_LOCK}" ]; then
+		_lts=""; _ltag=""; _lpid=""
+		read -r _lts _ltag _lpid < "${AGG_LOCK}" 2>/dev/null || true
 		_age=$(( $(date +%s) - $(stat -c %Y "${AGG_LOCK}" 2>/dev/null || date +%s) ))
 		if [ "${_age}" -ge 0 ] && [ "${_age}" -lt 600 ]; then
-			printf 'Aggregator: another aggregator run in progress\n'
-			return 1
+			# v662: владелец мёртв (kill -9 / краш / старый формат без pid считаем живым
+			# только если процесс существует) — лок-файл снимаем и работаем
+			if [ -n "${_lpid}" ] && [ "${_lpid}" -gt 0 ] 2>/dev/null && ! kill -0 "${_lpid}" 2>/dev/null; then
+				printf 'Aggregator: stale lock removed (holder pid %s is dead)\n' "${_lpid}"
+				rm -f "${AGG_LOCK}"
+			else
+				printf 'Aggregator: busy: %s (%ss ago, pid %s). Off button interrupts it; wait or retry later; log: /opt/var/kvas/agg.last.log\n' \
+					"$(agg_lock_tag)" "${_age}" "${_lpid:-?}"
+				return 1
+			fi
+		else
+			rm -f "${AGG_LOCK}"
 		fi
-		rm -f "${AGG_LOCK}"
 	fi
-	date +%s > "${AGG_LOCK}"
+	printf '%s %s %s\n' "$(date +%s)" "${_tag}" "$$" > "${AGG_LOCK}"
+	trap 'agg_lock_release' INT TERM EXIT
 	"${_f}" "$@"
 	_rc=$?
-	rm -f "${AGG_LOCK}"
+	trap - INT TERM EXIT
+	agg_lock_release
 	return ${_rc}
+}
+
+agg_lock_release(){ # снять лок, только если он всё ещё наш (не чужой перезаписанный)
+	local _lts _ltag _lpid
+	[ -f "${AGG_LOCK}" ] || return 0
+	_lts=""; _ltag=""; _lpid=""
+	read -r _lts _ltag _lpid < "${AGG_LOCK}" 2>/dev/null || true
+	[ "${_lpid}" = "$$" ] && rm -f "${AGG_LOCK}"
+	return 0
+}
+
+agg_lock_tag(){ # кто держит лок (для сообщений/UI)
+	local _lts _ltag _lpid
+	[ -f "${AGG_LOCK}" ] || { printf 'unknown'; return 0; }
+	_lts=""; _ltag=""; _lpid=""
+	read -r _lts _ltag _lpid < "${AGG_LOCK}" 2>/dev/null || true
+	# v662: старый формат «epoch» (без тега) и мусор — показываем как run,
+	# НЕ как число (раньше busybox cut -f2 возвращал всю строку -> «ЗАНЯТО: 1792416421»)
+	case "${_ltag}" in
+		''|*[!a-zA-Z_]*) printf 'run' ;;
+		*) printf '%s' "${_ltag}" ;;
+	esac
+}
+
+agg_lock_pid_read(){ # pid держателя лока (пусто, если нет/старый формат)
+	local _lts _ltag _lpid
+	[ -f "${AGG_LOCK}" ] || return 0
+	_lts=""; _ltag=""; _lpid=""
+	read -r _lts _ltag _lpid < "${AGG_LOCK}" 2>/dev/null || true
+	case "${_lpid}" in ''|*[!0-9]*) : ;; *) printf '%s' "${_lpid}" ;; esac
+}
+
+agg_lock_age(){ # возраст лока в секундах (0 если нет лока)
+	[ -f "${AGG_LOCK}" ] || { printf 0; return 0; }
+	echo $(( $(date +%s) - $(stat -c %Y "${AGG_LOCK}" 2>/dev/null || date +%s) ))
+}
+
+agg_wait_lock(){ # $1=макс. ожидание сек (default AGG_WAIT_LOCK_SEC): ждать свободный лок
+	local _max="${1:-${AGG_WAIT_LOCK_SEC:-120}}" _w=0
+	while [ -f "${AGG_LOCK}" ] && [ "$(agg_lock_age)" -lt 600 ]; do
+		if [ "${_w}" -ge "${_max}" ]; then
+			printf 'Aggregator: gave up waiting for lock after %ss (busy: %s, %ss old) - press Off to interrupt\n' \
+				"${_max}" "$(agg_lock_tag)" "$(agg_lock_age)"
+			return 1
+		fi
+		sleep 2
+		_w=$((_w + 2))
+	done
+	return 0
+}
+
+agg_abort_mark(){ date +%s > "${AGG_ABORT_FILE}" 2>/dev/null || true; }
+
+agg_abort_check(){ # $1=t0 (epoch начала действия): 1 если пользователь жал Off ПОСЛЕ старта
+	local _ab
+	[ -f "${AGG_ABORT_FILE}" ] || return 0
+	_ab=$(cat "${AGG_ABORT_FILE}" 2>/dev/null); case "${_ab}" in ''|*[!0-9]*) return 0 ;; esac
+	[ "${_ab}" -gt "${1:-0}" ] 2>/dev/null && return 1
+	return 0
+}
+
+_agg_kill_workers(){ # $1=TERM|KILL: убить всех фоновых воркеров агрегатора (CGI sh -c)
+	local _p _rest _cmd
+	if command -v ps >/dev/null 2>&1; then
+		ps w 2>/dev/null | while read -r _p _rest; do
+			case "${_rest}" in
+				*agg_wait_lock*|*agg_cmd_*|*libs/aggregator*)
+					[ "${_p}" = "$$" ] && continue
+					case "${_p}" in ''|*[!0-9]*) continue ;; esac
+					kill "-${1}" "${_p}" 2>/dev/null
+					;;
+			esac
+		done
+	else
+		# fallback без ps: скан /proc (минимальные окружения)
+		for _p in /proc/[0-9]*; do
+			_p="${_p#/proc/}"
+			[ "${_p}" = "$$" ] && continue
+			_cmd=$(tr '\0' ' ' < "/proc/${_p}/cmdline" 2>/dev/null) || continue
+			case "${_cmd}" in
+				*agg_wait_lock*|*agg_cmd_*|*libs/aggregator*) kill "-${1}" "${_p}" 2>/dev/null ;;
+			esac
+		done
+	fi
+	return 0
 }
 
 agg_cmd_add(){ # $1=link
@@ -287,7 +1281,27 @@ agg_cmd_add(){ # $1=link
 	return 0
 }
 
-agg_cmd_del(){ agg_locked _agg_cmd_del "$@"; }
+# v652: bulk import — file (one vless:// per line) or stdin
+agg_cmd_addfile(){ # $1=file or '-' for stdin
+	local _src="${1:-}" _link _added=0 _skipped=0 _before
+	agg_pool_init
+	_before=$(agg_pool_count)
+	while IFS= read -r _link || [ -n "${_link}" ]; do
+		# trim CR + whitespace
+		_link=$(printf '%s' "${_link}" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+		[ -z "${_link}" ] && continue
+		case "${_link}" in vless://*) ;; *) _skipped=$((_skipped + 1)); continue ;; esac
+		grep -qxF "${_link}" "${AGG_POOL_FILE}" 2>/dev/null && { _skipped=$((_skipped + 1)); continue; }
+		printf '%s\n' "${_link}" >> "${AGG_POOL_FILE}"
+		_added=$((_added + 1))
+	done < "${_src:--}"
+	_n=$(agg_pool_count)
+	printf 'Aggregator: imported %s new links (%s skipped), pool %s -> %s\n' \
+		"${_added}" "${_skipped}" "${_before}" "${_n}"
+	[ "${_added}" -gt 0 ]
+}
+
+agg_cmd_del(){ AGG_LOCK_TAG=del agg_locked _agg_cmd_del "$@"; }
 _agg_cmd_del(){ # $1=index
 	local _n="$1" _total _tmp _en _act _lc
 	_total=$(agg_pool_count)
@@ -314,6 +1328,145 @@ _agg_cmd_del(){ # $1=index
 	elif [ "${_act}" -gt "${_n}" ] 2>/dev/null && [ "${_en}" = "1" ]; then
 		agg_set ACTIVE "$((_act - 1))"
 	fi
+	return 0
+}
+
+# v659: bulk-remove definitively dead servers (Web UI "Удалить мёртвые")
+agg_cmd_purge(){ AGG_LOCK_TAG=purge agg_locked _agg_cmd_purge; }
+_agg_cmd_purge(){
+	local _total _i _dead_n=0 _deadlist="" _act _en _lc _kept _tmp _new_act _below _k _v _new _suf _sb _sb2 _cidx
+	_total=$(agg_pool_count)
+	[ "${_total}" -gt 0 ] || { printf 'Aggregator: pool is empty\n'; return 1; }
+	_i=1
+	while [ "${_i}" -le "${_total}" ]; do
+		if agg_is_dead "${_i}"; then
+			_dead_n=$((_dead_n + 1))
+			_deadlist="${_deadlist}${_i} "
+		fi
+		_i=$((_i + 1))
+	done
+	[ "${_dead_n}" -gt 0 ] || { printf 'Aggregator: no dead servers in pool (nothing to purge)\n'; return 0; }
+	_en=$(agg_get ENABLED); [ -n "${_en}" ] || _en=0
+	_act=$(agg_active_idx)
+	_lc=$(agg_get LASTCHECK); [ -n "${_lc}" ] || _lc=0
+	# новый индекс активного: сколько живых строк до него
+	_new_act=0
+	if [ "${_act}" != "0" ]; then
+		_new_act=${_act}
+		_i=1; _below=0
+		while [ "${_i}" -lt "${_act}" ]; do
+			case " ${_deadlist} " in *" ${_i} "*) _below=$((_below + 1)) ;; esac
+			_i=$((_i + 1))
+		done
+		case " ${_deadlist} " in
+			*" ${_act} "*) _new_act=0 ;;          # active сам удалён
+			*) _new_act=$((_act - _below)) ;;
+		esac
+	fi
+	_tmp="${AGG_POOL_FILE}.tmp.$$"
+	awk -v dl="${_deadlist}" 'BEGIN{n=split(dl,a," "); for(i=1;i<=n;i++)if(a[i]!="")dead[a[i]]=1}
+		/^[[:space:]]*#/{print;next} /^[[:space:]]*$/{print;next}
+		{c++; if(!(c in dead)) print}' \
+		"${AGG_POOL_FILE}" > "${_tmp}" 2>/dev/null && mv -f "${_tmp}" "${AGG_POOL_FILE}"
+	rm -f "${_tmp}"
+	# пересборка state (v680): глобальные ключи (подписка/пробы/скрининг)
+	# сохраняем, метки выживших переносим по новым индексам — раньше сносилось
+	# всё: UI терял «жив/tcp» после чистки, а SUBUPDATED терялся и fetch
+	# подписки начинался заново с каждого purge
+	_kept=$(agg_pool_count)
+	local _su _sa _pt _po _ps _fl _fs _sbl _sberr _sb _sb2 _ci _old _new _suf _v _osf _le
+	_su=$(agg_get SUBUPDATED); [ -n "${_su}" ] || _su=0
+	_sa=$(agg_get SUBALIVE); [ -n "${_sa}" ] || _sa=0
+	_pt=$(agg_get PROBE_TS); _po=$(agg_get PROBE_OK); _ps=$(agg_get PROBE_SRC)
+	_fl=$(agg_get FASTLAST); _fs=$(agg_get FALLBACK_SWEEP_TS)
+	_sbl=$(agg_get SBLAST); _sberr=$(agg_get SBERR); _le=$(agg_get LASTERR)
+	_sb=$(agg_get STANDBY); _sb2=$(agg_get STANDBY2)
+	_ci=$(agg_get CHECKIDX); case "${_ci}" in ''|*[!0-9]*) _ci=1 ;; esac
+	# v680fix: копия СТАРОГО state — printf ниже перезаписывает файл, а метки
+	# выживших (ALIVE/TCP/FAIL/SBDF) читаются в цикле переноса уже после этого
+	_osf="${AGG_STATE_FILE}.pre.$$"
+	cp -f "${AGG_STATE_FILE}" "${_osf}" 2>/dev/null
+	# standby/clean_idx в deadlist — сбрасываем (ссылка на удалённого)
+	case " ${_deadlist} " in *" ${_sb} "*) _sb=0 ;; esac
+	case " ${_deadlist} " in *" ${_sb2} "*) _sb2=0 ;; esac
+	case " ${_deadlist} " in *" ${_ci} "*) _ci=1 ;; esac
+	printf 'ENABLED=%s\nACTIVE=%s\nLASTCHECK=%s\nSUBUPDATED=%s\nSUBALIVE=%s\n' \
+		"${_en}" "${_new_act}" "${_lc}" "${_su}" "${_sa}" > "${AGG_STATE_FILE}"
+	[ -n "${_pt}" ] && agg_set PROBE_TS "${_pt}"
+	[ -n "${_po}" ] && agg_set PROBE_OK "${_po}"
+	[ -n "${_ps}" ] && agg_set PROBE_SRC "${_ps}"
+	[ -n "${_fl}" ] && agg_set FASTLAST "${_fl}"
+	[ -n "${_fs}" ] && agg_set FALLBACK_SWEEP_TS "${_fs}"
+	agg_set SBLAST "${_sbl:-0}"
+	[ -n "${_sberr}" ] && agg_set SBERR "${_sberr}"
+	[ -n "${_le}" ] && agg_set LASTERR "${_le}"   # v689: последняя ошибка не теряется при purge
+	# перенос меток выживших: старый индекс -> новый (ALIVE/TCP/FAIL/SBDF)
+	_old=1; _new=0
+	while [ "${_old}" -le "${_total}" ]; do
+		case " ${_deadlist} " in
+			*" ${_old} "*) : ;;                 # удалён — метки в никуда
+			*)
+				_new=$((_new + 1))
+				for _suf in ALIVE TCP FAIL SBDF; do
+					_v=$(sed -n "s/^${_suf}_${_old}=//p" "${_osf}" 2>/dev/null | head -1)
+					[ -n "${_v}" ] && agg_set "${_suf}_${_new}" "${_v}"
+				done
+				[ "${_sb}" = "${_old}" ] && _sb="${_new}"
+				[ "${_sb2}" = "${_old}" ] && _sb2="${_new}"
+				[ "${_ci}" = "${_old}" ] && _ci="${_new}"
+				;;
+		esac
+		_old=$((_old + 1))
+	done
+	rm -f "${_osf}"
+	[ "${_sb}" -gt "${_kept}" ] 2>/dev/null && _sb=0
+	[ "${_sb2}" -gt "${_kept}" ] 2>/dev/null && _sb2=0
+	[ "${_ci}" -gt "${_kept}" ] 2>/dev/null && _ci=1
+	agg_set STANDBY "${_sb:-0}"
+	agg_set STANDBY2 "${_sb2:-0}"
+	agg_set CHECKIDX "${_ci}"
+	printf 'Aggregator: purged %s dead server(s), pool %s -> %s\n' "${_dead_n}" "${_total}" "${_kept}"
+	if [ "${_new_act}" = "0" ] && [ "${_en}" = "1" ]; then
+		# активный был удалён — быстрый скан оставшихся (они живые по определению)
+		if agg_scan 1; then
+			tg_notify aggregator "Aggregator VLESS: purged ${_dead_n} dead, switched to #$(agg_active_idx)"
+		else
+			agg_fallback
+		fi
+	fi
+	[ "${_dead_n}" -gt 0 ]
+}
+
+# v689: «Очистить список» — удалить ВСЕ ссылки пула и все метки (ALIVE/TCP/FAIL/
+# DEAD/SBDF, active/standby). Вкл/Выкл (ENABLED), подписка (SUBUPDATED/SUBALIVE/
+# URL) и снапшот ручного конфига НЕ трогаются: после очистки «Из подписки»
+# наполняет пул заново, тоннель работает на последнем применённом конфиге.
+agg_cmd_clear(){ AGG_LOCK_TAG=clear agg_locked _agg_cmd_clear; }
+_agg_cmd_clear(){
+	local _total _en _lc _su _sa _pt _po _ps _fl _fs _sbl _sberr
+	_total=$(agg_pool_count)
+	if [ "${_total}" -eq 0 ]; then
+		printf 'Aggregator: pool is already empty\n'
+		return 0
+	fi
+	_en=$(agg_get ENABLED); [ -n "${_en}" ] || _en=0
+	_lc=$(agg_get LASTCHECK); [ -n "${_lc}" ] || _lc=0
+	_su=$(agg_get SUBUPDATED); [ -n "${_su}" ] || _su=0
+	_sa=$(agg_get SUBALIVE); [ -n "${_sa}" ] || _sa=0
+	_pt=$(agg_get PROBE_TS); _po=$(agg_get PROBE_OK); _ps=$(agg_get PROBE_SRC)
+	_fl=$(agg_get FASTLAST); _fs=$(agg_get FALLBACK_SWEEP_TS)
+	_sbl=$(agg_get SBLAST); _sberr=$(agg_get SBERR)
+	: > "${AGG_POOL_FILE}"
+	printf 'ENABLED=%s\nACTIVE=0\nLASTCHECK=%s\nSUBUPDATED=%s\nSUBALIVE=%s\nCHECKIDX=1\nSTANDBY=0\nSTANDBY2=0\nSBIDX=0\n' \
+		"${_en}" "${_lc}" "${_su}" "${_sa}" > "${AGG_STATE_FILE}"
+	[ -n "${_pt}" ] && agg_set PROBE_TS "${_pt}"
+	[ -n "${_po}" ] && agg_set PROBE_OK "${_po}"
+	[ -n "${_ps}" ] && agg_set PROBE_SRC "${_ps}"
+	[ -n "${_fl}" ] && agg_set FASTLAST "${_fl}"
+	[ -n "${_fs}" ] && agg_set FALLBACK_SWEEP_TS "${_fs}"
+	agg_set SBLAST "${_sbl:-0}"
+	[ -n "${_sberr}" ] && agg_set SBERR "${_sberr}"
+	printf 'Aggregator: cleared all %s link(s) - pool is empty; on/off and subscription kept, tunnel config untouched\n' "${_total}"
 	return 0
 }
 
@@ -371,10 +1524,38 @@ agg_status_line(){ # single line for bot/status text
 }
 
 agg_status_json(){ # for Web UI (manage.sh agg_status)
-	local _en=false _act _total _i _link _host _f _d _dead="[" _links="" _first=1 _fails="{"
+	local _en=false _act _total _i _link _host _f _d _dead="[" _links="" _first=1 _fails="{" _sb=0 _sb2=0 _sbl=0 _sberr="" _tcp _lk=0 _lkt="" _lka=0 _pok=0 _pts=0 _psrc="" _al _le="" _dts=0
 	_en=$(agg_get ENABLED); [ "${_en}" = "1" ] && _en=true || _en=false
 	_act=$(agg_active_idx)
+	_sb=$(agg_get STANDBY); case "${_sb}" in ''|*[!0-9]*) _sb=0 ;; esac
+	_sb2=$(agg_get STANDBY2); case "${_sb2}" in ''|*[!0-9]*) _sb2=0 ;; esac
+	_sbl=$(agg_get SBLAST); case "${_sbl}" in ''|*[!0-9]*) _sbl=0 ;; esac
+	_sberr=$(agg_get SBERR)
+	# v689: последняя ошибка теста (дата+время+причина) для UI-инфо-строки
+	_le=$(agg_get LASTERR); _le=$(printf '%s' "${_le}" | sed 's/[^a-zA-Z0-9 ._:#/-]//g')
+	# v664: результат последней пробы активного (для сравнения «агент видит живой» vs «сайты не грузятся»)
+	_pok=$(agg_get PROBE_OK); [ "${_pok}" = "1" ] && _pok=1 || _pok=0
+	_pts=$(agg_get PROBE_TS); case "${_pts}" in ''|*[!0-9]*) _pts=0 ;; esac
+	_psrc=$(agg_get PROBE_SRC); _psrc=$(printf '%s' "${_psrc}" | sed 's/[^a-zA-Z0-9._-]//g')
 	_total=$(agg_pool_count)
+	# v680: состояние подписки для UI (только хост — секретный путь URL не показываем)
+	_sub_set=false; _sub_host=""; _sub_upd=0; _sub_alive=0; _sub_res=""
+	_sub_url=$(agg_sub_url)
+	if [ -n "${_sub_url}" ]; then
+		case "${_sub_url}" in http://*|https://*) _sub_set=true ;; esac
+		_sub_host=$(printf '%s' "${_sub_url}" | sed 's|^https\?://||; s|[:/?#].*$||' | sed 's/[^a-zA-Z0-9._-]//g')
+		_sub_upd=$(agg_get SUBUPDATED); case "${_sub_upd}" in ''|*[!0-9]*) _sub_upd=0 ;; esac
+		_sub_alive=$(agg_get SUBALIVE); case "${_sub_alive}" in ''|*[!0-9]*) _sub_alive=0 ;; esac
+		# v688: результат последнего автообновления (ok:N / fail:curl / fail:empty)
+		_sub_res=$(agg_get SUBRES); _sub_res=$(printf '%s' "${_sub_res}" | sed 's/[^a-zA-Z0-9:._-]//g')
+	fi
+	# v661: состояние лока для UI (кто держит и сколько — вместо «чёрной коробки»)
+	if [ -f "${AGG_LOCK}" ]; then
+		_lk=1
+		_lkt=$(agg_lock_tag); _lkt=$(printf '%s' "${_lkt}" | sed 's/"/./g')
+		_lka=$(agg_lock_age)
+		case "${_lka}" in ''|*[!0-9]*) _lka=0 ;; esac
+	fi
 	_i=1
 	while [ "${_i}" -le "${_total}" ]; do
 		_link=$(agg_pool_get "${_i}")
@@ -382,15 +1563,20 @@ agg_status_json(){ # for Web UI (manage.sh agg_status)
 		[ -n "${_host}" ] || _host="?"
 		_host=$(printf '%s' "${_host}" | sed 's/"/./g')
 		_f=$(agg_get "FAIL_${_i}"); [ -n "${_f}" ] || _f=0
+		# v672: метка живости (когда сервер последний раз проходил полный тест/пробу)
+		_al=$(agg_get "ALIVE_${_i}"); case "${_al}" in ''|*[!0-9]*) _al=0 ;; esac
+		# v689: дата пометки dead (тег [dead] в UI раньше был без времени)
+		_dts=$(agg_get "DEAD_${_i}"); case "${_dts}" in ''|*[!0-9]*) _dts=0 ;; esac
 		if agg_is_dead "${_i}"; then
 			[ "${_dead}" = "[" ] || _dead="${_dead},"
 			_dead="${_dead}${_i}"
 			[ "${_first}" = "1" ] || _links="${_links},"
-			_links="${_links}{\"n\":${_i},\"host\":\"${_host}\",\"dead\":1,\"fails\":${_f},\"active\":0}"
+			_links="${_links}{\"n\":${_i},\"host\":\"${_host}\",\"dead\":1,\"fails\":${_f},\"active\":0,\"tcp\":0,\"alive\":${_al},\"dead_ts\":${_dts}}"
 			_first=0
 		else
+			_tcp=$(agg_get "TCP_${_i}"); case "${_tcp}" in ''|*[!0-9]*) _tcp=0 ;; esac
 			[ "${_first}" = "1" ] || _links="${_links},"
-			_links="${_links}{\"n\":${_i},\"host\":\"${_host}\",\"dead\":0,\"fails\":${_f},\"active\":$([ "${_i}" = "${_act}" ] && printf 1 || printf 0)}"
+			_links="${_links}{\"n\":${_i},\"host\":\"${_host}\",\"dead\":0,\"fails\":${_f},\"active\":$([ "${_i}" = "${_act}" ] && printf 1 || printf 0),\"tcp\":${_tcp},\"alive\":${_al},\"dead_ts\":0}"
 			_first=0
 		fi
 		if [ "${_f}" != "0" ]; then
@@ -401,29 +1587,333 @@ agg_status_json(){ # for Web UI (manage.sh agg_status)
 	done
 	_dead="${_dead}]"
 	_fails="${_fails}}"
+	# standby слоты валидируем (после purge/remap могут указывать в никуда)
+	[ "${_sb}" -gt "${_total}" ] 2>/dev/null && _sb=0
+	[ "${_sb2}" -gt "${_total}" ] 2>/dev/null && _sb2=0
+	[ "${_sb}" != "0" ] && agg_is_dead "${_sb}" && _sb=0
+	[ "${_sb2}" != "0" ] && agg_is_dead "${_sb2}" && _sb2=0
 	[ "${_total}" -eq 0 ] && _links=""
-	printf '{"ok":true,"enabled":%s,"active":%s,"total":%s,"dead":%s,"fails":%s,"has_manual":%s,"links":[%s]}\n' \
+	printf '{"ok":true,"enabled":%s,"active":%s,"total":%s,"dead":%s,"fails":%s,"has_manual":%s,"standby":%s,"standby2":%s,"sb_last":%s,"sb_err":"%s","locked":%s,"lock_tag":"%s","lock_age":%s,"probe_ok":%s,"probe_ts":%s,"probe_src":"%s","sub_set":%s,"sub_host":"%s","sub_updated":%s,"sub_alive":%s,"sub_res":"%s","lasterr":"%s","links":[%s]}\n' \
 		"${_en}" "${_act}" "${_total}" "${_dead}" "${_fails}" \
 		"$([ -f "${AGG_MANUAL_FILE}" ] && printf true || printf false)" \
+		"${_sb}" "${_sb2}" "${_sbl}" "${_sberr}" \
+		"${_lk}" "${_lkt}" "${_lka}" \
+		"${_pok}" "${_pts}" "${_psrc}" \
+		"${_sub_set}" "${_sub_host}" "${_sub_upd}" "${_sub_alive}" "${_sub_res}" \
+		"${_le}" \
 		"${_links}"
 	return 0
 }
 
-agg_cmd_on(){ agg_locked _agg_cmd_on; }
+# ---------------- subscription (v680) ----------------
+# URL подписки хранится ТОЛЬКО в /opt/etc/kvas.conf (AGG_SUB_URL) — в коде,
+# репозитории и PRD остаётся пустой дефолт (поле ввода — Web UI, «Обзор»).
+# Автообновление пула раз в 6 ч при включённом агрегаторе: fetch заменяет пул
+# только на >=1 валидной vless:// ссылки (иначе пул не трогаем), затем отбор
+# до 5 живых (первый живой — в тоннель, если активный пуст/мёртв), мёртвых
+# чистим. Работает ТОЛЬКО при ENABLED=1 (выключенный агрегатор не качает и
+# не тестирует — подтверждено пользователем).
+KVAS_CONF_FILE=${KVAS_CONF_FILE:-/opt/etc/kvas.conf}
+AGG_SUB_SEC=21600           # период автообновления из подписки (6 ч)
+AGG_SUB_RETRY_SEC=900       # повтор при недоступности подписки (15 мин)
+AGG_SUB_TEST_MAX=15         # isolated-тестов за один тик отбора (~3-4 мин)
+AGG_SUB_TARGET=5            # сколько живых набрать
+
+agg_sub_url(){ sed -n 's/^AGG_SUB_URL=//p' "${KVAS_CONF_FILE}" 2>/dev/null | head -1; }
+
+agg_sub_tick(){ # из agg_cron_body (ENABLED=1): fetch по гейту + отбор живых
+	agg_enabled || return 0
+	local _url
+	_url=$(agg_sub_url)
+	[ -n "${_url}" ] || return 0   # подписка не настроена — фича спит
+	agg_sub_fetch
+	agg_sub_select
+	return 0
+}
+
+agg_sub_fetch(){ # $1=force -> 0 обновлено / 1 skip / 2 fail (пул не тронут)
+	local _url _now _last _f _n _sub_n _act _act_link _new_act _tmp _lc _en
+	local _osf _old_total _opf _i _l _al _dk _new_pool
+	_url=$(agg_sub_url)
+	[ -n "${_url}" ] || return 1
+	case "${_url}" in http://*|https://*) ;; *) return 1 ;; esac
+	_now=$(date +%s)
+	_last=$(agg_get SUBUPDATED); [ -n "${_last}" ] || _last=0
+	if [ "${1:-}" != "force" ]; then
+		[ $((_now - _last)) -ge "${AGG_SUB_SEC}" ] || return 1
+	fi
+	_tmp="/tmp/agg.sub.$$"
+	if ! curl -fsS --max-time 30 "${_url}" -o "${_tmp}" 2>/dev/null; then
+		rm -f "${_tmp}"
+		agg_set SUBUPDATED "$((_now - AGG_SUB_SEC + AGG_SUB_RETRY_SEC))"
+		agg_set SUBRES "fail:curl"
+		printf 'Aggregator: subscription fetch failed (retry in 15 min), current pool kept\n'
+		return 2
+	fi
+	# только vless:// (v680: vmess/trojan не поддерживаются), trim CR, дедуп
+	tr -d '\r' < "${_tmp}" | grep '^vless://' | awk '!seen[$0]++' > "${_tmp}.v" 2>/dev/null
+	rm -f "${_tmp}"
+	_sub_n=$(grep -c . "${_tmp}.v" 2>/dev/null); [ -n "${_sub_n}" ] || _sub_n=0
+	if [ "${_sub_n}" -lt 1 ]; then
+		rm -f "${_tmp}.v"
+		agg_set SUBUPDATED "$((_now - AGG_SUB_SEC + AGG_SUB_RETRY_SEC))"
+		agg_set SUBRES "fail:empty"
+		printf 'Aggregator: subscription returned 0 vless:// links, current pool kept\n'
+		return 2
+	fi
+	# ---- v688: мерж вместо замены ----
+	# Новый пул = ссылки подписки + подтверждённо живые из старого пула (ALIVE_*,
+	# не dead) + работающий активный. Метки (ALIVE/TCP/FAIL/SBDF, standby,
+	# CHECKIDX) и глобали state переносятся по ССЫЛКЕ через _agg_state_remap:
+	# раньше fetch затирал state целиком и выбрасывал серверы, которых нет в
+	# новой подписке — «проверенные живые» исчезали после каждого автообновления
+	# (жалоба: «агрегатор должен качать как будто я только добавил, удалив всё
+	# кроме уже проверенных живых и оставшись на активном»).
+	_act=$(agg_active_idx)
+	_act_link=""
+	[ "${_act}" != "0" ] && _act_link=$(agg_pool_get "${_act}")
+	_osf="${AGG_STATE_FILE}.pre.$$"
+	cp -f "${AGG_STATE_FILE}" "${_osf}" 2>/dev/null
+	_old_total=$(agg_pool_count)
+	_opf="${_tmp}.oldlinks"
+	: > "${_opf}"
+	_i=1
+	while [ "${_i}" -le "${_old_total}" ]; do
+		printf '%s\n' "$(agg_pool_get "${_i}")" >> "${_opf}"
+		_i=$((_i + 1))
+	done
+	_new_pool="${_tmp}.pool"
+	{
+		cat "${_tmp}.v"
+		_i=1
+		while [ "${_i}" -le "${_old_total}" ]; do
+			_l=$(sed -n "${_i}p" "${_opf}")
+			if [ -n "${_l}" ] && ! grep -qxF "${_l}" "${_tmp}.v"; then
+				_al=$(agg_get "ALIVE_${_i}")
+				_dk=$(agg_get "DEAD_${_i}")
+				if [ -n "${_al}" ] && [ "${_al}" != "0" ] && { [ -z "${_dk}" ] || [ "${_dk}" = "0" ]; }; then
+					printf '%s\n' "${_l}"
+				fi
+			fi
+			_i=$((_i + 1))
+		done
+		[ -n "${_act_link}" ] && printf '%s\n' "${_act_link}"
+	} | awk '!seen[$0]++' > "${_new_pool}"
+	mv -f "${_new_pool}" "${AGG_POOL_FILE}"
+	rm -f "${_tmp}.v"
+	_new_act=0
+	if [ -n "${_act_link}" ]; then
+		_new_act=$(grep -nxF "${_act_link}" "${AGG_POOL_FILE}" | head -1 | cut -d: -f1)
+		case "${_new_act}" in ''|*[!0-9]*) _new_act=0 ;; esac
+	fi
+	# база state: ENABLED НЕ форсируем в 1 (v682 — ручной fetch при выключенном
+	# агрегаторе не должен сам включать тоннель)
+	_lc=$(agg_get LASTCHECK); [ -n "${_lc}" ] || _lc=0
+	_en=$(agg_get ENABLED); case "${_en}" in 1) ;; *) _en=0 ;; esac
+	printf 'ENABLED=%s\nACTIVE=%s\nLASTCHECK=%s\nSUBUPDATED=%s\nSUBALIVE=0\n' \
+		"${_en}" "${_new_act}" "${_lc}" "${_now}" > "${AGG_STATE_FILE}"
+	# v688: перенос меток/глобалей из копии старого state
+	_agg_state_remap "${_osf}" "${_opf}"
+	rm -f "${_osf}" "${_opf}"
+	agg_set SUBRES "ok:${_sub_n}"
+	_n=$(agg_pool_count)
+	printf 'Aggregator: subscription updated: %s vless links, pool -> %s, active #%s kept (old alive markers remapped)\n' \
+		"${_sub_n}" "${_n}" "${_new_act}"
+	return 0
+}
+
+# ---- v688: перенос state после замены пула (вызывается из agg_sub_fetch) ----
+# $1 = копия старого state, $2 = файл старых ссылок (строка = старый индекс).
+# Глобальные ключи копируются как есть; ALIVE/TCP/FAIL/SBDF — по новому индексу
+# ссылки; DEAD не переносится (мёртвые в новом пуле не живут); ACTIVE/STANDBY/
+# STANDBY2/CHECKIDX пересчитываются по ссылке.
+_agg_new_idx(){ # $1=старый индекс -> номер ссылки в НОВОМ пуле (0 = ссылки нет)
+	local _l _m
+	_l=$(sed -n "${1}p" "${_agg_old_links}" 2>/dev/null)
+	if [ -z "${_l}" ]; then printf '0'; return 0; fi
+	_m=$(grep -nxF "${_l}" "${AGG_POOL_FILE}" 2>/dev/null | head -1 | cut -d: -f1)
+	case "${_m}" in ''|*[!0-9]*) _m=0 ;; esac
+	printf '%s' "${_m}"
+}
+_agg_state_remap(){ # $1=osf $2=oldlinks
+	local _line _k _v _suf _idx _ni
+	[ -f "$1" ] || return 0
+	_agg_old_links="$2"
+	while IFS= read -r _line || [ -n "${_line}" ]; do
+		case "${_line}" in *=*) ;; *) continue ;; esac
+		_k=${_line%%=*}
+		_v=${_line#*=}
+		case "${_k}" in
+			ENABLED|ACTIVE|LASTCHECK|SUBUPDATED|SUBALIVE) continue ;;
+			STANDBY|STANDBY2)
+				_ni=$(_agg_new_idx "${_v}")
+				agg_set "${_k}" "${_ni}"
+				continue ;;
+			CHECKIDX)
+				_ni=$(_agg_new_idx "${_v}")
+				case "${_ni}" in ''|*[!0-9]*|0) _ni=1 ;; esac
+				agg_set CHECKIDX "${_ni}"
+				continue ;;
+		esac
+		case "${_k}" in
+			*_*)
+				_suf=${_k%_*}
+				_idx=${_k##*_}
+				case "${_idx}" in
+					''|*[!0-9]*) agg_set "${_k}" "${_v}"; continue ;;  # не индексный — глобальный
+				esac
+				[ "${_suf}" = "DEAD" ] && continue    # dead-метки старого пула не переносим
+				_ni=$(_agg_new_idx "${_idx}")
+				[ "${_ni}" != "0" ] && agg_set "${_suf}_${_ni}" "${_v}"
+				continue ;;
+		esac
+		agg_set "${_k}" "${_v}"
+	done < "$1"
+	_agg_old_links=""
+}
+
+agg_sub_select(){ # набрать AGG_SUB_TARGET живых; первый живой -> тоннель (если active пуст/мёртв)
+	local _total _i _idx _link _have=0 _tests=0 _dead_n=0 _rc _act _need=0 _sw=0 _al _start _iter
+	agg_enabled || return 0
+	_total=$(agg_pool_count)
+	[ "${_total}" -gt 0 ] || return 0
+	_act=$(agg_active_idx)
+	# живые на руках: ALIVE-метка есть (не dead), активный без метки — жив по
+	# пробам fastprobe (без переключения, по требованию «живой активный не трогаем»)
+	_i=1
+	while [ "${_i}" -le "${_total}" ]; do
+		if ! agg_is_dead "${_i}"; then
+			_al=$(agg_get "ALIVE_${_i}")
+			if [ -n "${_al}" ] && [ "${_al}" != "0" ]; then
+				_have=$((_have + 1))
+			elif [ "${_i}" = "${_act}" ]; then
+				_have=$((_have + 1))
+			fi
+		fi
+		_i=$((_i + 1))
+	done
+	agg_set SUBALIVE "${_have}"
+	if [ "${_have}" -ge "${AGG_SUB_TARGET}" ]; then
+		printf 'Aggregator: subscription scan idle: %s/%s alive on hand\n' "${_have}" "${AGG_SUB_TARGET}"
+		return 0
+	fi
+	# переключаемся только если активного нет или он мёртв (живой — не трогаем)
+	if [ "${_act}" = "0" ] || agg_is_dead "${_act}"; then
+		_need=1
+	fi
+	printf 'Aggregator: subscription scan for alive (%s/%s, up to %s tests)...\n' \
+		"${_have}" "${AGG_SUB_TARGET}" "${AGG_SUB_TEST_MAX}"
+	# v689: старт ротируется (CHECKIDX) — раньше каждый тик начинал с #1: в пуле
+	# из сотен первые десятки мертвы, отбор не доходил до живых. Каждый слот
+	# посещается не чаще одного раза за тик (_iter-гвардия вместо _i<=_total).
+	_start=$(_agg_rot_start)
+	_i="${_start}"; _iter=0
+	while [ "${_iter}" -lt "${_total}" ] && [ "${_have}" -lt "${AGG_SUB_TARGET}" ] && [ "${_tests}" -lt "${AGG_SUB_TEST_MAX}" ]; do
+		_iter=$((_iter + 1))
+		_idx="${_i}"; _i=$((_i + 1))
+		[ "${_i}" -gt "${_total}" ] && _i=1
+		[ "${_idx}" = "${_act}" ] && continue   # активного не тестируем
+		_link=$(agg_pool_get "${_idx}")
+		[ -n "${_link}" ] || continue
+		_tests=$((_tests + 1))
+		_rc=0
+		agg_isolated_test "${_link}" || _rc=$?
+		if [ "${_rc}" = "0" ]; then
+			agg_set "ALIVE_${_idx}" "$(date +%s)"
+			agg_set "FAIL_${_idx}" 0
+			_have=$((_have + 1))
+			printf 'Aggregator: #%s alive (subscription scan, %s/%s)\n' "${_idx}" "${_have}" "${AGG_SUB_TARGET}"
+			if [ "${_need}" = "1" ] && [ "${_sw}" = "0" ]; then
+				if agg_apply_link "${_idx}" "${_link}"; then
+					printf 'Aggregator: switched to #%s (first alive from subscription)\n' "${_idx}"
+					tg_notify aggregator "Aggregator VLESS: subscription scan, switched to #${_idx}"
+					_act="${_idx}"; _sw=1; _need=0
+				else
+					printf 'Aggregator: #%s alive but apply failed (kept as reserve)\n' "${_idx}"
+				fi
+			fi
+		elif [ "${_rc}" = "2" ]; then
+			printf 'Aggregator: infra down during subscription scan - stopped at #%s, nothing marked dead\n' "${_idx}"
+			break
+		else
+			agg_set "DEAD_${_idx}" "$(date +%s)"
+			_dead_n=$((_dead_n + 1))
+			printf 'Aggregator: #%s dead (isolated test failed, %s)\n' "${_idx}" "$(_agg_why)"
+		fi
+	done
+	# чистка мёртвых из пула (перенос меток выживших по новым индексам)
+	if [ "${_dead_n}" -gt 0 ]; then
+		_agg_cmd_purge
+	fi
+	# v689: следующий старт — после последнего посещённого слота; валидация
+	# на случай, если purge изменил размер пула
+	_total=$(agg_pool_count)
+	case "${_i}" in ''|*[!0-9]*) _i=1 ;; esac
+	[ "${_i}" -ge 1 ] 2>/dev/null && [ "${_i}" -le "${_total}" ] 2>/dev/null || _i=1
+	agg_set CHECKIDX "${_i}"
+	printf 'Aggregator: subscription scan done: alive %s/%s (tests %s, dead removed %s)\n' \
+		"${_have}" "${AGG_SUB_TARGET}" "${_tests}" "${_dead_n}"
+	agg_set SUBALIVE "${_have}"
+	return 0
+}
+
+agg_cmd_on(){ AGG_LOCK_TAG=on agg_locked _agg_cmd_on; }
 _agg_cmd_on(){
-	[ "$(agg_pool_count)" -gt 0 ] || { printf 'Aggregator: pool is empty (add links first)\n'; return 1; }
+	local _total _start
+	# v682: пустой пул + настроенная подписка -> подгружаем сами (раньше тупик:
+	# «Из подписки» требовал ON, ON требовал ссылку в пуле — пользователь шёл
+	# добавлять ссылку вручную. Теперь save -> «Из подписки» -> Вкл работает)
+	[ "$(agg_pool_count)" -gt 0 ] || {
+		if [ -n "$(agg_sub_url)" ]; then
+			printf 'Aggregator: pool is empty - loading from subscription first\n'
+			agg_sub_fetch force || true
+		fi
+	}
+	[ "$(agg_pool_count)" -gt 0 ] || {
+		printf 'Aggregator: pool is empty (add a link or save a subscription URL first)\n'
+		return 1
+	}
 	agg_pre_enable || return 1
 	agg_set ENABLED 1
-	if agg_scan 1; then
-		printf 'Aggregator: ON, active #%s\n' "$(agg_active_idx)"
+	# v661: старт скана рандомизируем (иначе каждое нажатие Вкл тестирует одни и те же
+	# первые 5 серверов, а следующие «мёртвые» навсегда); AGG_SCAN_MAX ограничивает
+	# количество полных тестов за запуск — лок держится ~1-2 мин, не 20
+	_total=$(agg_pool_count)
+	_start=$(( ($(date +%s) % _total) + 1 ))
+	if agg_scan "${_start}" all; then
+		# v672: явно подтверждаем живость выбранного (пользователь: «сканирование
+		# не показало что он жив») — try_apply вернул 0 только после успешной пробы
+		printf 'Aggregator: ON, active #%s (alive: full test + probe ok)\n' "$(agg_active_idx)"
 		return 0
 	fi
 	agg_set ACTIVE 0
-	printf 'Aggregator: ON, no live server in pool, staying on manual config\n'
+	printf 'Aggregator: ON, none of the first %s tested candidates is alive (press On again to test the next ones), staying on manual config\n' "${AGG_SCAN_MAX:-5}"
 	return 1
 }
 
-agg_cmd_off(){ agg_locked _agg_cmd_off; }
+agg_cmd_off(){
+	# v662: OFF прерывает текущую операцию — убивает держателя лока, снимает лок.
+	# v663: + abort-метка и убийство ВСЕХ фоновых воркеров. Раньше после снятия лока
+	# вся очередь ожидающих CGI-действий (on/set/check/purge/…) просыпалась и
+	# продолжала поднимать новые тоннеля при выключенном агрегаторе (CPU 100%).
+	local _pid
+	agg_abort_mark
+	if [ -f "${AGG_LOCK}" ]; then
+		_pid=$(agg_lock_pid_read)
+		if [ -n "${_pid}" ] && kill -0 "${_pid}" 2>/dev/null; then
+			kill -TERM "${_pid}" 2>/dev/null
+			sleep 1
+			kill -0 "${_pid}" 2>/dev/null && kill -KILL "${_pid}" 2>/dev/null
+			printf 'Aggregator: interrupted running %s (pid %s)\n' "$(agg_lock_tag)" "${_pid}"
+		fi
+		rm -f "${AGG_LOCK}"
+	fi
+	# v663: TERM всем ожидающим/фоновым воркерам (sh -c из CGI), затем KILL выжившим
+	_agg_kill_workers TERM
+	sleep 1
+	_agg_kill_workers KILL
+	AGG_LOCK_TAG=off agg_locked _agg_cmd_off
+}
 _agg_cmd_off(){
 	agg_set ENABLED 0
 	agg_set ACTIVE 0
@@ -443,9 +1933,9 @@ _agg_cmd_off(){
 	return 0
 }
 
-agg_cmd_set(){ agg_locked _agg_cmd_set "$@"; }
+agg_cmd_set(){ AGG_LOCK_TAG=set agg_locked _agg_cmd_set "$@"; }
 _agg_cmd_set(){ # $1=index: manual switch to a pool entry
-	local _n="$1" _link _total _prev
+	local _n="$1" _link _total _prev _tc
 	_total=$(agg_pool_count)
 	case "${_n}" in ''|*[!0-9]*) printf 'Aggregator: usage: kvas aggregator set <N>\n'; return 1 ;; esac
 	[ "${_n}" -ge 1 ] 2>/dev/null && [ "${_n}" -le "${_total}" ] 2>/dev/null || {
@@ -453,72 +1943,260 @@ _agg_cmd_set(){ # $1=index: manual switch to a pool entry
 	_link=$(agg_pool_get "${_n}")
 	[ -n "${_link}" ] || { printf 'Aggregator: #%s is not a valid link\n' "${_n}"; return 1; }
 	agg_pre_enable || return 1
-	if agg_try_apply "${_link}"; then
+	# v678: изолированный тест, затем однократное применение победителя
+	_tc=0
+	agg_isolated_test "${_link}" || _tc=$?
+	if [ "${_tc}" = "0" ]; then
+		# v688: ENABLED ещё 0 (агрегатор выключен) — форсируем захват тоннеля
+		AGG_FORCE_CAPTURE=1
+		if ! agg_apply_link "${_n}" "${_link}"; then
+			AGG_FORCE_CAPTURE=0
+			printf 'Aggregator: #%s isolated ok, but apply failed\n' "${_n}"
+			return 1
+		fi
+		AGG_FORCE_CAPTURE=0
 		agg_set ENABLED 1
 		agg_set ACTIVE "${_n}"
 		agg_set "DEAD_${_n}" 0
 		agg_set "FAIL_${_n}" 0
-		printf 'Aggregator: active #%s\n' "${_n}"
+		agg_set "ALIVE_${_n}" "$(date +%s)"   # v672: метка живости для UI
+		printf 'Aggregator: active #%s (alive: isolated test + apply ok)\n' "${_n}"
 		return 0
 	fi
-	printf 'Aggregator: server #%s failed full test\n' "${_n}"
+	# v674: инфраструктурный отказ — сервер не проверялся, fails не копим
+	if [ "${_tc}" = "2" ]; then
+		printf 'Aggregator: infra down (no tools or network) - server #%s not tested\n' "${_n}"
+		return 1
+	fi
+	printf 'Aggregator: server #%s failed isolated test (%s)\n' "${_n}" "$(_agg_why)"
 	agg_enabled && agg_count_fail "${_n}"
 	return 1
 }
 
-agg_cmd_check(){ agg_locked _agg_cmd_check "$@"; }
-_agg_cmd_check(){ # $1=optional index; no arg -> active probe + dead re-tests
-	local _n="$1" _link _total _i _rc=0
+	agg_cmd_check(){ AGG_LOCK_TAG=check agg_locked _agg_cmd_check "$@"; }
+_agg_cmd_check(){ # $1=optional index|all; no arg -> active probe + dead re-tests
+	local _n="$1" _link _total _i _rc=0 _rc2=0 _prc _tc _st
+	# v664: check all — полный прогон пула с бюджетом по времени (валидация, не выбор)
+	if [ "${_n}" = "all" ]; then
+		_agg_cmd_check_all
+		return $?
+	fi
 	if [ -n "${_n}" ]; then
 		case "${_n}" in *[!0-9]*) printf 'Aggregator: usage: kvas aggregator check [N]\n'; return 1 ;; esac
 		_link=$(agg_pool_get "${_n}")
 		[ -n "${_link}" ] || { printf 'Aggregator: no server #%s\n' "${_n}"; return 1; }
-		if agg_test_link "${_link}"; then
+		printf 'Aggregator: testing #%s (isolated test, no tunnel switch)...\n' "${_n}"
+		_tc=0
+		agg_isolated_test "${_link}" || _tc=$?
+		if [ "${_tc}" = "0" ]; then
 			agg_set "DEAD_${_n}" 0
 			agg_set "FAIL_${_n}" 0
-			printf 'Aggregator: #%s is alive (full test ok)\n' "${_n}"
+			agg_set "ALIVE_${_n}" "$(date +%s)"   # v672: метка живости для UI
+			printf 'Aggregator: #%s is alive (isolated test ok)\n' "${_n}"
 			return 0
 		fi
-		printf 'Aggregator: #%s failed full test\n' "${_n}"
+		# v674: инфраструктурный отказ — не метим и не копим fails
+		if [ "${_tc}" = "2" ]; then
+			printf 'Aggregator: infra down (no tools or network) - server #%s not tested\n' "${_n}"
+			return 1
+		fi
+		printf 'Aggregator: #%s failed isolated test (%s)\n' "${_n}" "$(_agg_why)"
 		agg_enabled && agg_count_fail "${_n}"
 		return 1
 	fi
 	local _act
 	_act=$(agg_active_idx)
 	if [ "${_act}" != "0" ]; then
-		if agg_probe; then
+		printf 'Aggregator: probing active #%s...\n' "${_act}"
+		_prc=0
+		agg_probe || _prc=$?
+		if [ "${_prc}" = "0" ]; then
 			agg_set "FAIL_${_act}" 0
-			printf 'Aggregator: active #%s probe ok\n' "${_act}"
+			agg_set "ALIVE_${_act}" "$(date +%s)"   # v672: метка живости для UI
+			printf 'Aggregator: active #%s probe ok (alive)\n' "${_act}"
+		elif [ "${_prc}" = "2" ]; then
+			# v674: сеть лежит — ни fail_active, ни dead re-test'ы (все упадут)
+			printf 'Aggregator: infra down (direct probe failed) - checks skipped, nothing marked\n'
+			return 1
 		else
 			printf 'Aggregator: active #%s probe FAILED\n' "${_act}"
 			_rc=1
 			agg_enabled && agg_fail_active "${_act}"
 		fi
 	fi
-	# dead re-tests (resurrect)
+	# dead re-tests (resurrect); v652: прогресс — раньше «висло» минутами без вывода
+	# v661: не больше AGG_RECHECK_MAX за цикл (50 dead x 30с = 25 мин лока — нельзя)
 	_total=$(agg_pool_count)
 	_i=1
+	_rc2=0
 	while [ "${_i}" -le "${_total}" ]; do
 		if agg_is_dead "${_i}"; then
+			[ "${_rc2}" -ge "${AGG_RECHECK_MAX:-3}" ] && { printf 'Aggregator: re-test budget (%s) used, remaining dead servers checked next run\n' "${AGG_RECHECK_MAX:-3}"; break; }
+			_rc2=$((_rc2 + 1))
 			_link=$(agg_pool_get "${_i}")
-			if [ -n "${_link}" ] && agg_test_link "${_link}"; then
+			printf 'Aggregator: re-testing dead #%s (isolated test)...\n' "${_i}"
+			_tc=1
+			if [ -n "${_link}" ]; then
+				_tc=0
+				agg_isolated_test "${_link}" || _tc=$?
+			fi
+			if [ "${_tc}" = "0" ]; then
 				agg_set "DEAD_${_i}" 0
 				agg_set "FAIL_${_i}" 0
+				agg_set "ALIVE_${_i}" "$(date +%s)"   # v672: метка живости для UI
 				tg_notify aggregator "Aggregator VLESS: server #${_i} is alive again"
 				printf 'Aggregator: #%s resurrected\n' "${_i}"
+			elif [ "${_tc}" = "2" ]; then
+				printf 'Aggregator: infra down (no tools or network) - dead re-tests skipped\n'
+				break
+			else
+				printf 'Aggregator: #%s still dead (%s)\n' "${_i}" "$(_agg_why)"
 			fi
 		fi
-		_i=$((_i + 1))
-	done
+			_i=$((_i + 1))
+		done
+	# v664: явное сообщение — раньше check при живом active и отсутствии dead
+	# печатал только 2 строки («probing… probe ok») и молча завершался:
+	# пользователь с 51 сервером решал, что «проверил не весь список»
+	if [ "${_rc2}" = "0" ] && [ "${_act}" != "0" ]; then
+		printf 'Aggregator: no dead servers recorded - only active #%s was probed; use check all (kvas aggregator check all) to sweep the whole pool\n' "${_act}"
+	fi
 	[ "${_act}" = "0" ] && agg_enabled && [ "$(agg_active_idx)" = "0" ] && [ "$(agg_pool_count)" -gt 0 ] && {
-		# still on manual: try recovery scan now
-		if agg_scan 1; then
+		# still on manual: try recovery scan now (all — включая только что воскресшие)
+		# v689: старт ротируется (раньше всегда #1 — живые за первыми 5 недостижимы)
+		_st=$(_agg_rot_start)
+		printf 'Aggregator: scanning pool for a live server (from #%s)...\n' "${_st}"
+		if agg_scan "${_st}" all; then
+			_agg_rot_advance "${_st}"
 			tg_notify aggregator "Aggregator VLESS: pool recovered, switched to #$(agg_active_idx)"
 			printf 'Aggregator: switched to #%s\n' "$(agg_active_idx)"
 			_rc=0
+		else
+			_agg_rot_advance "${_st}"
+			printf 'Aggregator: no live server found, staying on manual\n'
 		fi
 	}
 	return ${_rc}
+}
+
+# v664: полная проверка пула с бюджетом по времени. ВАЛИДАЦИЯ всех серверов:
+# full test каждого (кроме активного — restart с тем же конфигом бессмысленен),
+# dead/alive помечаются сразу (full test авторитетен). Старт ротируется (CHECKIDX),
+# за один прогон — до AGG_CHECK_BUDGET_SEC; нажатие продолжает с места остановки.
+# Пул из 51 сервера проверяется за ~4-6 нажатий, лок не держится 20+ минут.
+_agg_cmd_check_all(){
+	local _total _i _k=0 _link _start _t0 _alive=0 _tested=0 _act _budget _next _prc _tc
+	_budget="${AGG_CHECK_BUDGET_SEC:-180}"
+	_total=$(agg_pool_count)
+	[ "${_total}" -gt 0 ] || { printf 'Aggregator: pool is empty\n'; return 1; }
+	_act=$(agg_active_idx)
+	_start=$(agg_get CHECKIDX); case "${_start}" in ''|*[!0-9]*) _start=1 ;; esac
+	[ "${_start}" -ge 1 ] && [ "${_start}" -le "${_total}" ] || _start=1
+	printf 'Aggregator: full pool sweep starting at #%s (time budget %ss; press check all again to continue)\n' "${_start}" "${_budget}"
+	# v672: активного молча пропускали («не перетестим») — пользователь не видел,
+	# что текущий тоннель жив; теперь проба выполняется в начале прогона и её
+	# результат печатается явно (вне бюджета — бюджет считается только для sweep)
+	if [ "${_act}" != "0" ]; then
+		_prc=0
+		agg_probe || _prc=$?
+		if [ "${_prc}" = "0" ]; then
+			agg_set "FAIL_${_act}" 0
+			agg_set "ALIVE_${_act}" "$(date +%s)"
+			printf 'Aggregator: active #%s alive (probe ok, not re-tested)\n' "${_act}"
+		elif [ "${_prc}" = "2" ]; then
+			# v674: сеть лежит — sweep убил бы ВЕСЬ пул с первой упавшей проверки
+			printf 'Aggregator: infra down (direct probe failed) - sweep aborted, nothing marked dead\n'
+			return 1
+		else
+			# v679: как в check — упавший активный идёт в fail-счётчик (при
+			# AGG_FAIL_MAX — dead+emergency); раньше был только warning и sweep
+			# показывал живых при мёртвом активном без переключения
+			printf 'Aggregator: active #%s probe FAILED (current tunnel not responding) - fail counted\n' "${_act}"
+			agg_enabled && agg_fail_active "${_act}"
+		fi
+	fi
+	_t0=$(date +%s)
+	_i="${_start}"
+	while [ "${_k}" -lt "${_total}" ]; do
+		if [ "${_i}" = "${_act}" ]; then
+			: # активный не перетестим (бессмысленный restart xray с тем же конфигом)
+		else
+			_link=$(agg_pool_get "${_i}")
+			if [ -n "${_link}" ]; then
+				printf 'Aggregator: sweep testing #%s (isolated test, no switch)...\n' "${_i}"
+				_tested=$((_tested + 1))
+				_tc=0
+				agg_isolated_test "${_link}" || _tc=$?
+				if [ "${_tc}" = "0" ]; then
+					agg_set "DEAD_${_i}" 0
+					agg_set "FAIL_${_i}" 0
+					agg_set "ALIVE_${_i}" "$(date +%s)"   # v672: метка живости для UI
+					_alive=$((_alive + 1))
+					printf 'Aggregator: #%s alive\n' "${_i}"
+				elif [ "${_tc}" = "2" ]; then
+					# v674: инфраструктурный отказ посреди sweep — выходим, ничего не метя
+					printf 'Aggregator: infra down (no tools or network) - sweep aborted at #%s, nothing marked dead\n' "${_i}"
+					return 1
+				else
+					agg_set "DEAD_${_i}" "$(date +%s)"
+					agg_set "FAIL_${_i}" 0
+					printf 'Aggregator: #%s dead (isolated test failed, %s)\n' "${_i}" "$(_agg_why)"
+				fi
+			fi
+		fi
+		_i=$((_i + 1))
+		[ "${_i}" -gt "${_total}" ] && _i=1
+		_k=$((_k + 1))
+		# бюджет по времени: незавершённый прогон продолжим со следующего
+		if [ $(( $(date +%s) - _t0 )) -ge "${_budget}" ] && [ "${_k}" -lt "${_total}" ]; then
+			_next="${_i}"
+			agg_set CHECKIDX "${_next}"
+			printf 'Aggregator: sweep budget %ss used: tested %s (alive %s) - press check all again to continue from #%s\n' \
+				"${_budget}" "${_tested}" "${_alive}" "${_next}"
+			# v679: при ACTIVE=0 (или мёртвом активном) переключаемся сразу,
+			# не дожидаясь полного прогона — раньше recovery стоял только после done
+			_agg_sweep_recover budget
+			return 1
+		fi
+	done
+	agg_set CHECKIDX 1
+	printf 'Aggregator: full sweep complete: tested %s (alive %s)\n' "${_tested}" "${_alive}"
+	# v679: восстановление после sweep — теперь единая функция (см. ниже):
+	# раньше ветка стояла только после полного прогона и молча схлопывалась
+	# при провале скана («показывает живых — сам не переходит»)
+	_agg_sweep_recover complete
+	return 0
+}
+
+# v679: восстановление после sweep — переключиться на живого, если активного
+# нет (fallback/ручной) ИЛИ он в DEAD. Условие шире старого «только ACTIVE=0»:
+# мёртвый активный (не успел упасть в fallback) тоже должен уступить место.
+# Явные сообщения при провале — раньше scan молча схлопывался и пользователь
+# видел «живых» (старые метки) без переключения.
+_agg_sweep_recover(){ # $1=reason: complete|budget
+	agg_enabled || return 0
+	local _act _st
+	_act=$(agg_active_idx)
+	if [ "${_act}" != "0" ] && ! agg_is_dead "${_act}"; then
+		return 0 # активный жив — не трогаем
+	fi
+	[ "$(agg_pool_count)" -gt 0 ] || return 1
+	# v689: ротация старта (см. _agg_rot_start) — иначе добираемся только до #1-#5
+	_st=$(_agg_rot_start)
+	printf 'Aggregator: sweep recovery (%s): scanning from #%s...\n' "${1:-sweep}" "${_st}"
+	if agg_scan "${_st}"; then
+		_agg_rot_advance "${_st}"
+		tg_notify aggregator "Aggregator VLESS: sweep recovery, switched to #$(agg_active_idx)"
+		printf 'Aggregator: switched to #%s\n' "$(agg_active_idx)"
+		return 0
+	fi
+	_agg_rot_advance "${_st}"
+	if [ "${_act}" != "0" ]; then
+		printf 'Aggregator: sweep recovery scan failed - active #%s stays dead, pool stays as checked\n' "${_act}"
+	else
+		printf 'Aggregator: sweep recovery scan failed - staying on manual config\n'
+	fi
+	return 1
 }
 
 # cron entry (runs each cron.15min, gated to AGG_RECHECK_SEC = 30 min)
@@ -529,38 +2207,73 @@ agg_cron(){
 }
 
 agg_cron_body(){
-	local _now _last _act _total _i _link
+	local _now _last _act _total _i _link _n _sbl _prc _tc _st
+	# v682: самовосстановление dnsmasq (упал при переключении тоннеля)
+	_agg_dns_heal
+	# v680: подписка — свой тик ДО гейта LASTCHECK (отбор идёт каждые 15 мин,
+	# resurrect/probe — раз в 30 мин как раньше): fetch раз в6ч + 5 живых
+	agg_sub_tick
 	_now=$(date +%s)
 	_last=$(agg_get LASTCHECK); [ -n "${_last}" ] || _last=0
 	[ $((_now - _last)) -ge "${AGG_RECHECK_SEC}" ] || return 0
 	agg_set LASTCHECK "${_now}"
 	_act=$(agg_active_idx)
 	if [ "${_act}" != "0" ]; then
-		if agg_probe; then
+		_prc=0
+		agg_probe || _prc=$?
+		if [ "${_prc}" = "0" ]; then
 			agg_set "FAIL_${_act}" 0
-		else
+			# v686: сервер жив — возвращаем тоннель на агрегатор, если он уходил
+			# мимо (см. agg_tunnel_return)
+			agg_tunnel_return
+			# v671: warm-standby screening дублируем из fastprobe (cron.1min может
+			# пропускать минуты, пока лок занят check/scan) — гейт тот же: раз в 10 мин
+			_sbl=$(agg_get SBLAST); [ -n "${_sbl}" ] || _sbl=0
+			if [ $((_now - _sbl)) -ge "${AGG_SB_RECHECK_SEC}" ]; then
+				agg_set SBLAST "${_now}"
+				agg_sb_round
+			fi
+		elif [ "${_prc}" = "1" ]; then
 			agg_fail_active "${_act}"
 			_act=$(agg_active_idx)
 		fi
-		# resurrect re-check of dead servers (full test, config restored)
+		# v674: _prc=2 — инфраструктурный отказ: счётчики не трогаем
+		# resurrect re-check of dead servers (v678: isolated test, no tunnel switch)
+		# v661: бюджет AGG_RECHECK_MAX за цикл (иначе десятки dead = десятки минут лока)
 		[ "${_act}" = "0" ] && return 0
 		_total=$(agg_pool_count)
 		_i=1
+		_n=0
 		while [ "${_i}" -le "${_total}" ]; do
 			if agg_is_dead "${_i}"; then
+				[ "${_n}" -ge "${AGG_RECHECK_MAX:-3}" ] && break
+				_n=$((_n + 1))
 				_link=$(agg_pool_get "${_i}")
-				if [ -n "${_link}" ] && agg_test_link "${_link}"; then
+				_tc=1
+				if [ -n "${_link}" ]; then
+					_tc=0
+					agg_isolated_test "${_link}" || _tc=$?
+				fi
+				if [ "${_tc}" = "0" ]; then
 					agg_set "DEAD_${_i}" 0
 					agg_set "FAIL_${_i}" 0
+					agg_set "ALIVE_${_i}" "$(date +%s)"   # v672: метка живости для UI
 					tg_notify aggregator "Aggregator VLESS: server #${_i} is alive again"
+				elif [ "${_tc}" = "2" ]; then
+					break   # v674: infra down — оставшиеся dead не трогаем
 				fi
 			fi
 			_i=$((_i + 1))
 		done
 	else
 		# on manual fallback: full scan incl. dead (auto-recovery)
-		if agg_scan 1 all; then
+		# v689: старт ротируется (раньше всегда #1 — живые за первыми 5 недостижимы)
+		_st=$(_agg_rot_start)
+		if agg_scan "${_st}" all; then
+			_agg_rot_advance "${_st}"
 			tg_notify aggregator "Aggregator VLESS: pool recovered, switched to #$(agg_active_idx)"
+		else
+			_agg_rot_advance "${_st}"
 		fi
 	fi
 	return 0

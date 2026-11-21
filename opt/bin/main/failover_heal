@@ -1,0 +1,31 @@
+#!/bin/sh
+# v690: внешний сторож failover-демона (cron.15min). Демон мог молча умереть
+# или зависнуть в do_wait — инцидент 16.11: pidfile жив, а проверки не шли
+# 37+ мин (снаружи неотличимо от здоровья, т.к. успех не логируется).
+# Сигнал здоровья: /tmp/kvas-failover.tick крутится каждым циклом.
+# Действуем ТОЛЬКО при наличии pidfile: `kvas failover stop` убирает pidfile
+# и остановленный вручную демон перезапущен не будет.
+FLAG=/opt/etc/kvas-failover-enabled
+PF=/var/run/kvas-failover.pid
+TK=/tmp/kvas-failover.tick
+[ -f "${FLAG}" ] || exit 0
+_pid=$(cat "${PF}" 2>/dev/null)
+[ -n "${_pid}" ] || exit 0
+if kill -0 "${_pid}" 2>/dev/null; then
+	_mt=$(stat -c %Y "${TK}" 2>/dev/null || echo 0)
+	_age=$(( $(date +%s) - _mt ))
+	# здоров: tick младше 5 мин (цикл ~30с + худший честный чек ~135с)
+	[ "${_age}" -gt 300 ] 2>/dev/null || exit 0
+	logger -t "КВАС" "failover_heal: демон ${_pid} завис (tick ${_age}с) — рестарт"
+	kill "${_pid}" 2>/dev/null
+	sleep 2
+	kill -9 "${_pid}" 2>/dev/null
+	rm -f "${PF}" 2>/dev/null
+	/opt/bin/kvas failover start >/dev/null 2>&1
+	exit 0
+fi
+# pidfile есть, процесс мёртв — аварийная смерть
+logger -t "КВАС" "failover_heal: демон ${_pid} мёртв — рестарт"
+rm -f "${PF}" 2>/dev/null
+/opt/bin/kvas failover start >/dev/null 2>&1
+exit 0

@@ -32,7 +32,7 @@ if [ "$1" = "configure" ]; then
     fi
     # APP_RELEASE — из Version установленного пакета (раньше был хардкод 549)
     _rel=$(opkg status kvas 2>/dev/null | sed -n 's/^Version: //p' | head -1 | sed -n 's/.*beta-10-\([0-9][0-9]*\).*/\1/p')
-    [ -z "${_rel}" ] && _rel=627
+    [ -z "${_rel}" ] && _rel=693
     if grep -q "^APP_RELEASE=" "${kvas_conf}" 2>/dev/null; then
         sed -i "s/^APP_RELEASE=.*/APP_RELEASE=${_rel}/" "${kvas_conf}"
     else
@@ -53,14 +53,64 @@ if [ "$1" = "configure" ]; then
     ln -sf /opt/apps/kvas/bin/tg_sender.sh /opt/etc/cron.1min/tg_sender 2>/dev/null
     ln -sf /opt/apps/kvas/bin/tg_health.sh /opt/etc/cron.15min/tg_health 2>/dev/null
     ln -sf /opt/apps/kvas/bin/main/aggregator_cron /opt/etc/cron.15min/aggregator 2>/dev/null
+    # v652: syslog snapshot for Web UI (logread недоступен из CGI)
+    ln -sf /opt/apps/kvas/bin/main/syslog_snapshot /opt/etc/cron.1min/syslog_snapshot 2>/dev/null
+    # v658: fast-fail probe aggregator (активный сервер каждую минуту)
+    ln -sf /opt/apps/kvas/bin/main/aggregator_fastprobe /opt/etc/cron.1min/aggregator_fastprobe 2>/dev/null
+    # v690: снапшот памяти (кривая роста при следующем инциденте) +
+    # внешний сторож failover-демона (tick в /tmp, рестарт при зависании)
+    ln -sf /opt/apps/kvas/bin/main/memhistory /opt/etc/cron.15min/memhistory 2>/dev/null
+    ln -sf /opt/apps/kvas/bin/main/failover_heal /opt/etc/cron.15min/failover_heal 2>/dev/null
+    # v688: пакет cron 4.1-7 ставит crontab БЕЗ строки cron.15min (есть только
+    # cron.1min) — все 15-мин задачи (тик подписки агрегатора, tg_health) не
+    # выполнялись никогда. vixie-cron читает /opt/etc/crontab ТОЛЬКО при старте
+    # (HUP не помогает) — после дописки строки рестартуем; run-parts нужен и
+    # cron.1min, ставим симлинк из пакета cron.
+    if [ -f /opt/etc/crontab ] && ! grep -q '/opt/etc/cron.15min' /opt/etc/crontab 2>/dev/null; then
+        printf '*/15 * * * * root /opt/bin/run-parts /opt/etc/cron.15min\n' >> /opt/etc/crontab
+        [ -x /opt/etc/init.d/S10cron ] && /opt/etc/init.d/S10cron restart >/dev/null 2>&1
+    fi
+    [ -e /opt/bin/run-parts ] || ln -sf /opt/bin/run-parts-vixie /opt/bin/run-parts 2>/dev/null
     # Интерактивный бот: kill-all + lock, затем один свежий
     for _p in $(ps 2>/dev/null | grep 'tg_bot\.sh' | grep -v grep | awk '{print $1}'); do
         kill -9 "${_p}" 2>/dev/null
     done
     rm -rf /opt/var/kvas/tg_bot.pid /opt/var/kvas/tg_bot.lock
     sleep 1
+
+    # v666: снять зависшие переключения тонеля. До v665 каждый клик UI гонял
+    # свой полный init без взаимного исключения — 5x kvas vpn set = CPU 100%
+    # и два xray; такие процессы переживают апгрейд (запущены старым кодом,
+    # нового замка у них нет). TERM → 1с → KILL; локи/файлы прогресса — в /tmp.
+    for _p in $(ps 2>/dev/null | grep 'kvas vpn set' | grep -v grep | awk '{print $1}'); do
+        kill -TERM "${_p}" 2>/dev/null
+    done
+    sleep 1
+    for _p in $(ps 2>/dev/null | grep 'kvas vpn set' | grep -v grep | awk '{print $1}'); do
+        kill -9 "${_p}" 2>/dev/null
+    done
+    rm -f /tmp/kvas-vpn-set.run /tmp/kvas_vpn_set.lock /tmp/kvas_vpn_set.rc 2>/dev/null
+    sleep 1
     if [ "$(sed -n 's/^TG_ENABLED=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)" = "true" ]; then
         ( sh /opt/apps/kvas/bin/tg_bot.sh >>/opt/var/kvas/tg_bot.log 2>&1 & ) 2>/dev/null
+    fi
+
+    # v687: entware-обновление пересоздаёт opkg-конфиги на официальные URL —
+    # пере-применяем выбранное пользователем зеркало из kvas.conf.
+    _ewm=$(sed -n 's/^ENTWARE_MIRROR=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+    if [ "${_ewm}" = "nju" ] && [ -d /opt/etc ]; then
+        for _f in /opt/etc/opkg.conf /opt/etc/opkg.d/*.conf; do
+            [ -f "${_f}" ] || continue
+            sed -i 's|http://bin\.entware\.net|http://mirrors.nju.edu.cn/entware|g' "${_f}"
+            sed -i 's|http://pkg\.entware\.net|http://mirrors.nju.edu.cn/entware|g' "${_f}"
+            sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://mirrors.nju.edu.cn/entware|g' "${_f}"
+        done
+    elif [ "${_ewm}" = "official" ] && [ -d /opt/etc ]; then
+        for _f in /opt/etc/opkg.conf /opt/etc/opkg.d/*.conf; do
+            [ -f "${_f}" ] || continue
+            sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "${_f}"
+            sed -i 's|http://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "${_f}"
+        done
     fi
 
     /opt/apps/kvas/bin/kvas init >/dev/null 2>&1 &

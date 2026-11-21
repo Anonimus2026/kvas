@@ -1472,6 +1472,7 @@ log_warning(){
 	# Пишем в лог-файл для детальной диагностики
 	mkdir -p /opt/tmp
 	echo "[W] $(date '+%Y-%m-%d %H:%M:%S') ${1}" >> /opt/tmp/kvas_errors.log
+	_log_persistent "[W] ${1}"
 }
 log_error(){
 	logger -p err -t "${APP_NAME_DESC}" "[E] ${1}"
@@ -1483,6 +1484,19 @@ log_error(){
 	# Ограничиваем размер лога (500 строк)
 	local _lines=$(wc -l < /opt/tmp/kvas_errors.log 2>/dev/null || echo 0)
 	[ "$_lines" -gt 500 ] && tail -n 300 /opt/tmp/kvas_errors.log > /opt/tmp/kvas_errors.log.tmp && mv /opt/tmp/kvas_errors.log.tmp /opt/tmp/kvas_errors.log
+	_log_persistent "[E] ${1}"
+}
+# v642: постоянный лог событий КВАС (переживает reboot — /opt/tmp это tmpfs;
+# Web UI «Квас» читает его как fallback, когда logread в CGI недоступен)
+_log_persistent(){
+	mkdir -p /opt/var/log 2>/dev/null
+	echo "$(date '+%Y-%m-%d %H:%M:%S') ${1}" >> /opt/var/log/kvas.log 2>/dev/null
+	local _lines=$(wc -l < /opt/var/log/kvas.log 2>/dev/null || echo 0)
+	[ "$_lines" -gt 500 ] && tail -n 300 /opt/var/log/kvas.log > /opt/var/log/kvas.log.tmp && mv /opt/var/log/kvas.log.tmp /opt/var/log/kvas.log
+}
+log_info(){
+	logger -t "${APP_NAME_DESC}" "${1}"
+	_log_persistent "${1}"
 }
 log_alert(){
 	header=${2:-${APP_NAME_DESC}}

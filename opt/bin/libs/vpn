@@ -43,7 +43,16 @@ update_iptables(){
 	ip4__dns__add_routing_for_home &> /dev/null && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
 
 	ready "${prefix}Создаем iptables правила."
-	ip4_firewall_set_all_rules &> /dev/null && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	if ! ip4_firewall_set_all_rules &>/dev/null; then
+		# v642: вывод больше не глотается навсегда — повтор с логированием причины
+		local _fw_out
+		_fw_out=$(ip4_firewall_set_all_rules 2>&1)
+		local _fw_rc=$?
+		[ "${_fw_rc}" -ne 0 ] && [ -n "${_fw_out}" ] && log_error "update_iptables: ${_fw_out}"
+		[ "${_fw_rc}" -eq 0 ] && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	else
+		when_ok "УСПЕШНО"
+	fi
 }
 
 # ------------------------------------------------------------------------------------------
@@ -63,6 +72,7 @@ update_ipset(){
 
 	ready "${prefix}Заполняем ipset таблицу данными из защищенного списка"
 	/opt/apps/kvas/bin/main/ipset &> /dev/null && when_ok "УСПЕШНО" || when_bad "ОШИБКА"
+	log_info "update_ipset: заполнение ipset из списка (stage=${stage:-?})"
 
 	if [ -f /opt/etc/init.d/S56dnsmasq ] ; then
 		refresh_dnsmasq_ipset_table
@@ -150,6 +160,7 @@ cmd_kvas_init(){
 	mess="${prefix}Производим сброс пакета КВАС в исходное состояние."
 	warning "${mess}"
 	print_line
+	log_info "kvas init: stage=${stage} build=$(sed -n 's/^Version: //p' /opt/apps/kvas/CONTROL 2>/dev/null | head -1)"
 
 #	Производим перезапуск подключения к интернету
 #	если не режим update и если текущее подключение не ssr
@@ -176,15 +187,256 @@ cmd_kvas_init(){
 }
 
 
+# ------------------------------------------------------------------------------------------
+#
+#	v684: восстановление dnsmasq после «Starting dnsmasq... failed»
+#
+#	Квас-дизайн: dnsmasq слушает порт из конфига (:9753), а :53 держит ndnproxy —
+#	запросы LAN уходят в цепочку KVAS_DNS через iptables REDIRECT. Поэтому все
+#	проверки идём по порту конфига, а не по :53 (v683-диагностика «Порт 53 занят»
+#	была красной сарычкой). Лечим транзиентное окно после переключения тоннеля:
+#	дождаться освобождения порта → до 5 стартов с паузой, иначе причина — в
+#	/opt/var/kvas/dnsmasq.lasterr (её показывает кнопка Web UI «Запустить dnsmasq»).
+#
+# ------------------------------------------------------------------------------------------
+#
+#	v685: юзер: «если я по openconnect не подключился — ошибка запуска dnsmasq».
+#	Причина: Web UI «Маршрутизация → гостевая сеть» вписала в dnsmasq.conf
+#	listen-address=172.16.5.1 (IP интерфейса OC-сервера Keenetic, manage.sh
+#	route_guest_add); без интерфейса dnsmasq падает на привязке («Starting
+#	dnsmasq... failed» на каждом старте), плюс битый pid-файл мешает init.
+#	Sanitize: отсутствующие адреса переводятся в комментарий #kvas-miss и
+#	возвращаются, когда IP появился; битый pid-файл снимается до старта.
+#
+# ------------------------------------------------------------------------------------------
+_dns_ip_exists(){ # $1 = ip; 0 = адрес есть на интерфейсах (127.0.0.1 всегда)
+	[ "${1}" = '127.0.0.1' ] && return 0
+	ip a 2>/dev/null | grep -qE "inet6? ${1}/"
+}
+
+_dns_sanitize_listen(){ # комментирует отсутствующие listen-address, возвращает вернувшиеся
+	local _conf _line _ip _keep _miss _tmp _old_umask
+	_conf="${DNSMASQ_CONFIG:-/opt/etc/dnsmasq.conf}"
+	_dns_san_changed=0
+	_dns_san_restore=0
+	_dns_san_note=''
+	[ -f "${_conf}" ] || return 0
+	command -v ip >/dev/null 2>&1 || return 0
+	_tmp="${_conf}.san.$$"
+	_old_umask=$(umask); umask 022
+	: > "${_tmp}" || { umask "${_old_umask}"; return 0; }
+	while IFS= read -r _line || [ -n "${_line}" ]; do
+		case "${_line}" in
+		'listen-address='*)
+			_keep=''; _miss=''
+			for _ip in $(printf '%s' "${_line#*listen-address=}" | tr ',' ' '); do
+				_ip=$(printf '%s' "${_ip}" | sed 's/^ *//; s/ *$//')
+				[ -z "${_ip}" ] && continue
+				if _dns_ip_exists "${_ip}"; then
+					_keep="${_keep:+${_keep},}${_ip}"
+				else
+					_miss="${_miss:+${_miss},}${_ip}"
+				fi
+			done
+			if [ -z "${_miss}" ]; then
+				printf '%s\n' "${_line}" >> "${_tmp}"
+			else
+				[ -n "${_keep}" ] && printf 'listen-address=%s\n' "${_keep}" >> "${_tmp}"
+				printf '#kvas-miss listen-address=%s\n' "${_miss}" >> "${_tmp}"
+				_dns_san_changed=1
+				_dns_san_note="${_dns_san_note:+${_dns_san_note}; }отключён listen-address ${_miss} (IP нет на интерфейсах)"
+			fi
+			;;
+		'#kvas-miss listen-address='*)
+			_keep=''; _miss=''
+			for _ip in $(printf '%s' "${_line#*listen-address=}" | tr ',' ' '); do
+				_ip=$(printf '%s' "${_ip}" | sed 's/^ *//; s/ *$//')
+				[ -z "${_ip}" ] && continue
+				if _dns_ip_exists "${_ip}"; then
+					_keep="${_keep:+${_keep},}${_ip}"
+				else
+					_miss="${_miss:+${_miss},}${_ip}"
+				fi
+			done
+			if [ -n "${_keep}" ]; then
+				printf 'listen-address=%s\n' "${_keep}" >> "${_tmp}"
+				_dns_san_changed=1
+				_dns_san_restore=1
+				_dns_san_note="${_dns_san_note:+${_dns_san_note}; }возвращён listen-address ${_keep}"
+			fi
+			[ -n "${_miss}" ] && printf '#kvas-miss listen-address=%s\n' "${_miss}" >> "${_tmp}"
+			;;
+		*) printf '%s\n' "${_line}" >> "${_tmp}" ;;
+		esac
+	done < "${_conf}"
+	umask "${_old_umask}"
+	if [ "${_dns_san_changed}" = '1' ]; then
+		cat "${_tmp}" > "${_conf}" && rm -f "${_tmp}"
+	else
+		rm -f "${_tmp}"
+	fi
+	return 0
+}
+
+dns_preflight(){ # sanitize listen-address + снять битый pid-файл (v685)
+	local _pf
+	_dns_sanitize_listen
+	_pf=$(sed -n 's/^pid-file=//p' "${DNSMASQ_CONFIG:-/opt/etc/dnsmasq.conf}" 2>/dev/null | head -1 | tr -d ' \t')
+	[ -z "${_pf}" ] && _pf=/var/run/opt-dnsmasq.pid
+	if [ -f "${_pf}" ] && ! kill -0 "$(cat "${_pf}" 2>/dev/null)" 2>/dev/null; then
+		rm -f "${_pf}"
+		_dns_san_note="${_dns_san_note:+${_dns_san_note}; }снят битый pid-файл ${_pf}"
+	fi
+	return 0
+}
+
+_dns_listen_port(){
+	local _p
+	_p=$(sed -n 's/^port=//p' "${DNSMASQ_CONFIG:-/opt/etc/dnsmasq.conf}" 2>/dev/null | head -1 | tr -cd '0-9')
+	[ -z "${_p}" ] && _p=9753
+	printf '%s' "${_p}"
+}
+
+_dns_port_held(){ # 0 = порт слушает кто-либо
+	netstat -lnp 2>/dev/null | grep -q ":${1} "
+}
+
+_dns_lasterr(){ # $1 = причина (пусто — очистить)
+	if [ -n "${1}" ]; then
+		mkdir -p /opt/var/kvas
+		printf '%s' "${1}" > /opt/var/kvas/dnsmasq.lasterr
+	else
+		rm -f /opt/var/kvas/dnsmasq.lasterr
+	fi
+}
+
+dns_recover(){ # $1 = init-скрипт; 0 = dnsmasq работает; кладёт заметку в _srv_note
+	local _initd="${1:-S56dnsmasq}" _conf _port _i _j _why _h _ip _pf _l
+	_conf="${DNSMASQ_CONFIG:-/opt/etc/dnsmasq.conf}"
+	_port=$(_dns_listen_port)
+	# v685: до любой работы — санитайз конфига (отсутствующий listen-address
+	# уронил бы все 5 стартов) и снятие битого pid-файла
+	dns_preflight
+	# 1) уже жив и слушает — ложный rc init; но если только что вернули
+	#    listen-address (IP интерфейса появился) — нужен перезапуск для бинда
+	if pidof dnsmasq >/dev/null 2>&1 && _dns_port_held "${_port}" && [ "${_dns_san_restore}" != '1' ]; then
+		_dns_lasterr ''
+		_srv_note='init rc!=0, но dnsmasq слушает порт'
+		return 0
+	fi
+	# 2) процесс есть, но порт не слушает — снимаем зависший экземпляр
+	if pidof dnsmasq >/dev/null 2>&1 && ! _dns_port_held "${_port}"; then
+		"/opt/etc/init.d/${_initd}" stop >/dev/null 2>&1
+		sleep 1
+		pidof dnsmasq >/dev/null 2>&1 && { kill -9 $(pidof dnsmasq) 2>/dev/null; sleep 1; }
+	fi
+	# 3) порт занят — ждём освобождения (умирающий держатель), до 5s
+	_i=0
+	while [ "${_i}" -lt 5 ] && _dns_port_held "${_port}"; do
+		pidof dnsmasq >/dev/null 2>&1 && "/opt/etc/init.d/${_initd}" stop >/dev/null 2>&1
+		sleep 1
+		_i=$((_i+1))
+	done
+	# 4) до 5 стартов с паузой (транзиентное окно после переключения тоннеля)
+	_i=0
+	while [ "${_i}" -lt 5 ]; do
+		"/opt/etc/init.d/${_initd}" start >/dev/null 2>&1
+		if pidof dnsmasq >/dev/null 2>&1; then
+			_j=0
+			while [ "${_j}" -lt 3 ] && ! _dns_port_held "${_port}"; do
+				sleep 1
+				_j=$((_j+1))
+			done
+			if _dns_port_held "${_port}"; then
+				_dns_lasterr ''
+				_srv_note="восстановлено стартом №$((_i+1))"
+				return 0
+			fi
+		fi
+		sleep 1
+		_i=$((_i+1))
+	done
+	# 5) полное падение → причина в lasterr (Web UI) и в лог
+	_why="start x5 не поднял dnsmasq (порт ${_port})"
+	_h=$(netstat -lnp 2>/dev/null | grep ":${_port} " | head -1 | sed -n 's|.*[[:space:]][0-9]*/\(.*\)$|\1|p')
+	[ -n "${_h}" ] && _why="${_why}; держатель порта: ${_h}"
+	pidof dnsmasq >/dev/null 2>&1 && _why="${_why}; dnsmasq жив (pid $(pidof dnsmasq)), но порт не слушает"
+	for _ip in $(sed -n 's/^listen-address=//p' "${_conf}" 2>/dev/null | tr ',' ' '); do
+		case "${_ip}" in ''|127.0.0.1) continue ;; esac
+		ip a 2>/dev/null | grep -q "inet ${_ip}/" || _why="${_why}; IP ${_ip} не найден на интерфейсах"
+	done
+	# v685: адреса, отключённые санитайзом (возвращались бы после появления IP)
+	for _ip in $(sed -n 's/^#kvas-miss listen-address=//p' "${_conf}" 2>/dev/null | tr ',' ' '); do
+		_why="${_why}; отключён listen-address ${_ip} (IP не найден на интерфейсах)"
+	done
+	_pf=$(sed -n 's/^pid-file=//p' "${_conf}" 2>/dev/null | head -1)
+	[ -z "${_pf}" ] && _pf=/var/run/opt-dnsmasq.pid
+	[ -f "${_pf}" ] && ! kill -0 "$(cat "${_pf}" 2>/dev/null)" 2>/dev/null && _why="${_why}; битый pidfile ${_pf}"
+	command -v logread >/dev/null 2>&1 && {
+		_l=$(logread 2>/dev/null | grep -i dnsmasq | tail -2 | tr '\n' ';')
+		[ -n "${_l}" ] && _why="${_why}; logread: ${_l}"
+	}
+	_dns_lasterr "${_why}"
+	error "dnsmasq не поднялся: ${_why}"
+	return 1
+}
+
 service_restart(){
 	srv_name=${1}
 	srv_initd=${2}
+	_dns_san_note=''   # v685: сброс, чтобы заметка не утекла от dnsmasq к соседнему сервису
 	ready "Перезапускаем ${srv_name}"
-	if "/opt/etc/init.d/${srv_initd}" restart >/dev/null 2>&1; then
-		when_ok "УСПЕШНО"
+	# v685: preflight ДО init — иначе restart падает на отсутствующем
+	# listen-address (IP интерфейса OpenConnect пропал вместе с тоннелем)
+	# и на битом pid-файле
+	[ "${srv_initd}" = 'S56dnsmasq' ] && dns_preflight
+	_out=$("/opt/etc/init.d/${srv_initd}" restart 2>&1)
+	_rc=$?
+	_srv_note=''
+	# v684: юзер v683: «Starting dnsmasq... failed» при мёртвом pidof, ручной
+	# /opt/etc/init.d/S56dnsmasq start позже проходил. Диагностика v683 ошибочно
+	# смотрела :53 (его держит ndnproxy — это норма). Лестница dns_recover:
+	# живой-критерий → снять зависший → ждать порт → до 5 стартов → lasterr.
+	# v685: проверяем ФАКТ поднятия, а не только rc init — rc=0, но демон не
+	# слушает → ждём до 2s и идём в dns_recover; успех чистит протухшее
+	# lasterr (юзер видел чип «работает» с причиной прошлого падения).
+	if [ "${srv_initd}" = 'S56dnsmasq' ]; then
+		local _w=0
+		while [ "${_rc}" -eq 0 ] && [ "${_w}" -lt 2 ] && \
+			{ ! pidof dnsmasq >/dev/null 2>&1 || ! _dns_port_held "$(_dns_listen_port)"; }; do
+			sleep 1
+			_w=$((_w + 1))
+		done
+		if [ "${_rc}" -ne 0 ] || ! pidof dnsmasq >/dev/null 2>&1 || ! _dns_port_held "$(_dns_listen_port)"; then
+			if dns_recover "${srv_initd}"; then
+				_rc=0
+			else
+				_rc=1
+				_srv_note='dnsmasq не поднялся (см. dnsmasq.lasterr)'
+			fi
+		else
+			_rc=0
+			_dns_lasterr ''
+		fi
+	fi
+	# v685: показать, что санитайз отключил/вернул listen-address (юзер должен
+	# знать, что dnsmasq слушает не все адреса — например, гостевой сети OC нет)
+	[ ${_rc} -eq 0 ] && [ -n "${_dns_san_note}" ] && _srv_note="${_srv_note:+${_srv_note}; }${_dns_san_note}"
+	if [ ${_rc} -eq 0 ]; then
+		when_ok "УСПЕШНО${_srv_note:+ (${_srv_note})}"
 	else
 		when_bad "ОШИБКА"
+		# v675: причина падения — в веб-вывод и kvas.log. Раньше весь вывод
+		# уходил в /dev/null и пользователь видел безликая «ОШИБКА» без причины
+		# (кейс hysteria: FATAL bind: address already in use — не было видно).
+		_cause=$(printf '%s\n' "${_out}" | grep -v '^[[:space:]]*$' | tail -1)
+		[ -n "${_cause}" ] && error "Причина: ${_cause}"
 		error "Запустите диагностику командой kvas debug"
+		if [ -n "${_out}" ]; then
+			printf '%s\n' "${_out}" | tail -5 | while IFS= read -r _l; do
+				log_error "[${srv_initd}] ${_l}"
+			done
+		fi
 	fi
 }
 
@@ -216,6 +468,8 @@ all_services_restart() {
 				;;
 			*)
 				if [ -n "${_h_restore}" ]; then
+					# v667: маркер = hysteria была запущена до обновления — снимаем флаг
+					rm -f /opt/var/kvas/svc.hysteria.disabled
 					log_warning 'Восстановление Hysteria 2 после обновления'
 					service_restart 'Hysteria 2' 'S99hysteria'
 				fi
@@ -650,6 +904,9 @@ adguardhome_setup() {
 	}
 
 	[ -f "${ADGUARDHOME_DEMON}" ] && ${ADGUARDHOME_DEMON} stop &> /dev/null
+	# v677: cgi-экземпляр запускается без pidfile — init stop его не видит,
+	# добиваем вручную, иначе второй инстанс не сможет занять web/9753
+	kill -9 $(pgrep AdGuardHome) &> /dev/null
 	if [ -f "${ADGUARDHOME_CONFIG}" ]; then
 		config__backup_as_opkg_if_not_exist "${ADGUARDHOME_CONFIG}"
 	fi
@@ -819,8 +1076,10 @@ adguardhome_check_config() {
 			print_line
 			warning "В поле 'Веб-интерфейс администрирования' выберите IP "
 			warning "своего роутера выше. В поле 'DNS-сервер' выберите пункт"
-			warning "'Все интерфейсы' и на следующем шаге введите имя и "
-			warning "дважды пароль для входа в интерфейс AdGuardHome Далее, "
+			warning "'Все интерфейсы', укажите порт 1053 (порт 53 занят"
+			warning "системным DNS, а после настройки KVAS сам переведёт"
+			warning "AdGuard на порт 9753). На следующем шаге введите имя и "
+			warning "дважды пароль для входа в интерфейс AdGuardHome. Далее, "
 			warning "на следующей странице, нажмите на 'Открыть Панель "
 			warning "Управления'. После чего, установка AdGuard на роутере "
 			warning "завершится автоматически."
@@ -1014,7 +1273,8 @@ cmd_adguardhome_on() {
 			adguardhome_install_locally
 	#		fi
 		elif echo "${status}" | grep -q "НЕ НАСТРОЕН" ; then
-			adguardhome_check_config
+			# v677: конфиг уже есть (wizard его записал) — финализируем сразу;
+			# check_config здесь стирал wizard-конфиг и запускал wizard заново
 			adguardhome_setup
 		elif  echo "${status}" | grep -q "НУЖНО ПЕРЕУСТАНОВИТЬ" ; then
 			adguardhome_install_locally
@@ -1180,17 +1440,19 @@ bridge_vpn_access_del() {
 			ip4__delete_routing_by_list_for_net "${guest_bridge_id}"
 
 			#       Слушаем 53 порт гостевого интерфейса
-			guest_net_ip=$(/opt/sbin/ip a | grep global | grep -E ' '"${guest_bridge_id}" | sed 's/inet \([0-9.]*\).*/\1/')
-			if cmd_adguardhome_status | grep -q "ВКЛЮЧЕН" ; then
+			guest_net_ip=$(/opt/sbin/ip a | grep global | grep -E ' '"${guest_bridge_id}" | head -1 | sed -e 's/inet \([0-9.]*\).*/\1/' -e 's/^[[:space:]]*//; s/[[:space:]]*$//')
+			if [ -n "${guest_net_ip}" ]; then
+				if cmd_adguardhome_status | grep -q "ВКЛЮЧЕН" ; then
 	#               Если доступен ADGUARDHOME
 					sed -i -e '/bind_hosts/,/port/{ /- '"${guest_net_ip}"'/d }' "${ADGUARDHOME_CONFIG}"
 #                       grep -v '    -'"${guest_net_ip}" /opt/tmp/agh.conf
 #                       mv -f /opt/tmp/agh.conf "${ADGUARDHOME_CONFIG}"
-			else
+				else
 	#               Если сейчас работает только dnsmasq
-					sed -i -e '/listen-address/,/port/{ /listen-address='"${guest_net_ip}"'/d}' "${DNSMASQ_CONFIG}"
+					sed -i -e '/listen-address/,/port/{ /listen-address=[ ]*'"${guest_net_ip}"'/d}' "${DNSMASQ_CONFIG}"
 #                       grep -v 'listen-address='"${guest_net_ip}" "${DNSMASQ_CONFIG}" > /opt/tmp/dnsmasq.conf
 #                       mv -f /opt/tmp/dnsmasq.conf "${DNSMASQ_CONFIG}"
+				fi
 			fi
         } && when_alert "УСПЕШНО" || when_bad "С ОШИБКОЙ"
 }
@@ -1401,14 +1663,14 @@ bridge_access_add() {
 		}
 
 #       Слушаем 53 порт гостевого интерфейса
-        guest_net_ip=$(/opt/sbin/ip a | grep global | grep -E ' '"${guest_bridge_id}" | sed 's/inet \([0-9.]*\).*/\1/')
+        guest_net_ip=$(/opt/sbin/ip a | grep global | grep -E ' '"${guest_bridge_id}" | head -1 | sed -e 's/inet \([0-9.]*\).*/\1/' -e 's/^[[:space:]]*//; s/[[:space:]]*$//')
         if cmd_adguardhome_status | grep -q "ВКЛЮЧЕН" ; then
 #           Если доступен ADGUARDHOME
 			grep -q "\- ${guest_net_ip}" "${ADGUARDHOME_CONFIG}" || \
 				sed -i '/bind_hosts/,/port/ s/.*\(port.*\)/    - '"${guest_net_ip}"'\n  \1/1' "${ADGUARDHOME_CONFIG}"
         else
 #           Если сейчас работает только dnsmasq
-			grep -q "listen-address=${guest_net_ip}" "${DNSMASQ_CONFIG}" || \
+			grep -q "listen-address=[ ]*${guest_net_ip}" "${DNSMASQ_CONFIG}" || \
 				sed -i '/listen-address/,/port/ s/.*\(port.*\)/listen-address='"${guest_net_ip}"'\n\1/' "${DNSMASQ_CONFIG}"
 
         fi
@@ -1725,6 +1987,70 @@ cmd_dnsmasq_listen_show() {
 		ip=$(get_config_value DNSMASQ_LISTEN_IP)
 		when_alert "${ip}:$(cmd_adguardhome_status)"
 	}
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	v684: реальные подкоманды start/stop/restart для `kvas dnsmasq …`
+#
+#	Раньше подкоманды не было: `kvas dnsmasq start` падал в ветку статуса и
+#	печатал «AdGuard … НЕ НАСТРОЕН», ничего не запуская — юзеру помогал только
+#	ручной /opt/etc/init.d/S56dnsmasq start. start/restart идут через лестницу
+#	dns_recover, причина сбоя остаётся в /opt/var/kvas/dnsmasq.lasterr (Web UI).
+#
+# ------------------------------------------------------------------------------------------
+cmd_dnsmasq_start(){
+	[ -f /opt/etc/init.d/S56dnsmasq ] || { when_bad "НЕ УСТАНОВЛЕН"; return 1; }
+	if has_adguard_enable ; then
+		when_bad "ОТКЛЮЧЁН"
+		error "DNS сейчас обслуживает AdGuard Home. Переключение: kvas dnsmasq on"
+		return 1
+	fi
+	ready "Запускаем dnsmasq"
+	_srv_note=''
+	if dns_recover 'S56dnsmasq'; then
+		[ -n "${_dns_san_note}" ] && _srv_note="${_srv_note:+${_srv_note}; }${_dns_san_note}"
+		when_ok "УСПЕШНО${_srv_note:+ (${_srv_note})}"
+	else
+		when_bad "ОШИБКА"
+		error "Причина: /opt/var/kvas/dnsmasq.lasterr (Web UI: Состояние сервисов → dnsmasq)"
+		return 1
+	fi
+}
+
+cmd_dnsmasq_stop(){
+	[ -f /opt/etc/init.d/S56dnsmasq ] || { when_bad "НЕ УСТАНОВЛЕН"; return 1; }
+	ready "Останавливаем dnsmasq"
+	/opt/etc/init.d/S56dnsmasq stop >/dev/null 2>&1
+	sleep 1
+	pidof dnsmasq >/dev/null 2>&1 && kill -9 $(pidof dnsmasq) 2>/dev/null
+	_dns_lasterr ''
+	if pidof dnsmasq >/dev/null 2>&1; then
+		when_bad "ОШИБКА"
+		return 1
+	fi
+	when_ok "ОСТАНОВЛЕН"
+}
+
+cmd_dnsmasq_restart(){
+	[ -f /opt/etc/init.d/S56dnsmasq ] || { when_bad "НЕ УСТАНОВЛЕН"; return 1; }
+	if has_adguard_enable ; then
+		when_bad "ОТКЛЮЧЁН"
+		error "DNS сейчас обслуживает AdGuard Home. Переключение: kvas dnsmasq on"
+		return 1
+	fi
+	ready "Перезапускаем dnsmasq"
+	# v685: санитайз конфига + битый pid-файл до init-restart
+	dns_preflight
+	/opt/etc/init.d/S56dnsmasq restart >/dev/null 2>&1
+	_srv_note=''
+	if dns_recover 'S56dnsmasq'; then
+		[ -n "${_dns_san_note}" ] && _srv_note="${_srv_note:+${_srv_note}; }${_dns_san_note}"
+		when_ok "УСПЕШНО${_srv_note:+ (${_srv_note})}"
+	else
+		when_bad "ОШИБКА"
+		return 1
+	fi
 }
 
 
@@ -2615,12 +2941,26 @@ start_vless(){
 		fi
 		# Проверяем работу (без вывода)
 		test_vless_proxy "${_inface_entware}" >/dev/null 2>&1
+		# v687: конфиг валиден (Configuration OK), но тоннель не поднялся —
+		# частая причина для xhttp: старое ядро xray молча игнорирует/роняет
+		# транспорт на старте, `xray -test` при этом проходит. Подсказываем.
+		if [ -n "${_inface_entware}" ] && \
+		   ! /opt/sbin/ip -4 a show dev "${_inface_entware}" 2>/dev/null | grep -q "inet "; then
+			if grep -q '"network": "xhttp"' "${VLESS_CONFIG_FILE}" 2>/dev/null; then
+				echo -e "${YELLOW}Тоннель xhttp не поднялся (интерфейс без inet). Если ядро xray старое — обновите: kvas xray core${NC}"
+			fi
+		fi
 		
 	else
 		# В случае, если есть ошибки в файле конфигурации, выводим их в консоль
 		echo -e "${BLUE}В файле ${VLESS_CONFIG_FILE} обнаружены следующие ошибки:${NOCL}"
 		print_line
 		echo -e "${RED}${check_xray_config}${NOCL}"
+		# v686: транспорт xhttp/splithttp знают не все сборки xray — при отказе
+		# на xhttp сразу подсказываем обновление, а не «ломайте конфиг руками»
+		if echo "${check_xray_config}" | grep -qiE 'xhttp|splithttp'; then
+			echo -e "${YELLOW}Эта сборка xray не понимает транспорт xhttp — обновите ядро: kvas xray core${NC}"
+		fi
 		exit 1
 	fi
 }
@@ -3138,9 +3478,21 @@ host_add() {
 		_host="${clear_host}"
 	fi
 
+	# v646: проверка на дубликат ДО ready и записи — раньше echo >> шёл всегда,
+	# CLI/Web UI писали «ДОБАВЛЕН» даже если домен уже был в списке.
+	# v648: перенесено до ready, иначе «УЖЕ ЕСТЬ» наезжает на строку «Добавляем …»
+	if grep -qxF "${_host}" "${KVAS_LIST_FILE}" 2>/dev/null; then
+		echo -e "${GREEN}Такой домен уже есть в защищенном списке!${NOCL}"
+		return 1
+	fi
+
 	ready "Добавляем ${YELLOW}${_host}${NOCL} в защищенный список..."
-	echo "${_host}" >> "${KVAS_LIST_FILE}"
-	[ $? = 0 ] && when_ok "ДОБАВЛЕН" || when_bad "НЕ ДОБАВЛЕН"
+
+	if echo "${_host}" >> "${KVAS_LIST_FILE}"; then
+		_when_add_rc=0
+	else
+		_when_add_rc=1
+	fi
 
 #	если включен блокировщик рекламы
 	if cmd_ads_status | grep -q ВКЛЮЧЕН ; then
@@ -3153,13 +3505,20 @@ host_add() {
 
 	if echo "${clear_host}" | grep -qE -- "$(get_regexp_ip_or_range)" ; then
 		# если строка IP, диапазон или маска; то добавляем напрямую и без ttl
-		/opt/sbin/ipset -exist add "${IPSET_TABLE_NAME}" "${clear_host}" timeout 0 &>/dev/null
+		# v642: раньше отказ ipset глотался — файл полон, ipset пуст, CLI печатал ДОБАВЛЕН
+		if ! /opt/sbin/ipset -exist add "${IPSET_TABLE_NAME}" "${clear_host}" timeout 0 &>/dev/null; then
+			log_error "host_add: ipset отклонил '${clear_host}' в ${IPSET_TABLE_NAME} (тип набора: $(/opt/sbin/ipset list "${IPSET_TABLE_NAME}" 2>/dev/null | sed -n 's/^Type: //p' | head -1))"
+		fi
 	elif [ "${wild}" != 'import' ] && [ "${reset}" = 'yes' ] ; then
 		# если это одиночное добавление, то можем
 		# прогреть переданный домен (без под*), 
 		# чтобы пользователю не пришлось сбрасывать кэш DNS
 		ipset__fill_by_domain "${clear_host}" &> /dev/null
 	fi
+
+	# v648: подтверждение мгновенное (как до v646) — when_ok короткий («ДОБАВЛЕН»),
+	# наезжает на конец строки ready по дизайну; домен уже виден в «Добавляем …»
+	[ "${_when_add_rc}" = 0 ] && when_ok "ДОБАВЛЕН" || when_bad "НЕ ДОБАВЛЕН"
 }
 
 # ------------------------------------------------------------------------------------------
@@ -3342,6 +3701,7 @@ cmd_del_one_host() {
 # ------------------------------------------------------------------------------------------
 del_multy_hosts() {
 	list_to_del="$(echo "$1" | sed 's/^[0-9]\{1,2\}\. //g')"
+	_md_ok=""  # v646: хосты, реально удалённые из файла (итог печатается после init)
 
 	if [ -z "${list_to_del}" ]; then
 		error "Список пуст!" 
@@ -3354,7 +3714,9 @@ del_multy_hosts() {
 				if cmd_adguardhome_status | grep -q ВКЛЮЧЕН ; then
 					sed -i "/${host_////\\/}/d" "${ADGUARD_IPSET_FILE}"
 				fi
-				when_ok "УДАЛЕН"
+				# v646: здесь только отметка удаления из файла,
+				# итоговый «УДАЛЕН» печатается после cmd_kvas_init ниже
+				_md_ok="${_md_ok} ${host_}"
 			else
 				when_alert "НЕТ В СПИСКЕ"
 			fi
@@ -3367,8 +3729,15 @@ del_multy_hosts() {
 		fi
 		print_line
 		ready "Перегружаем все правила конфигурации iptables и ipset"
-	cmd_kvas_init >/dev/null 2>&1
-	[ $? = 0 ] && when_ok "ГОТОВО" || when_bad "ОШИБКА"
+		cmd_kvas_init >/dev/null 2>&1
+		# v646: «УДАЛЕН» печатаем ПОСЛЕ отработки init, а не до
+		if [ $? = 0 ]; then
+			for _h in ${_md_ok}; do
+				when_ok "УДАЛЕН: ${_h}"
+			done
+		else
+			when_bad "ОШИБКА init — проверьте список вручную"
+		fi
 	fi
 
 }
@@ -3599,39 +3968,90 @@ cmd_import_hosts() {
 	ready 'Импортируем хосты в список защищаемых доменов...'
 	clear_file_content "${user_list}"
 
-	# читаем существующий список один раз в память
-	local existing_hosts
-	existing_hosts=$(cat "${KVAS_LIST_FILE}" 2>/dev/null || true)
+	# v645: batch-импорт вместо while+subshell на каждую строку.
+	# Раньше: echo|sed, echo|grep на ЛЮБОЙ строке = сотни process spawn'ов,
+	# дедупликация grep -qE по entire existing = O(n²). На больших списках — вис.
+	# Теперь: один awk парсит файл, один раз читает existing, пишет 3 файла-результата.
 
-	hosts_to_add_ubl=''
-	hosts_repeated_ubl=''
-	hosts_not_added=''
+	local _tmp_to_add _tmp_repeated _tmp_bad
+	_tmp_to_add=$(mktemp 2>/dev/null || echo /tmp/kvas_imp_add.$$)
+	_tmp_repeated=$(mktemp 2>/dev/null || echo /tmp/kvas_imp_rep.$$)
+	_tmp_bad=$(mktemp 2>/dev/null || echo /tmp/kvas_imp_bad.$$)
+
+	# existing → temp для awk (grep -F -x -f быстрее, чем -qE в цикле)
+	local _tmp_existing
+	_tmp_existing=$(mktemp 2>/dev/null || echo /tmp/kvas_imp_ex.$$)
+	if [ -s "${KVAS_LIST_FILE}" ]; then
+		sed 's/#.*$//g; s/\r//g; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d; /^\#/d' "${KVAS_LIST_FILE}" \
+			| sort -u > "${_tmp_existing}" 2>/dev/null || true
+	fi
+
+	# один проход: парсинг, классификация, дедуп через lookup в sorted existing
+	awk -v ipre="${regexp_ip}" \
+		-v out_add="${_tmp_to_add}" \
+		-v out_rep="${_tmp_repeated}" \
+		-v out_bad="${_tmp_bad}" \
+		-v exfile="${_tmp_existing}" '
+	BEGIN {
+		while ((getline ex < exfile) > 0) existing[ex] = 1
+		close(exfile)
+	}
+	{
+		line = $0
+		sub(/\r$/, "", line)
+		sub(/[[:space:]]+$/, "", line)
+		sub(/^[[:space:]]+/, "", line)
+		sub(/#.*$/, "", line)
+		if (line == "" || line ~ /^#/) next
+		# убираем *
+		gsub(/\*/, "", line)
+		if (line == "") next
+		# IP/CIDR/range → сразу в to_add
+		if (line ~ ipre) { print line >> out_add; next }
+		# извлекаем host из URL/plain
+		host = line
+		sub(/^(https?:\/\/)?/, "", host)
+		sub(/\/.*$/, "", host)
+		sub(/^[[:space:]]+/, "", host); sub(/[[:space:]]+$/, "", host)
+		if (host == "" || host !~ /\./) { print line >> out_bad; next }
+		if (host in existing) { print line >> out_rep; next }
+		print host >> out_add
+		existing[host] = 1
+	}
+	' "${user_list}" 2>/dev/null
+
+	local _n_add _n_rep _n_bad
+	_n_add=$(wc -l < "${_tmp_to_add}" 2>/dev/null | tr -d ' '); [ -z "${_n_add}" ] && _n_add=0
+	_n_rep=$(wc -l < "${_tmp_repeated}" 2>/dev/null | tr -d ' '); [ -z "${_n_rep}" ] && _n_rep=0
+	_n_bad=$(wc -l < "${_tmp_bad}" 2>/dev/null | tr -d ' '); [ -z "${_n_bad}" ] && _n_bad=0
+
+	# бэкап перед записью (только если есть что добавлять)
+	if [ "${_n_add}" -gt 0 ] && [ -s "${KVAS_LIST_FILE}" ]; then
+		cp -f "${KVAS_LIST_FILE}" "${KVAS_LIST_FILE_BACKUP}" 2>/dev/null || true
+	fi
+
+	# однократное применение: append + sort -u в один файл, один mv
+	if [ "${_n_add}" -gt 0 ]; then
+		cat "${KVAS_LIST_FILE}" "${_tmp_to_add}" 2>/dev/null | sort -u > "${KVAS_LIST_FILE}.new" 2>/dev/null
+		if [ -s "${KVAS_LIST_FILE}.new" ]; then
+			mv -f "${KVAS_LIST_FILE}.new" "${KVAS_LIST_FILE}"
+		else
+			rm -f "${KVAS_LIST_FILE}.new" 2>/dev/null
+			cat "${_tmp_to_add}" >> "${KVAS_LIST_FILE}" 2>/dev/null
+		fi
+	fi
+
+	# собираем вывод (совместимость со старым форматом)
+	hosts_to_add_ubl=$(sed '/^$/d' "${_tmp_to_add}" 2>/dev/null)
+	hosts_repeated_ubl=$(sed '/^$/d' "${_tmp_repeated}" 2>/dev/null)
+	hosts_not_added=$(sed '/^$/d' "${_tmp_bad}" 2>/dev/null)
 	hosts_errors=''
-	while read -r line || [ -n "${line}" ]; do
-		host=$(echo "${line}" | sed 's/#.*$//g' | tr -s ' ')
-		[ -z "${host}" ] && continue
-		[ "${host:0:1}" = "#" ] && continue
 
-		if echo "${host}" | grep -qE -- "${regexp_ip}" ; then
-			hosts_to_add_ubl="${hosts_to_add_ubl}${host}\n"
-			continue
-		fi
+	rm -f "${_tmp_to_add}" "${_tmp_repeated}" "${_tmp_bad}" "${_tmp_existing}" 2>/dev/null
 
-		clear_host=$(echo "${host}" | sed 's/\*//' | sed -n -E 's|^(https?://)?([^/]+).*|\2|p')
-		[ -z "${clear_host}" ] && { hosts_not_added="${hosts_not_added}${host}\n"; continue; }
-		echo "${clear_host}" | grep -q '\.' || { hosts_not_added="${hosts_not_added}${host}\n"; continue; }
-
-		if echo "${existing_hosts}" | grep -qE "^${clear_host}" ; then
-			hosts_repeated_ubl="${hosts_repeated_ubl}${host}\n"
-			continue
-		fi
-
-		hosts_to_add_ubl="${hosts_to_add_ubl}${host}\n"
-	done < "${user_list}"
-
-	_hosts_to_add_ubl=$(echo -e "${hosts_to_add_ubl}" | sed '/^$/d')
-	[ -n "${_hosts_to_add_ubl}" ] && echo -e "${_hosts_to_add_ubl}" >> "${KVAS_LIST_FILE}"
-	clear_file_content "${KVAS_LIST_FILE}"
+	if [ "${_n_add}" -gt 0 ]; then
+		tg_notify list "Защищённый список: добавлено записей — ${_n_add}"
+	fi
 
 	cmd_ads_status | grep -q ВКЛЮЧЕН && ads_list_hosts_update >/dev/null 2>&1
 

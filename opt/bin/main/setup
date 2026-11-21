@@ -571,6 +571,17 @@ cmd_install(){
 
 	log_warning 'Установка пакета КВАС начата...'
 
+	# v645: сохраняем kvas.list в ПОСТОЯННЫЙ бэкап до любых удалений.
+	# list__backup писал в /tmp (volatile) — после ребута список терялся.
+	# rm_dir /opt/etc/.kvas ниже стирал постоянный бэкап при свежем setup.
+	if [ -f "${KVAS_LIST_FILE}" ]; then
+		mkdir -p "${KVAS_BACKUP_PATH}" 2>/dev/null
+		if [ ! -f "${KVAS_LIST_FILE_BACKUP}" ] || [ "${KVAS_LIST_FILE}" -nt "${KVAS_LIST_FILE_BACKUP}" ]; then
+			cp -f "${KVAS_LIST_FILE}" "${KVAS_LIST_FILE_BACKUP}" 2>/dev/null && \
+				log_info "cmd_install: kvas.list сохранён в постоянный бэкап ${KVAS_LIST_FILE_BACKUP}"
+		fi
+	fi
+
 	list__backup
 
 	ready 'Удаляем файлы предыдущих версий'
@@ -579,8 +590,21 @@ cmd_install(){
 		cp -f /tmp/kvas_tags_backup/tags.list /opt/etc/tags.list 2>/dev/null || true
 		rm -f /tmp/kvas_tags_backup/tags.list 2>/dev/null || true
 	fi
-	# При обновлении НЕ удаляем бэкапы конфигов (save_backups сделал их до opkg remove)
-	[ "${update_mode}" = "true" ] || rm_dir /opt/etc/.kvas
+	# При обновлении НЕ удаляем бэкапы конфигов (save_backups сделал их до opkg remove).
+	# v645: при свежем setup тоже НЕ удаляем kvas.list из бэкапа — он восстановится ниже.
+	[ "${update_mode}" = "true" ] || {
+		if [ -f "${KVAS_LIST_FILE_BACKUP}" ]; then
+			# сохраняем только kvas.list, остальное можно сбросить
+			_tmp_kvas_list_bkp=$(mktemp 2>/dev/null || echo /tmp/kvas_list_preserve.$$)
+			cp -f "${KVAS_LIST_FILE_BACKUP}" "${_tmp_kvas_list_bkp}" 2>/dev/null
+			rm_dir /opt/etc/.kvas
+			mkdir -p "${KVAS_BACKUP_PATH}" 2>/dev/null
+			cp -f "${_tmp_kvas_list_bkp}" "${KVAS_LIST_FILE_BACKUP}" 2>/dev/null
+			rm -f "${_tmp_kvas_list_bkp}" 2>/dev/null
+		else
+			rm_dir /opt/etc/.kvas
+		fi
+	}
 
 	[ "${update_mode}" ] || setup_print_welcome
 

@@ -293,14 +293,23 @@ cmd_hysteria_add() {
     MAIN_PART=$(echo "$URL_NO_FRAGMENT" | sed -E 's|hysteria2://||;s|h2://||;s|\?.*||')
     AUTH=$(echo "$MAIN_PART" | cut -d'@' -f1)
     SERVER_PORT=$(echo "$MAIN_PART" | cut -d'@' -f2)
+    # v693: ссылки вида hysteria2://pass@host:443/?... — слеш перед ? попадает в
+    # SERVER_PORT и уходит в config.yaml как server: host:443/ — срезаем весь /-суффикс
+    SERVER_PORT="${SERVER_PORT%%/*}"
     SERVER=$(echo "$SERVER_PORT" | cut -d':' -f1)
     PORT=$(echo "$SERVER_PORT" | cut -d':' -f2)
+    # v693: портless-ссылка (host/?sni=...) — cut без ':' возвращает хост целиком,
+    # ${PORT:-443} не срабатывало; не-цифры → пусто → дефолт 443
+    case "$PORT" in ''|*[!0-9]*) PORT="" ;; esac
 
     # Очищаем SERVER от http://, https:// и лишних символов
     SERVER=$(echo "$SERVER" | sed -E 's|^https?://||;s|^/||;s|/.*||')
 
     # Извлекаем query параметры
     QUERY=$(echo "$URL_NO_FRAGMENT" | sed -n -E 's/.*\?(.*)/\1/p')
+    # v693: первый query-параметр не матчится по шаблонам [?&]param= — добавляем
+    # префикс &, иначе obfs/sni первым параметром терялись (idiom как в data.sh)
+    QUERY="&${QUERY}"
 
     # Декодируем и извлекаем параметры
     SNI=$(echo "$QUERY" | sed -n -E 's/.*[?&]sni=([^&#]*).*/\1/p' | head -1)
@@ -409,6 +418,8 @@ cmd_hysteria_uninstall() {
 }
 
 cmd_hysteria_start() {
+    # v667: явный старт снимает флаг «выключена пользователем» (гвард S99)
+    rm -f /opt/var/kvas/svc.hysteria.disabled
     if [ -f "$SYSTEM_INIT_PATH" ]; then
         "$SYSTEM_INIT_PATH" start
         sleep 2
@@ -427,6 +438,8 @@ cmd_hysteria_stop() {
 }
 
 cmd_hysteria_restart() {
+    # v667: явный рестарт = «включить»
+    rm -f /opt/var/kvas/svc.hysteria.disabled
     if [ -f "$SYSTEM_INIT_PATH" ]; then
         "$SYSTEM_INIT_PATH" restart
         sleep 2

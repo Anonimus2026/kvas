@@ -4,7 +4,6 @@
 #	ПАКЕТ КВАС
 #
 #------------------------------------------------------------------------------
-#
 #	Данный файл служит для добавления данных в
 #	таблицу ipset данными из файла с доменными именами, IP и сетями:
 #	Основное:
@@ -17,7 +16,7 @@
 # ------------------------------------------------------------------------------
 #	Разработчик: mail@zeleza.ru
 #	Дата создания: 21/05/2022
-#	Лицензия: Apache License 2.0
+#	Лицензия: Apache 2.0
 # ------------------------------------------------------------------------------
 
 logger -t 'КВАС' 'Заполнение IPSet IP из списка'
@@ -27,33 +26,92 @@ IPSET_TABLE_NAME=KVAS_LIST
 IP_FILTER='[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'
 REGEXP_IP_OR_RANGE="${IP_FILTER}|${IP_FILTER}-${IP_FILTER}|${IP_FILTER}/[0-9]{1,2}"
 
-# обновляем таблицу ipset данными из файла с доменными именами, IP и сетями
-while read -r line || [ -n "${line}" ]; do
-	# пропускаем строки c минусами — это рекламные сайты
-	# пропускаем пустые строки
-	# пропускаем строки с комментариями
-	[ "${line::1}" = "-" ] || [ -z "${line}" ] || [ "${line:0:1}" = "#" ] && continue
-
-	# удаляем из строки комментарии - все что встречается после символа # и сам символ
-	# удаляем *
-	host=$(echo "${line}" | sed 's/#.*$//g' | tr -s ' ' | sed 's/\*//')
-
-	# если строка IP, диапазон или маска; то добавляем напрямую и без ttl
-	if echo "${host}" | grep -qE -- "${REGEXP_IP_OR_RANGE}"; then
-		/opt/sbin/ipset -exist add "${IPSET_TABLE_NAME}" "${host}" timeout 0 &>/dev/null || true
+# v642: guard — набор должен быть hash:net family inet.
+# dnsmasq при раннем старте может создать KVAS_LIST как hash:ip (свой дефолт);
+# -exist create молча не пересоздаёт чужой тип, после чего каждый CIDR-add
+# падает с EINVAL и гасится «|| true» — файл полон, ipset пуст.
+# destroy на référenced наборе (mangle -m set) падает → чиним через swap:
+# ссылки iptables следуют за именем, содержимое старого типа уезжает в tmp и удаляется.
+_ipset_ensure_hashnet() {
+	local _set="$1"
+	local _ttl
+	_ttl=$(sed -n 's/^LIST_IPSET_TTL=//p' /opt/etc/kvas.conf 2>/dev/null | head -1)
+	case "${_ttl}" in ''|*[!0-9]*) _ttl=86400 ;; esac
+	local _type
+	_type=$(/opt/sbin/ipset list "${_set}" 2>/dev/null | sed -n 's/^Type: //p' | head -1)
+	if [ -z "${_type}" ]; then
+		/opt/sbin/ipset -exist create "${_set}" hash:net family inet timeout "${_ttl}" &>/dev/null || true
+	elif [ "${_type}" != "hash:net" ]; then
+		local _tmp="${_set}_hnet"
+		/opt/sbin/ipset destroy "${_tmp}" &>/dev/null || true
+		if /opt/sbin/ipset create "${_tmp}" hash:net family inet timeout "${_ttl}" &>/dev/null \
+			&& /opt/sbin/ipset swap "${_set}" "${_tmp}" &>/dev/null; then
+			/opt/sbin/ipset destroy "${_tmp}" &>/dev/null || true
+			logger -t 'КВАС' "ipset ${_set}: тип ${_type} заменён на hash:net (swap)"
+			mkdir -p /opt/var/log 2>/dev/null
+			echo "$(date '+%Y-%m-%d %H:%M:%S') [W] ipset ${_set}: тип ${_type} заменён на hash:net (swap)" >> /opt/var/log/kvas.log 2>/dev/null
+		else
+			/opt/sbin/ipset destroy "${_tmp}" &>/dev/null || true
+			logger -p err -t 'КВАС' "ipset ${_set}: тип ${_type} вместо hash:net, заменить не удалось"
+		fi
 	fi
-done < "${HOST_LIST}"
+}
+
+# v642: срезаем \r (Windows-правки конфига) и краевые пробелы — раньше such строка
+# проходила regex, но ipset add падал с EINVAL, и «|| true» это глотал
+_ipset_clean_host() {
+	echo "${1}" | sed 's/\r$//' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+_ipset_add_static() {
+	local _set="$1"
+	local _host
+	_host=$(_ipset_clean_host "${2}")
+	[ -z "${_host}" ] && return 0
+	if ! /opt/sbin/ipset -exist add "${_set}" "${_host}" timeout 0 &>/dev/null; then
+		logger -p err -t 'КВАС' "ipset: не удалось добавить '${_host}' в ${_set}"
+		# v642: постоянный лог (libs/main тут не подключён)
+		mkdir -p /opt/var/log 2>/dev/null
+		echo "$(date '+%Y-%m-%d %H:%M:%S') [E] ipset add '${_host}' → ${_set} FAILED" >> /opt/var/log/kvas.log 2>/dev/null
+		return 1
+	fi
+	return 0
+}
+
+_ipset_ensure_hashnet "${IPSET_TABLE_NAME}"
+
+# v650: batch-awk вместо while+echo|sed|tr|sed|grep на КАЖДОЙ строке.
+# Прежний пайплайн (~4 процесса/строку) на большом kvas.list занимал
+# 1–2 минуты CPU роутера на каждое kvas add/del (update_ipset refresh
+# в фоне) — прогрев нового домена ждал его завершения.
+# Теперь: один awk выдаёт только статические IP/CIDR/диапазоны,
+# цикл идёт по ним, домены в ipset попадают через dnsmasq ipset=.
+_ipset_load_statics() {
+	local _list="$1"
+	local _set="$2"
+	[ -f "${_list}" ] || return 0
+	awk '
+		/^[[:space:]]*#/ {next}
+		/^[[:space:]]*$/ {next}
+		/^-/ {next}
+		{
+			sub(/#.*/,"")
+			gsub(/^[[:space:]]+|[[:space:]]+$/,"")
+			gsub(/\*/,"")
+			if ($0 != "") print
+		}' "${_list}" 2>/dev/null \
+	| grep -E -- "${REGEXP_IP_OR_RANGE}" 2>/dev/null \
+	| while IFS= read -r _h; do
+		[ -n "${_h}" ] && _ipset_add_static "${_set}" "${_h}"
+	done
+}
+
+_ipset_load_statics "${HOST_LIST}" "${IPSET_TABLE_NAME}"
 
 # Список 2 (вторая полоса) — статические IP/CIDR в KVAS_LIST2
 HOST_LIST2=/opt/etc/kvas2.list
 IPSET_TABLE2_NAME=KVAS_LIST2
 if [ -f "${HOST_LIST2}" ]; then
-	/opt/sbin/ipset -exist create "${IPSET_TABLE2_NAME}" hash:net family inet &>/dev/null || true
-	while read -r line || [ -n "${line}" ]; do
-		[ "${line:0:1}" = "-" ] || [ -z "${line}" ] || [ "${line:0:1}" = "#" ] && continue
-		host=$(echo "${line}" | sed 's/#.*$//g' | tr -s ' ' | sed 's/\*//')
-		if echo "${host}" | grep -qE -- "${REGEXP_IP_OR_RANGE}"; then
-			/opt/sbin/ipset -exist add "${IPSET_TABLE2_NAME}" "${host}" timeout 0 &>/dev/null || true
-		fi
-	done < "${HOST_LIST2}"
+	_ipset_ensure_hashnet "${IPSET_TABLE2_NAME}"
+	_ipset_load_statics "${HOST_LIST2}" "${IPSET_TABLE2_NAME}"
 fi

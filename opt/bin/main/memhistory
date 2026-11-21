@@ -1,0 +1,32 @@
+#!/bin/sh
+# v690: снапшот памяти каждые 15 мин → /opt/var/kvas/memhistory.log.
+# Инцидент 16.11: RAM выросла с ~330 до ~934 МБ за 6 дней без единой
+# истории — пожиратель не был пойман. cron.15min, одна строка на тик,
+# ротация при 256 КБ (старые строки уходят, флеш не растёт).
+LOG=/opt/var/kvas/memhistory.log
+mkdir -p /opt/var/kvas 2>/dev/null || exit 0
+_ma=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)
+_mt=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null)
+_st=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null)
+_sf=$(awk '/^SwapFree:/{print $2}' /proc/meminfo 2>/dev/null)
+_su=0
+if [ -n "${_st}" ] && [ "${_st}" -gt 0 ] 2>/dev/null; then
+	_su=$((_st - _sf))
+fi
+_top=$(for _d in /proc/[0-9]*; do
+	[ -r "${_d}/status" ] || continue
+	_n=$(sed -n 's/^Name:[[:space:]]*//p' "${_d}/status" 2>/dev/null)
+	_r=$(sed -n 's/^VmRSS:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${_d}/status" 2>/dev/null)
+	_s=$(sed -n 's/^VmSwap:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${_d}/status" 2>/dev/null)
+	[ -n "${_r}" ] || _r=0
+	[ -n "${_s}" ] || _s=0
+	_t=$((_r + _s))
+	[ "${_t}" -gt 1024 ] 2>/dev/null || continue
+	printf '%d %s(%d+%d)\n' "${_t}" "${_n}" "${_r}" "${_s}"
+done | sort -rn | head -8 | cut -d' ' -f2- | tr '\n' ',')
+printf '%s avail=%sK/%sK swap_used=%sK top: %s\n' \
+	"$(date '+%Y-%m-%d %H:%M:%S')" "${_ma:-?}" "${_mt:-?}" "${_su}" "${_top}" >> "${LOG}" 2>/dev/null || exit 0
+if [ -f "${LOG}" ] && [ "$(wc -c < "${LOG}" 2>/dev/null)" -gt 262144 ] 2>/dev/null; then
+	tail -n 1000 "${LOG}" > "${LOG}.tmp" 2>/dev/null && mv "${LOG}.tmp" "${LOG}" 2>/dev/null
+fi
+exit 0

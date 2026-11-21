@@ -1,5 +1,18 @@
 #!/bin/sh 
 
+# v667: «Стоп» (веб/CLI) должен пережить перезагрузку. Если vless выключен
+# пользователем — не автозапускать. Исключения: агрегатор включён (vless —
+# его инфраструктура) ИЛИ failover включён (vless — канал проверок/возврата).
+if [ "$1" = "start" ] && [ -f /opt/var/kvas/svc.vless.disabled ]; then
+	_ag=0
+	[ -f /opt/etc/kvas.aggregator ] && grep -q '^ENABLED=1' /opt/etc/kvas.aggregator 2>/dev/null && _ag=1
+	[ -f /opt/etc/kvas-failover-enabled ] && _ag=1
+	if [ "${_ag}" != "1" ]; then
+		echo "VLESS выключен пользователем — автозапуск пропущен (включите: старт в вебе или kvas vpn set)"
+		exit 0
+	fi
+fi
+
 ENABLED=yes
 PROCS=/opt/sbin/xray
 ARGS=" run -config /opt/etc/xray/kvas.json "

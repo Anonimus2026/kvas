@@ -12,6 +12,8 @@ ACTIVE_FLAG="/var/run/hysteria.active"
 
 case "$1" in
     start)
+        # v667: «Стоп» (веб/CLI) должен пережить перезагрузку — флаг выключения
+        [ -f /opt/var/kvas/svc.hysteria.disabled ] && { echo "Hysteria выключена пользователем — автозапуск пропущен"; exit 0; }
         [ "$ENABLED" != "yes" ] && exit 0
         if [ ! -f "$CONF" ]; then
             echo "Конфигурация $CONF не найдена. Сначала выполните: kvas hysteria new"
@@ -20,6 +22,18 @@ case "$1" in
         if [ ! -x "$PROG" ]; then
             echo "Hysteria не запущена: бинарник $PROG отсутствует. Выполните: kvas hysteria install"
             exit 1
+        fi
+        # v675: сирота — живой hysteria при мёртвом/удалённом pidfile. Такое
+        # случается после гонок рестартов (веб + watchdog): порт 10808 занят,
+        # новый старт падал с FATAL «bind: address already in use», а статус
+        # при этом врал «Остановлена». Убиваем сироту до bind.
+        if ! { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }; then
+            _orph=$(pidof hysteria 2>/dev/null)
+            if [ -n "$_orph" ]; then
+                echo "Найдена сирота Hysteria (pid: $_orph) — убиваю для освобождения порта."
+                kill $_orph 2>/dev/null
+                sleep 1
+            fi
         fi
         if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
             echo "Hysteria уже запущена."
@@ -48,12 +62,18 @@ case "$1" in
         ;;
     stop)
         # 1. Принудительная остановка мониторинга
+        # v674: killall watchdog.sh убивал И чужой watchdog (awg) — при любом
+        # рестарте Hysteria мониторинг соседа гиб молча. Свой — только по pidfile;
+        # чужой переживёт рестарт и сам завершится по своему ACTIVE_FLAG (≤35с)
         rm -f "$ACTIVE_FLAG"
         if [ -f "$WATCHDOG_PID" ]; then
-            kill "$(cat "$WATCHDOG_PID" 2>/dev/null)" 2>/dev/null
+            # v675: рестарт по инициативе самого watchdog'а — pidfile содержит
+            # наш же pid ($$), kill оборвал бы stop между stop и start
+            # (hysteria убита, pidfile не удалён, мониторинг сиротеет)
+            _wpid=$(cat "$WATCHDOG_PID" 2>/dev/null)
+            [ -n "$_wpid" ] && [ "$_wpid" != "$$" ] && kill "$_wpid" 2>/dev/null
             rm -f "$WATCHDOG_PID"
         fi
-        killall watchdog.sh 2>/dev/null
 
         # 2. Остановка основного демона Hysteria
         if [ -f "$PIDFILE" ]; then

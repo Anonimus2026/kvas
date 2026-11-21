@@ -257,6 +257,12 @@ window.addEventListener('error', function(e){
         <button class="btn btn-sm" onclick="svcAct('awg','restart',this)">Рестарт</button>
       </span>
     </div>
+    <div class="card-row"><span class="row-main"><label>Служба DNSMasq:</label><span class="value" id="sysDnsService">-</span> <span style="font-size:11px;color:#8b949e;" id="sysDnsHint"></span></span>
+      <span class="row-actions">
+        <button class="btn btn-sm" id="svcDnsBtn" onclick="svcToggle('dnsmasq',this)">Старт</button>
+        <button class="btn btn-sm" onclick="svcAct('dnsmasq','restart',this)">Рестарт</button>
+      </span>
+    </div>
     </div>
     <div id="sysSvcMsg" class="msg" style="max-height:80px;overflow-y:auto;"></div>
     <div class="card-row"><label>Текущий туннель:</label><span class="value" id="sysTunnel">-</span></div>
@@ -290,7 +296,8 @@ window.addEventListener('error', function(e){
       <span class="row-main"><span class="hchip" id="chipVpn" onclick="toggleHealth('vpn')"><span class="hdot" id="hdVpn"></span>VPN</span>
       <span class="hchip" id="chipAdg" onclick="toggleHealth('adg')"><span class="hdot" id="hdAdg"></span>AdGuard</span>
       <span class="hchip" id="chipDns" onclick="toggleHealth('dns')"><span class="hdot" id="hdDns"></span>dnsmasq</span>
-      <span class="hchip" id="chipFo" onclick="toggleHealth('fo')"><span class="hdot" id="hdFo"></span>Failover</span></span>
+      <span class="hchip" id="chipFo" onclick="toggleHealth('fo')"><span class="hdot" id="hdFo"></span>Failover</span>
+      <span class="hchip" id="chipAgg" onclick="toggleHealth('agg')"><span class="hdot" id="hdAgg"></span>Aggregator</span></span>
       <button class="btn btn-sm row-actions" onclick="loadHealth()">Обновить</button>
     </div>
     <div id="healthHint" style="font-size:11px;color:#8b949e;margin-top:6px;"></div>
@@ -300,6 +307,13 @@ window.addEventListener('error', function(e){
   <!-- Hosts -->
   <div class="card">
     <h3>Список доменов</h3>
+    <!-- v688: массовое удаление — чекбоксы в строках + одна кнопка -->
+    <div id="hostBulkBar" style="display:flex;align-items:center;gap:10px;padding:2px 6px;margin-bottom:4px;">
+      <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:#8b949e;cursor:pointer;">
+        <input type="checkbox" id="hostAllChk" style="accent-color:#58a6ff;" onchange="hostSelAll(this.checked)"> Выбрать все
+      </label>
+      <button class="btn btn-sm danger" id="hostDelSelBtn" disabled onclick="hostDelSel(this)" title="Удалить отмеченные домены одной кнопкой (v688)">Удалить выбранные (0)</button>
+    </div>
     <div id="hostList" class="host-list"><div class="status">Загрузка...</div></div>
     <div class="card-row" style="flex-wrap:wrap;gap:8px;">
       <input type="text" id="hostInput" placeholder="domain.ru" style="flex:1;min-width:200px;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-family:monospace;font-size:12px;">
@@ -391,9 +405,13 @@ window.addEventListener('error', function(e){
   <div class="card">
     <h3>Aggregator VLESS</h3>
     <div class="card-row" style="flex-wrap:wrap;gap:6px;">
-      <button class="btn btn-sm success" onclick="aggAct('on',this)">Включить</button>
-      <button class="btn btn-sm danger" onclick="aggAct('off',this)">Выключить</button>
+      <button id="aggOnBtn" class="btn btn-sm success" onclick="aggAct('on',this)">Включить</button>
+      <button id="aggOffBtn" class="btn btn-sm danger" onclick="aggAct('off',this)" title="Выключить и прервать текущий скан/проверку, если идёт (v662)">Выключить</button>
       <button class="btn btn-sm" onclick="aggAct('check',this)">Проверить</button>
+      <button class="btn btn-sm" onclick="aggCheckAll(this)" title="Полная проверка ВСЕГО пула (~3 мин за нажатие; если не успело — нажмите ещё раз, продолжит с места остановки) (v664)">Проверить всё</button>
+      <button class="btn btn-sm danger" onclick="aggPurge(this)" title="Удалить все dead-серверы из пула разом">Удалить мёртвые</button>
+      <button class="btn btn-sm danger" onclick="aggClear(this)" title="Удалить ВСЕ ссылки из пула и все метки; Вкл/Выкл и подписку не трогает — потом снова «Из подписки» (v689)">Очистить список</button>
+      <button class="btn btn-sm" onclick="aggLog(this)" title="Последний лог действий агрегатора (v661; v689 — с датой/временем и причинами отказов)">Лог</button>
       <button class="btn btn-sm" onclick="loadAgg()">Обновить</button>
     </div>
     <div id="aggInfo" style="font-size:12px;color:#8b949e;margin-top:6px;">-</div>
@@ -402,6 +420,18 @@ window.addEventListener('error', function(e){
       <input id="aggLink" placeholder="vless://..." style="flex:1;min-width:0;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
       <button class="btn btn-sm" onclick="aggAdd(this)">Добавить</button>
     </div>
+    <div class="card-row" style="gap:6px;margin-top:4px;">
+      <input type="file" id="aggFile" accept=".txt,text/plain" style="display:none;">
+      <button class="btn btn-sm" onclick="document.getElementById('aggFile').click()">Обзор (.txt)</button>
+      <span id="aggFileSel" style="font-size:11px;color:#8b949e;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+    </div>
+    <!-- v680: подписка — автообновление пула раз в 6 ч (URL хранится только на роутере) -->
+    <div class="card-row" style="gap:6px;margin-top:4px;">
+      <input id="aggSub" placeholder="https://подписка: автообновление пула раз в 6 ч" style="flex:1;min-width:0;padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
+      <button class="btn btn-sm" onclick="aggSubSave(this)" title="Сохранить ссылку подписки (хранится только на роутере, в код не попадает)">Сохранить</button>
+      <button class="btn btn-sm" onclick="aggSubFetch(this)" title="Сразу загрузить список из подписки, отобрать 5 живых и подключить первого (нужен включённый агрегатор)">Из подписки</button>
+    </div>
+    <div id="aggSubInfo" style="font-size:11px;color:#8b949e;margin-top:2px;"></div>
     <div id="aggMsg" class="msg" style="white-space:pre-wrap;font-size:11px;max-height:150px;overflow-y:auto;"></div>
   </div>
 
@@ -540,6 +570,7 @@ window.addEventListener('error', function(e){
       <select id="l2TunnelSel" onchange="list2Tunnel(this)" style="padding:6px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:12px;">
         <option value="">загрузка...</option>
       </select>
+      <button class="btn btn-sm" id="l2ToggleBtn" data-state="yes" onclick="list2Toggle(this)">Выключить</button>
       <span id="l2Status" style="font-size:11px;color:#8b949e;"></span>
     </div>
     <div class="card-row" style="flex-wrap:wrap;gap:8px;">
@@ -722,6 +753,8 @@ window.addEventListener('error', function(e){
     <button class="btn btn-sm" onclick="loadKvasLog('info')">Квас</button>
     <button class="btn btn-sm" onclick="loadKvasLog('syslog')">Система</button>
     <button class="btn btn-sm" onclick="loadKvasLog('upgrade')">Обновление</button>
+    <button class="btn btn-sm" onclick="loadKvasLog('agg')">Агрегатор</button>
+    <button class="btn btn-sm" onclick="sysTop(this)" title="Снимок процессов + load average — кто ест CPU (v664)">Процессы (CPU)</button>
     <button class="btn btn-sm" onclick="clearKvasLog(this)">Очистить лог ошибок</button>
   </div>
   <pre id="logOutput" style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;max-height:400px;overflow-y:auto;font-size:11px;color:#c9d1d9;font-family:monospace;white-space:pre-wrap;margin-top:8px;"><span style="color:#8b949e;">Выберите тип лога...</span></pre>
@@ -809,6 +842,7 @@ function doAuth() {
     } else {
       showAuthMsg(d.error || 'Ошибка', 'err');
       if (d.wait) { btn.disabled = true; setTimeout(function(){ btn.disabled = false; }, d.wait * 1000); }
+      try { document.getElementById('authPass').focus(); } catch(e) {}
     }
   }).catch(function(e){ btn.disabled = false; showAuthMsg(e.message, 'err'); });
 }
@@ -844,6 +878,8 @@ function initAuth() {
       currentAuthAction = setPass;
     }
     document.getElementById('authScreen').style.display = 'block';
+    /* v671: автофокус на поле пароля — сразу печатаем без лишнего клика */
+    try { document.getElementById('authPass').focus(); } catch(e) {}
   }).catch(function(e){
     document.getElementById('authTitle').textContent = 'Ошибка соединения';
     document.getElementById('authBtn').style.display = 'none';
@@ -949,24 +985,82 @@ function renderHealthDetail(which) {
       el.innerHTML = '<b style="color:#3fb950">dnsmasq: OK</b><br>Сервис жив, DNS-резолв работает.' + extra;
       return;
     }
-    if (alive && !res) { el.innerHTML = '<b style="color:#d29922">dnsmasq: жив, но порт :53 не слушает</b><br>S56dnsmasq запущен, но UDP/53 не найден.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq restart</code>'; return; }
-    el.innerHTML = '<b style="color:#f85149">dnsmasq: не запущен</b><br>S56dnsmasq не отвечает, AdGuard выключен — DNS недоступен.<br>Попробуйте: <code>/opt/etc/init.d/S56dnsmasq start</code>';
+    // v684: кнопка запуска + реальная причина из dnsmasq.lasterr/держателя порта
+    var dport = s.dns_port || '9753';
+    var dfix = '<button class="btn btn-sm success" onclick="dnsFixBtn(this)">Запустить dnsmasq</button>';
+    var dwhy = '';
+    if (s.dns_lasterr) { dwhy = '<br>Причина: ' + s.dns_lasterr; }
+    else if (s.dns_holder) { dwhy = '<br>Порт ' + dport + ' занят: ' + s.dns_holder; }
+    if (alive && !res) { el.innerHTML = '<b style="color:#d29922">dnsmasq: жив, но порт ' + dport + ' не слушает</b><br>S56dnsmasq запущен, но ' + dport + ' не найден в ss/netstat.' + dwhy + '<br>' + dfix; return; }
+    el.innerHTML = '<b style="color:#f85149">dnsmasq: не запущен</b><br>S56dnsmasq не отвечает, AdGuard выключен — DNS недоступен.' + dwhy + '<br>' + dfix + ' или <code>/opt/etc/init.d/S56dnsmasq start</code>';
   } else if (which === 'fo') {
     var mode = s.fo_mode, run = s.fo_daemon === 'true';
     if (mode !== 'failover') { el.innerHTML = '<b style="color:#8b949e">Failover: выключен</b><br>Режим: ' + mode + '.<br>Попробуйте: <code>kvas failover on</code>'; return; }
     if (run) { el.innerHTML = '<b style="color:#3fb950">Failover: OK</b><br>Режим failover, демон запущен (PID жив).'; return; }
     el.innerHTML = '<b style="color:#d29922">Failover: режим включён, демон не запущен</b><br>PID-файл мёртв или процесс упал.<br>Попробуйте: <code>kvas failover off && kvas failover on</code>';
+  } else if (which === 'agg') {
+    var aggOn = s.agg_enabled === 'true';
+    var aggTotal = s.agg_total || 0;
+    var aggActive = s.agg_active || 0;
+    var aggDead = s.agg_dead || 0;
+    var aggSb = s.agg_standby || 0;
+    if (!aggOn) {
+      el.innerHTML = '<b style="color:#8b949e">Aggregator: выключен</b><br>' +
+        (aggTotal > 0 ? 'Пул: ' + aggTotal + ' серверов.<br>Включить: <code>kvas aggregator on</code> или Web UI Агрегатор.'
+                      : 'Пул пуст. Добавьте vless:// ссылки в разделе «Aggregator VLESS», либо сохраните URL подписки и нажмите «Из подписки».');
+      return;
+    }
+    var alive = aggTotal - aggDead;   /* не помечены dead (проверка не гарантирована) */
+    if (aggActive > 0) {
+      el.innerHTML = '<b style="color:#3fb950">Aggregator: ON, активен #' + aggActive + '</b><br>' +
+        'Пул: ' + aggTotal + ' (без пометки dead: ' + alive + ', dead ' + aggDead + ').<br>' +
+        /* v689: «живых ~N» врал (это просто не-dead) — точные счётчики и даты
+           живут в карточке Aggregator ниже (там же причины отказов) */
+        'Точные счётчики (подтверждённые живые/без проверки) и даты — в карточке «Aggregator VLESS».<br>' +
+        (aggSb > 0 ? 'Standby: #' + aggSb + ' проверен — переключение мгновенное.<br>'
+                   : 'Standby: ещё не проверен (скрининг каждые 10 мин).<br>') +
+        'Fast-fail: активный проверяется каждую минуту, 2 неудачи → автоскан.<br>' +
+        'Проверить: <code>kvas aggregator check</code>';
+    } else {
+      el.innerHTML = '<b style="color:#d29922">Aggregator: ON, нет активного сервера (manual)</b><br>' +
+        'Пул: ' + aggTotal + ' (dead ' + aggDead + ').<br>' +
+        'Все серверы dead или scan не нашёл живой.<br>' +
+        /* v689: раньше здесь была одна подсказка «попробуйте check» — система
+           продолжает работать сама, это надо показывать */
+        'Система сама продолжает искать: автоскан каждые 15 мин, обновление из подписки каждые 6 ч (следующее — в карточке «Aggregator VLESS»).<br>' +
+        'Диагностика: карточка «Aggregator VLESS» → «Лог» — с датой/временем и причинами отказов (parse/xray/probe/tcp).<br>' +
+        'Попробуйте: <code>kvas aggregator check</code> или «Проверить всё» в карточке.';
+    }
   }
 }
 
+// v684: кнопка «Запустить dnsmasq» в подсказке чипа dnsmasq
+function dnsFixBtn(btn) {
+  var el = document.getElementById('healthDetails');
+  if (btn) { btn.disabled = true; btn.textContent = 'Запуск…'; }
+  fetch('/cgi-bin/manage.sh?action=tunnel_start&token=' + AUTH_TOKEN + '&iface=dnsmasq').then(function(r){ return r.json(); }).then(function(d){
+    if (btn) { btn.disabled = false; btn.textContent = 'Запустить dnsmasq'; }
+    if (d.ok) {
+      if (el) el.innerHTML = '<b style="color:#3fb950">dnsmasq: запущен</b><br>' + (d.msg || 'OK');
+      loadHealth();
+      loadSystemStatus();
+    } else {
+      if (el) el.innerHTML = '<b style="color:#f85149">Не удалось запустить</b><br>' + (d.error || 'Ошибка');
+    }
+  }).catch(function(e){
+    if (btn) { btn.disabled = false; btn.textContent = 'Запустить dnsmasq'; }
+    if (el) el.innerHTML = '<b style="color:#f85149">Ошибка сети</b><br>' + e.message;
+  });
+}
+
 function loadHealth() {
-  setDot('hdVpn',''); setDot('hdAdg',''); setDot('hdDns',''); setDot('hdFo','');
+  setDot('hdVpn',''); setDot('hdAdg',''); setDot('hdDns',''); setDot('hdFo',''); setDot('hdAgg','');
   _healthState = {};
   var hint = document.getElementById('healthHint');
   if (hint) hint.textContent = 'Проверка…';
   api('/cgi-bin/manage.sh?action=health_details', function(d){
     if (!d.ok) {
-      setDot('hdVpn','bad'); setDot('hdAdg','bad'); setDot('hdDns','bad'); setDot('hdFo','bad');
+      setDot('hdVpn','bad'); setDot('hdAdg','bad'); setDot('hdDns','bad'); setDot('hdFo','bad'); setDot('hdAgg','bad');
       if (hint) hint.textContent = 'Ошибка проверки';
       return;
     }
@@ -995,12 +1089,33 @@ function loadHealth() {
     else if (d.fo_daemon === 'true') { setDot('hdFo','ok'); }
     else { setDot('hdFo','warn'); warn++; }
 
+    // v657: Aggregator health dot
+    if (d.agg_enabled === 'true') {
+      if (d.agg_active > 0) { setDot('hdAgg','ok'); }
+      else { setDot('hdAgg','warn'); warn++; }  // ON но нет активного (manual)
+    } else {
+      setDot('hdAgg','off');  // выключен — не считаем проблемой
+    }
+
+    // v684: подсказка к строке «Служба DNSMasq» в карточке «Состояние служб»
+    var dnsHint = document.getElementById('sysDnsHint');
+    if (dnsHint) {
+      var dnsWorkOk = (d.dns_alive === 'running' && d.dns_resolve === 'true');
+      if (agOn || dnsWorkOk) { dnsHint.textContent = ''; }
+      else if (d.dns_lasterr) { dnsHint.textContent = 'причина: ' + d.dns_lasterr; }
+      else if (d.dns_holder) { dnsHint.textContent = 'порт ' + (d.dns_port || '9753') + ' занят: ' + d.dns_holder; }
+      else { dnsHint.textContent = 'не работает — нажмите Старт'; }
+    }
     if (hint) {
       hint.textContent = bad ? ('Проблемы: ' + bad + ' — нажмите на чип для деталей') : (warn ? 'Частично OK — нажмите на чип для деталей' : 'Все сервисы OK');
     }
     if (_healthOpen) renderHealthDetail(_healthOpen);
   }, 30000);
 }
+
+// v686: причины переключений человекочитаемо — в истории теперь есть все три
+// (auto — failover, manual — ручное переключение, agg — возврат агрегатора)
+var FO_REASON_RU = { auto: 'авто', manual: 'вручную', agg: 'агрегатор' };
 
 function loadFailoverHistory() {
   api('/cgi-bin/manage.sh?action=failover&cmd=history', function(d){
@@ -1014,7 +1129,8 @@ function loadFailoverHistory() {
     d.items.slice(-10).reverse().forEach(function(it){
       var row = document.createElement('div');
       row.style.cssText = 'font-size:11px;padding:3px 0;border-bottom:1px solid #21262d;color:#c9d1d9;';
-      row.innerHTML = '<span style="color:#8b949e;">' + it.t + '</span> ' + it.from + ' → <b style="color:#58a6ff;">' + it.to + '</b> <span style="color:#8b949e;">(' + it.reason + ')</span>';
+      var _rs = FO_REASON_RU[it.reason] || it.reason;
+      row.innerHTML = '<span style="color:#8b949e;">' + it.t + '</span> ' + it.from + ' → <b style="color:#58a6ff;">' + it.to + '</b> <span style="color:#8b949e;">(' + _rs + ')</span>';
       el.appendChild(row);
     });
   }, 15000);
@@ -1155,6 +1271,9 @@ document.addEventListener('click', function(e) {
 });
 function setMobileView(on) {
   try { localStorage.setItem('kvas_mobile_view', on ? '1' : '0'); } catch(e) {}
+  // v687: дублируем на сервер (kvas.conf) — localStorage не переживает чистку кэша
+  // и смену origin, из-за чего мобильный вид «слетал» после обновлений.
+  api('/cgi-bin/manage.sh?action=uiconf&key=mobile_view&val=' + (on ? '1' : '0'), function(){});
   applyMobileView();
 }
 function applyMobileView() {
@@ -1165,6 +1284,17 @@ function applyMobileView() {
   if (chk) chk.checked = on;
 }
 applyMobileView();
+// v687: после загрузки сверяемся с сервером (kvas.conf) — источник истины.
+(function(){
+  api('/cgi-bin/manage.sh?action=uiconf&key=mobile_view', function(d){
+    if (!d || !d.ok || d.val === undefined || d.val === null) return;
+    var on = (d.val === '1');
+    try { localStorage.setItem('kvas_mobile_view', on ? '1' : '0'); } catch(e) {}
+    document.body.classList.toggle('mobile-view', on);
+    var chk = document.getElementById('mobileViewChk');
+    if (chk) chk.checked = on;
+  });
+})();
 
 /* ========== TAGS ========== */
 function loadTags() {
@@ -1438,6 +1568,10 @@ function loadSystemStatus() {
       document.getElementById('sysAwgService').textContent = awgSvc === 'running' ? 'работает' : (awgSvc === 'stopped' ? 'остановлена' : (awgSvc === 'not_installed' ? 'не установлена' : awgSvc));
       document.getElementById('sysAwgProfile').textContent = d.awg_profile ? ('профиль: ' + d.awg_profile) : '';
       svcSetBtn('svcAwgBtn', awgSvc);
+      // v684: строка «Служба DNSMasq» + кнопки Старт/Рестарт
+      var dnsSvc = d.dnsmasq || '-';
+      document.getElementById('sysDnsService').textContent = dnsSvc === 'running' ? 'работает' : (dnsSvc === 'stopped' ? 'остановлена' : (dnsSvc === 'not_installed' ? 'не установлена' : dnsSvc));
+      svcSetBtn('svcDnsBtn', dnsSvc);
       document.getElementById('sysTunnel').innerHTML = '<span style="color:#8b949e;">проверка...</span>';
       api('/cgi-bin/manage.sh?action=tunnel_check', function(t) {
         if (t.ok) {
@@ -1451,14 +1585,28 @@ function loadSystemStatus() {
             if (v === 'port') return warn + 'порт открыт, тоннель не проверен';
             return fail + 'не работает';
           }
-          if (mode === 'vless') {
-            var _aggBadge = '';
-            if (t.agg) _aggBadge = ' <span style="color:#8b949e;font-size:11px;">(' + (t.agg_active ? 'agg#' + t.agg_active : 'agg:manual') + ')</span>';
-            document.getElementById('sysTunnel').innerHTML = 'VLESS ' + tunnelState(t.vless) + _aggBadge;
+          if (t.agg) {
+            // v656: aggregator включён — показываем его как основной тоннель
+            // v663: + host активного сервера (какой IP реально работает)
+            // v686: бейдж НЕ зависит от mode — раньше при mode!=vless (failover увёл
+            // тоннель на hysteria/awg, а агрегатор остался ENABLED=1) строка
+            // показывала чужой протокол без намёка на рассинхрон (жалоба 1)
+            var _aggNum = t.agg_active ? ('#' + t.agg_active) : '';
+            var _aggHost = t.agg_host ? (' · ' + t.agg_host) : '';
+            var _aggTxt = '<b style="color:#58a6ff;">Aggregator</b> ' + tunnelState(t.vless) +
+              ' <span style="color:#8b949e;font-size:11px;">(VLESS' + (_aggNum ? ' ' + _aggNum : ' manual') + _aggHost + ')</span>';
+            if (mode !== 'vless') {
+              var _curTun = (mode === 'hysteria') ? 'Hysteria' : (t.other_desc || mode || '?');
+              _aggTxt += ' <span style="color:#d29922;">· тоннель: ' + _curTun + ' ⚠</span>';
+            }
+            document.getElementById('sysTunnel').innerHTML = _aggTxt;
+          } else if (mode === 'vless') {
+            document.getElementById('sysTunnel').innerHTML = 'VLESS ' + tunnelState(t.vless);
           } else if (mode === 'hysteria') {
             document.getElementById('sysTunnel').innerHTML = 'Hysteria ' + tunnelState(t.hysteria);
           } else if (t.other_desc) {
-            document.getElementById('sysTunnel').innerHTML = t.other_desc + ' ' + (t.other ? ok + 'работает' : fail + 'не работает');
+            // v642: other теперь "true"|"port"|"false" — как vless/hysteria
+            document.getElementById('sysTunnel').innerHTML = t.other_desc + ' ' + tunnelState(t.other);
           } else {
             document.getElementById('sysTunnel').innerHTML = mode + ' ' + fail + 'не работает';
           }
@@ -1724,13 +1872,82 @@ function loadHosts() {
     d.hosts.forEach(function(h){
       var div = document.createElement('div');
       div.className = 'host-item';
-      div.innerHTML = '<span>' + h + '</span><span class="del" onclick="hostDel(\'' + h.replace(/'/g,"\\'") + '\')">✕</span>';
+      /* v688: строка = чекбокс + домен (saveHosts читает span:first-child —
+         обёртка сохраняет текст домена, чекбокс текста не даёт) */
+      div.setAttribute('data-host', h);
+      div.innerHTML = '<span style="display:flex;align-items:center;gap:6px;min-width:0;">'
+        + '<input type="checkbox" class="hchk" style="accent-color:#58a6ff;" onchange="hostChkUpdate()">'
+        + '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + h + '</span></span>'
+        + '<span class="del" onclick="hostDel(\'' + h.replace(/'/g,"\\'") + '\')">✕</span>';
       el.appendChild(div);
     });
+    var allc = document.getElementById('hostAllChk');
+    if (allc) allc.checked = false;
+    hostChkUpdate();
   });
 }
 
 var allHosts = [];
+
+/* v688: чекбоксы — выделение и кнопка «Удалить выбранные (N)» */
+function hostChkUpdate() {
+  var n = document.querySelectorAll('#hostList .host-item .hchk:checked').length;
+  var btn = document.getElementById('hostDelSelBtn');
+  if (btn) { btn.disabled = (n === 0); btn.textContent = 'Удалить выбранные (' + n + ')'; }
+}
+function hostSelAll(on) {
+  document.querySelectorAll('#hostList .host-item .hchk').forEach(function(c) {
+    c.checked = !!on;
+    var it = c.closest('.host-item');
+    if (it) it.style.opacity = on ? '0.65' : '';
+  });
+  hostChkUpdate();
+}
+function hostDelSel(btn) {
+  var sel = [];
+  document.querySelectorAll('#hostList .host-item').forEach(function(it) {
+    var c = it.querySelector('.hchk');
+    if (c && c.checked) {
+      var h = it.getAttribute('data-host');
+      if (h) sel.push(h);
+    }
+  });
+  if (!sel.length) { hostChkUpdate(); return; }
+  if (!confirm('Удалить ' + sel.length + ' домен(ов) из списка?')) return;
+  loadingBtn(btn, true);
+  showProgress(0, 'Удаление ' + sel.length + ' доменов...');
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/cgi-bin/manage.sh?action=host_del_multi&token=' + AUTH_TOKEN, true);
+  xhr.setRequestHeader('Content-Type', 'text/plain');
+  xhr.timeout = 120000;
+  xhr.onload = function() {
+    loadingBtn(btn, false);
+    hideProgress();
+    var d = null; try { d = JSON.parse(xhr.responseText); } catch (e) {}
+    var el = document.getElementById('hostMsg');
+    if (d && d.ok) {
+      if (el) { el.className = 'msg ok'; el.textContent = d.msg || ('Удалено: ' + sel.length); }
+      consoleLog('host_del_multi removed ' + sel.length + ' hosts');
+      loadHosts(); loadSystemStatus();
+    } else {
+      if (el) { el.className = 'msg err'; el.textContent = (d && d.error) || ('Ошибка удаления: ' + xhr.responseText); }
+      hostChkUpdate();
+    }
+  };
+  xhr.onerror = function() {
+    loadingBtn(btn, false); hideProgress();
+    var el = document.getElementById('hostMsg');
+    if (el) { el.className = 'msg err'; el.textContent = 'Ошибка сети'; }
+    hostChkUpdate();
+  };
+  xhr.ontimeout = function() {
+    loadingBtn(btn, false); hideProgress();
+    var el = document.getElementById('hostMsg');
+    if (el) { el.className = 'msg err'; el.textContent = 'Таймаут удаления'; }
+    hostChkUpdate();
+  };
+  xhr.send(sel.join('\n'));
+}
 
 function filterHosts() {
   var query = document.getElementById('hostSearch').value.toLowerCase();
@@ -1977,33 +2194,124 @@ function aggMsg(d){
   if (d && d.ok) { e.className = 'msg ok'; e.textContent = d.msg || 'OK'; }
   else { e.className = 'msg err'; e.textContent = (d && (d.error || d.msg)) || 'error'; }
 }
+function aggFmtTs(ts){
+  /* v689: дата+время вместо одного HH:MM — иначе непонятно, от КАКОГО числа
+     отметка (вчерашний tcp не отличить от сегодняшнего живого) */
+  if (!ts) return '';
+  try {
+    var d = new Date(ts * 1000), n = new Date();
+    var hm = ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+    var dm = ('0'+(d.getMonth()+1)).slice(-2)+'.'+('0'+d.getDate()).slice(-2);
+    if (d.getFullYear() !== n.getFullYear()) return dm + '.' + String(d.getFullYear()).slice(2) + ' ' + hm;
+    return dm + ' ' + hm;
+  } catch(e) { return ''; }
+}
+function aggSbErrText(code){
+  if (!code) return '';
+  if (code === 'no_spare') return 'нет запасных серверов (только активный)';
+  if (code === 'no_tcp_tool') return 'нет nc/curl для TCP-проверки';
+  if (code === 'all_failed') return 'кандидаты не отвечают';
+  if (code === 'no_deep_tool') return 'нет xray/curl для deep-проверки';
+  if (code.indexOf('deep_failed#') === 0) return 'VLESS-тест кандидата #' + code.substring(12) + ' не прошёл';
+  return code;
+}
 function loadAgg(){
   api('/cgi-bin/manage.sh?action=agg_status', function(d){
     var info = document.getElementById('aggInfo');
     var pool = document.getElementById('aggPool');
     if (!d || !d.ok) { if (info) info.textContent = '-'; return; }
+    /* v671: кнопки Вкл/Выкл отражают состояние (Включить больше не горит зелёным при ON) */
+    var onB = document.getElementById('aggOnBtn'), offB = document.getElementById('aggOffBtn');
+    if (onB && offB) {
+      if (d.enabled) {
+        onB.classList.remove('success'); onB.disabled = true;
+        onB.title = 'Агрегатор уже включён';
+        offB.disabled = false;
+      } else {
+        onB.classList.add('success'); onB.disabled = false;
+        onB.title = 'Включить';
+        offB.disabled = true;
+      }
+    }
     var act = d.active ? ('#' + d.active) : 'manual';
+    // v663: host активного сервера в инфо-строке — «какой IP работает» видно сразу
+    var actHost = '';
+    (d.links || []).forEach(function(e){ if (e.active && e.host) actHost = e.host; });
+    if (d.active && actHost) act = '#' + d.active + ' (' + actHost + ')';
+    window._aggDead = (d.dead || []).length;
+    window._aggTotal = d.total || 0;
+    /* v689: честные счётчики — «живых ~total-dead» врал (это непроверенные);
+       подтверждённый живой = не dead и есть метка ALIVE */
+    var vAlive = 0, vUntr = 0, vDead = 0;
+    (d.links || []).forEach(function(e){
+      if (e.dead) vDead++;
+      else if (e.alive) vAlive++;
+      else vUntr++;
+    });
+    var scr;
+    if (!d.sb_last) scr = 'скрининг: ещё не запускался';
+    else scr = 'скрининг ' + aggFmtTs(d.sb_last) + (aggSbErrText(d.sb_err) ? ' — ' + aggSbErrText(d.sb_err) : ' — ok');
     if (info) info.textContent = (d.enabled ? 'ON' : 'OFF') + ', active ' + act +
-      ', pool ' + d.total + ', dead ' + (d.dead || []).length +
-      ', manual ' + (d.has_manual ? 'saved' : 'missing');
+      ', pool ' + d.total + ' · живых подтв. ' + vAlive + ', без проверки ' + vUntr + ', dead ' + vDead +
+      (d.standby ? (', standby #' + d.standby + (d.standby2 ? '/#' + d.standby2 : '')) : ', standby —') +
+      ', manual ' + (d.has_manual ? 'saved' : 'missing') +
+      /* v664: результат последней пробы — «агент видит живой» vs «сайты не грузятся» */
+      (d.probe_ts ? (' · проба ' + aggFmtTs(d.probe_ts) + (d.probe_ok ? (' ok (' + (d.probe_src || '?') + ')') : ' FAIL')) : '') +
+      ' · ' + scr +
+      /* v689: последняя ошибка теста (дата+время+причина) + когда подписка
+         обновится в следующий раз (6-часовой цикл — вместо молчания) */
+      (d.lasterr ? (' · последняя ошибка: ' + d.lasterr) : '') +
+      ((d.sub_set && d.sub_updated) ? (' · подписка: след. обновление ' + aggFmtTs(d.sub_updated + 21600)) : '') +
+      /* v661: кто держит лок и сколько — вместо «чёрной коробки» busy */
+      (d.locked ? ' · ЗАНЯТО: ' + (d.lock_tag || 'run') + ' (' + (d.lock_age || 0) + 'с назад)' : '');
     var h = '';
     (d.links || []).forEach(function(e){
-      var col = e.dead ? '#f85149' : (e.active ? '#3fb950' : '#c9d1d9');
-      var tags = (e.active ? ' [active]' : '') + (e.dead ? ' [dead]' : '') + (e.fails ? ' [' + e.fails + '/3]' : '');
+      var isSb = (e.n === d.standby || e.n === d.standby2);
+      var col = e.dead ? '#f85149' : (e.active ? '#3fb950' : (isSb ? '#d29922' : '#c9d1d9'));
+      var tags = (e.active ? ' [active]' : '') +
+        /* v689: dead с датой пометки (раньше [dead] вообще без времени) */
+        (e.dead ? (' [dead' + (e.dead_ts ? ' ' + aggFmtTs(e.dead_ts) : '') + ']') : '') +
+        (isSb ? ' [standby✓]' : '')
+        + (e.fails ? ' [' + e.fails + '/3]' : '')
+        + (e.tcp ? ' [tcp ' + aggFmtTs(e.tcp) + ']' : '')
+        /* v672: метка живости — когда сервер последний раз ПОДТВЕРЖДЁН живым
+           (полный тест/проба); раньше живые серверы ничем не отмечались —
+           «сканирование не показало что он жив» */
+        + (e.alive ? ' [✓ жив ' + aggFmtTs(e.alive) + ']' : '');
       h += '<div class="card-row" style="gap:6px;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #21262d;">'
         + '<span style="font-size:12px;color:' + col + ';min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">#' + e.n + ' ' + e.host + tags + '</span>'
         + '<span style="display:flex;gap:4px;flex:0 0 auto;">'
+        + '<button class="btn btn-sm" onclick="aggCheck(' + e.n + ',this)" title="Полный тест этого сервера (~15-30с)">✓</button>'
         + '<button class="btn btn-sm" onclick="aggSet(' + e.n + ',this)" title="Switch to this server">Вкл</button>'
         + '<button class="btn btn-sm danger" onclick="aggDel(' + e.n + ',this)" title="Remove from pool">X</button>'
         + '</span></div>';
     });
     if (pool) pool.innerHTML = h || '<div style="color:#8b949e;font-size:12px;">Пул пуст - добавьте vless:// ссылку ниже</div>';
+    /* v680: состояние подписки (хост, время обновления, сколько живых на руках) */
+    var subi = document.getElementById('aggSubInfo');
+    if (subi) {
+      if (d.sub_set) {
+        subi.textContent = 'Подписка: ' + (d.sub_host || '?') +
+          (d.sub_updated ? (' · обновлено ' + aggFmtTs(d.sub_updated)) : ' · ещё не обновлялась') +
+          (d.sub_alive ? (' · живых из подписки: ' + d.sub_alive + '/5') : '') +
+          /* v688: результат последнего автообновления — ok:N / fail:curl / fail:empty */
+          (d.sub_res ? (' · ' + (d.sub_res.indexOf('ok:') === 0 ? ('получено ' + d.sub_res.substring(3)) : ('ошибка: ' + (d.sub_res === 'fail:curl' ? 'подписка недоступна' : 'пустой список')))) : '');
+      } else {
+        subi.textContent = 'Подписка не задана (поле выше — только для ссылки на список, автообновление раз в 6 ч)';
+      }
+    }
+    var subInp = document.getElementById('aggSub');
+    if (subInp && d.sub_set && document.activeElement !== subInp && !subInp.value) {
+      subInp.placeholder = 'https://' + (d.sub_host || 'подписка') + ' сохранена — введите новый URL для замены';
+    }
   });
 }
 function aggAct(a, btn){
 apiBtn('/cgi-bin/manage.sh?action=agg_' + a, btn, function(d){
 aggMsg(d); loadAgg();
 if (a === 'on' || a === 'check') setTimeout(loadAgg, 35000);
+/* v688: операция продолжается в фоне — показать реальный результат через 15с */
+aggLogInto(15000);
 });
 }
 function aggAdd(btn){
@@ -2016,16 +2324,149 @@ function aggAdd(btn){
     loadAgg();
   }, 120000);
 }
+/* v652: bulk import from .txt file (one vless:// per line) */
+function aggAddFile(){
+  var inp = document.getElementById('aggFile');
+  var sel = document.getElementById('aggFileSel');
+  if (!inp || !inp.files || !inp.files[0]) { aggMsg({error: 'Выберите .txt файл'}); return; }
+  var f = inp.files[0];
+  if (sel) sel.textContent = f.name + ' (' + Math.round(f.size/1024) + ' KB)';
+  var fd = new FormData();
+  fd.append('file', f);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/cgi-bin/manage.sh?action=agg_addfile&token=' + AUTH_TOKEN, true);
+  xhr.timeout = 120000;
+  xhr.onload = function(){
+    var d = null; try { d = JSON.parse(xhr.responseText); } catch(e){}
+    aggMsg(d || {error: 'parse error'});
+    if (d && d.ok) { inp.value = ''; if (sel) sel.textContent = ''; }
+    loadAgg();
+  };
+  xhr.onerror = function(){ aggMsg({error: 'upload failed'}); };
+  xhr.ontimeout = function(){ aggMsg({error: 'timeout'}); };
+  xhr.send(fd);
+}
+/* v680: сохранить/очистить URL подписки (пустое поле — отключить) */
+function aggSubSave(btn){
+  var inp = document.getElementById('aggSub');
+  var v = inp ? inp.value.trim() : '';
+  apiBtn('/cgi-bin/manage.sh?action=agg_sub&url=' + encodeURIComponent(v), btn, function(d){
+    aggMsg(d);
+    if (d && d.ok && inp) inp.value = '';
+    loadAgg();
+  });
+}
+/* v680: fetch из подписки прямо сейчас + отбор 5 живых (фон, ждём статус) */
+function aggSubFetch(btn){
+  apiBtn('/cgi-bin/manage.sh?action=agg_subfetch', btn, function(d){
+    aggMsg(d);
+    setTimeout(loadAgg, 45000);
+    /* v688: отбор живых продолжается в фоне — показать реальный результат (лог) */
+    aggLogInto(20000);
+  }, 60000);
+}
+document.addEventListener('DOMContentLoaded', function(){
+  var fi = document.getElementById('aggFile');
+  if (fi) fi.addEventListener('change', function(){
+    if (this.files && this.files[0]) {
+      var sel = document.getElementById('aggFileSel');
+      if (sel) sel.textContent = this.files[0].name;
+      aggAddFile();
+    }
+  });
+});
 function aggDel(n, btn){
   if (!confirm('Удалить #' + n + ' из пула?')) return;
   apiBtn('/cgi-bin/manage.sh?action=agg_del&n=' + n, btn, function(d){
     aggMsg(d); loadAgg();
+    /* v660: del активного идёт в фоне (agg_scan) — опрос вместо мгновенной перезагрузки */
+    setTimeout(loadAgg, 8000); setTimeout(loadAgg, 16000);
+    aggLogInto(15000);
+  }, 240000);
+}
+/* v659: bulk-remove all dead servers at once */
+function aggPurge(btn){
+  var n = window._aggDead || 0;
+  if (!n) { aggMsg({error: 'Нет мёртвых серверов в пуле'}); return; }
+  if (!confirm('Удалить мёртвые серверы из пула (' + n + ' шт)?')) return;
+  /* v661: purge в фоне + ожидание лока — опрашиваем дольше */
+  apiBtn('/cgi-bin/manage.sh?action=agg_purge', btn, function(d){
+    aggMsg(d); loadAgg();
+    setTimeout(loadAgg, 6000); setTimeout(loadAgg, 12000); setTimeout(loadAgg, 25000);
+    aggLogInto(15000);
+  }, 240000);
+}
+/* v689: полная очистка пула — ВСЕ ссылки и метки; Вкл/Выкл и подписку не трогаем */
+function aggClear(btn){
+  var n = window._aggTotal || 0;
+  if (!n) { aggMsg({error: 'Пул уже пуст'}); return; }
+  if (!confirm('Удалить ВСЕ ссылки из пула агрегатора (' + n + ' шт)? Метки удаляются тоже. Вкл/Выкл и подписка не затрагиваются.')) return;
+  apiBtn('/cgi-bin/manage.sh?action=agg_clear', btn, function(d){
+    aggMsg(d); loadAgg();
+    setTimeout(loadAgg, 6000); setTimeout(loadAgg, 12000);
+    aggLogInto(15000);
   }, 240000);
 }
 function aggSet(n, btn){
   apiBtn('/cgi-bin/manage.sh?action=agg_set&n=' + n, btn, function(d){
     aggMsg(d); loadAgg();
+    /* v660: switch = apply в фоне (~15-25с) — опрашиваем статус */
+    setTimeout(loadAgg, 6000); setTimeout(loadAgg, 12000); setTimeout(loadAgg, 20000);
+    /* v688: apply идёт в фоне — через 18с показать реальный результат (лог) */
+    aggLogInto(18000);
   }, 240000);
+}
+/* v661: ручной полный тест одного сервера (кнопка ✓ в строке пула) */
+function aggCheck(n, btn){
+  apiBtn('/cgi-bin/manage.sh?action=agg_check&n=' + n, btn, function(d){
+    aggMsg(d); loadAgg();
+    setTimeout(loadAgg, 10000); setTimeout(loadAgg, 20000); setTimeout(loadAgg, 32000);
+    aggLogInto(20000);
+  }, 240000);
+}
+/* v664: полная проверка пула (~3 мин бюджет, продолжается нажатием) */
+function aggCheckAll(btn){
+  apiBtn('/cgi-bin/manage.sh?action=agg_check&all=1', btn, function(d){
+    aggMsg(d); loadAgg();
+    setTimeout(loadAgg, 20000); setTimeout(loadAgg, 45000); setTimeout(loadAgg, 80000); setTimeout(loadAgg, 120000);
+    aggLogInto(30000);
+  }, 240000);
+}
+/* v664: снимок процессов — кто ест CPU */
+function sysTop(btn){
+  var el = document.getElementById('logOutput');
+  if (!el) return;
+  el.innerHTML = '<span style="color:#8b949e;">Загрузка...</span>';
+  api('/cgi-bin/manage.sh?action=sys_top', function(d){
+    if (d && d.ok) {
+      el.textContent = 'Load average: ' + (d.load || '?') + '\n\n' + (d.top || '(пусто)');
+    } else {
+      el.textContent = 'Ошибка: ' + ((d && d.error) || 'нет данных');
+    }
+  });
+}
+/* v661: показать последний лог действий агрегатора (что реально произошло в фоне) */
+function aggLog(btn){
+  apiBtn('/cgi-bin/manage.sh?action=agg_log', btn, function(d){
+    if (!d || !d.ok) { aggMsg({error: (d && d.error) || 'нет лога'}); return; }
+    var e = document.getElementById('aggMsg');
+    if (!e) return;
+    e.className = 'msg';
+    /* v671: .msg по умолчанию display:none — без явного block лог был невидим */
+    e.style.display = 'block';
+    e.style.whiteSpace = 'pre-wrap';
+    e.style.textAlign = 'left';
+    e.style.fontSize = '11px';
+    e.style.background = '#0d1117';
+    e.style.border = '1px solid #30363d';
+    e.style.color = '#c9d1d9';
+    e.textContent = d.log || '(лог пуст)';
+  }, 30000);
+}
+/* v688: реальный результат ФОНОВОЙ операции — через delay показываем лог
+   действий агрегатора (что реально произошло, а не «запущено») */
+function aggLogInto(delay) {
+  setTimeout(function(){ aggLog(null); }, delay || 15000);
 }
 
 /* ========== FAILOVER ========== */
@@ -2320,8 +2761,13 @@ function clearKvasLog(btn) {
 function loadEntware() {
   api('/cgi-bin/manage.sh?action=opkg&cmd=mirror_status', function(d){
     if (!d.ok) return;
-    var m = {nju:'зеркало nju', official:'официальный', custom:'другой'};
-    document.getElementById('ewMirror').textContent = (m[d.mirror] || d.mirror || '-') + (d.src ? ' (' + d.src + ')' : '');
+  var m = {nju:'зеркало nju', official:'официальный', custom:'другой'};
+  document.getElementById('ewMirror').textContent = (m[d.mirror] || d.mirror || '-') + (d.src ? ' (' + d.src + ')' : '');
+  // v687: opkg читает src/gz из opkg.conf И opkg.d/*.conf — если зеркала смешаны,
+  // opkg ходит на официальный (он приоритетнее) и зеркало «слетает».
+  if (d.nju === true && d.official === true) {
+    document.getElementById('ewMirror').innerHTML = '<span style="color:#d29922;">конфликт: зеркало nju + официальный в opkg.d — нажмите «Зеркало nju», чтобы убрать</span>';
+  }
     var lk = document.getElementById('ewLock');
     if (d.lock === 'busy') { lk.innerHTML = '<span style="color:#f85149;">занят (pid: ' + (d.lock_pids || '?') + ')</span>'; }
     else { lk.innerHTML = '<span style="color:#3fb950;">свободен</span>'; }
@@ -3744,7 +4190,7 @@ function loadList2() {
     var ifc = document.getElementById('l2Iface');
     if (!d.ok) { if (st) st.textContent = d.error || 'нет связи'; return; }
     var avail = (d.available || 'current').split(/\s+/).filter(Boolean);
-    var labels = { current: 'текущий', vless: 'vless', hysteria: 'hysteria', awg: 'AmneziaWG' };
+    var labels = { current: 'текущий', vless: 'vless', hysteria: 'hysteria', awg: 'AmneziaWG', aggregator: 'Aggregator VLESS' };
     sel.innerHTML = '';
     avail.forEach(function(t) {
       var o = document.createElement('option');
@@ -3754,7 +4200,11 @@ function loadList2() {
       sel.appendChild(o);
     });
     if (ifc) ifc.textContent = (d.iface || '—') + (d.iface_up === 'yes' ? ' (поднят)' : ' (недоступен)');
-    if (st) st.textContent = 'метка 0xd1001 → таблица ' + (d.table || '201') + ', записей: ' + d.entries;
+    // v670: состояние вкл/выкл + кнопка переключения
+    var en = d.enabled !== 'no';
+    var tb = document.getElementById('l2ToggleBtn');
+    if (tb) { tb.setAttribute('data-state', en ? 'yes' : 'no'); tb.textContent = en ? 'Выключить' : 'Включить'; }
+    if (st) st.textContent = (en ? '' : 'Список 2 ВЫКЛЮЧЕН • ') + 'метка 0xd1001 → таблица ' + (d.table || '201') + ', записей: ' + d.entries;
   });
   api('/cgi-bin/manage.sh?action=list2_list', function(d) {
     fin();
@@ -3830,6 +4280,22 @@ function list2Tunnel(sel) {
   }, 30000);
 }
 
+// v670: вкл/выкл Списка 2 (снятие/восстановление перехвата полосы)
+function list2Toggle(btn) {
+  var st = btn && btn.getAttribute ? btn.getAttribute('data-state') : 'yes';
+  var to = (st === 'no') ? 'on' : 'off';
+  var el = document.getElementById('l2Msg');
+  el.className = '';
+  el.innerHTML = '<span style="color:#8b949e;">' + (to === 'on' ? 'Включение' : 'Выключение') + ' Списка 2...</span>';
+  if (btn) loadingBtn(btn, true);
+  api('/cgi-bin/manage.sh?action=list2_set&state=' + to, function(d) {
+    if (btn) loadingBtn(btn, false);
+    if (d.ok) { el.className = 'msg ok'; el.textContent = d.msg || 'Готово'; }
+    else { el.className = 'msg err'; el.textContent = d.error || 'Ошибка'; }
+    loadList2();
+  }, 30000);
+}
+
 function routeAdd() {
   var ip = document.getElementById('routeIp').value.trim();
   var type = document.getElementById('routeType').value;
@@ -3869,8 +4335,19 @@ function routeDel() {
 function routeGuestAdd() {
   var net = document.getElementById('routeGuestNet').value;
   if (!net) { alert('Выберите гостевую сеть'); return; }
+  var el = document.getElementById('routeGuestMsg');
+  el.className = '';
+  el.innerHTML = '<span style="color:#8b949e;">Добавление гостевой сети...</span>';
+  // v670: рестарт DNS + route refresh идут в фоне (паттерн vpnProgress) —
+  // раньше синхронный CGI обрывался по таймауту и сеть не применялась
   api('/cgi-bin/manage.sh?action=route_guest_add&net=' + encodeURIComponent(net), function(d) {
-    var el = document.getElementById('routeGuestMsg');
+    if (d.ok && d.pending) {
+      // v670: vpnPoll сам рендерит успех/ошибку в msgEl — done только перечитывает списки
+      vpnPoll(d.task, 0, null, 'Добавление гостевой сети', { msgEl: 'routeGuestMsg', done: function() {
+        loadRouteLists();
+      }});
+      return;
+    }
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.msg || 'Сеть добавлена';
@@ -3885,8 +4362,17 @@ function routeGuestAdd() {
 function routeGuestDel() {
   var net = document.getElementById('routeGuestNet').value;
   if (!net) { alert('Выберите гостевую сеть'); return; }
+  var el = document.getElementById('routeGuestMsg');
+  el.className = '';
+  el.innerHTML = '<span style="color:#8b949e;">Удаление гостевой сети...</span>';
   api('/cgi-bin/manage.sh?action=route_guest_del&net=' + encodeURIComponent(net), function(d) {
-    var el = document.getElementById('routeGuestMsg');
+    if (d.ok && d.pending) {
+      // v670: vpnPoll сам рендерит успех/ошибку в msgEl — done только перечитывает списки
+      vpnPoll(d.task, 0, null, 'Удаление гостевой сети', { msgEl: 'routeGuestMsg', done: function() {
+        loadRouteLists();
+      }});
+      return;
+    }
     if (d.ok) {
       el.className = 'msg ok';
       el.textContent = d.msg || 'Сеть удалена';

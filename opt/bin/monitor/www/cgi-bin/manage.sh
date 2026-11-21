@@ -416,13 +416,29 @@ main() {
 				fi
 			fi
 			[ "$ag_http" = "false" ] && pidof AdGuardHome >/dev/null 2>&1 && ag_http="true"
-			# dnsmasq: init.d alive + something listens on :53 (real, not external resolve)
+			# dnsmasq (v684): жив по init + слушает ПОРТ КОНФИГА (9753) — :53 держит
+			# ndnproxy (REDIRECT KVAS_DNS), старая проверка ':53 ' давала ложный OK
 			dns_alive=$(check_service S56dnsmasq)
 			dns_resolve="false"
+			_dns_p=$(sed -n 's/^port=//p' /opt/etc/dnsmasq.conf 2>/dev/null | head -1 | tr -cd '0-9')
+			[ -z "$_dns_p" ] && _dns_p=9753
+			dns_port="$_dns_p"
 			if pidof dnsmasq >/dev/null 2>&1; then
-				command -v ss >/dev/null 2>&1 && ss -ulnp 2>/dev/null | grep -q ':53 ' && dns_resolve="true"
-				[ "$dns_resolve" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -ulnp 2>/dev/null | grep -q ':53 ' && dns_resolve="true"
-				[ "$dns_resolve" = "false" ] && dns_resolve="true"
+				command -v ss >/dev/null 2>&1 && ss -lnp 2>/dev/null | grep -q ":${_dns_p} " && dns_resolve="true"
+				[ "$dns_resolve" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -lnp 2>/dev/null | grep -q ":${_dns_p} " && dns_resolve="true"
+			fi
+			# v684: кто держит порт и последняя причина падения — для кнопки в Web UI
+			dns_holder=""
+			if [ "$dns_resolve" = "false" ]; then
+				dns_holder=$(netstat -lnp 2>/dev/null | grep ":${_dns_p} " | head -1 | sed -n 's|.*[[:space:]][0-9]*/\(.*\)$|\1|p')
+				[ -z "$dns_holder" ] && command -v ss >/dev/null 2>&1 && dns_holder=$(ss -lnp 2>/dev/null | grep ":${_dns_p} " | head -1 | sed -n 's|.*("\([^"]*\)".*|\1|p')
+			fi
+			# v685: причину падения отдаём ТОЛЬКО когда dnsmasq реально не здоров
+			# (не слушает порт) — иначе чип «работает» соседствует с протухшей
+			# причиной от прошлого сбоя, пережившей успешный рестарт
+			dns_lasterr=""
+			if [ "$dns_resolve" != "true" ]; then
+				[ -s /opt/var/kvas/dnsmasq.lasterr ] && dns_lasterr=$(head -c 300 /opt/var/kvas/dnsmasq.lasterr | sed 's/\\/\\\\/g; s/"/\\"/g')
 			fi
 			# Adblock config (conf only)
 			adblock_conf="false"
@@ -430,13 +446,41 @@ main() {
 			# Failover: mode + daemon PID + last check (kill -0 is real liveness)
 			fo_mode=$(get_failover_mode); [ -z "$fo_mode" ] && fo_mode="manual"
 			fo_daemon=$(check_failover_daemon)
-			printf '{"ok":true,"vpn_proc":"%s","vpn_port":"%s","ag_conf":"%s","ag_http":"%s","ag_port":"%s","dns_alive":"%s","dns_resolve":"%s","adblock":"%s","fo_mode":"%s","fo_daemon":"%s"}\n' \
-				"$vpn_proc" "$vpn_port" "$ag_conf" "$ag_http" "$ag_port" "$dns_alive" "$dns_resolve" "$adblock_conf" "$fo_mode" "$fo_daemon"
+			# v657: Aggregator state
+			agg_enabled="false"
+			agg_active=0
+			agg_total=0
+			agg_dead=0
+			agg_standby=0
+			if [ -f /opt/var/kvas/aggregator.state ]; then
+				[ "$(sed -n 's/^ENABLED=//p' /opt/var/kvas/aggregator.state 2>/dev/null | head -1)" = "1" ] && agg_enabled="true"
+				agg_active=$(sed -n 's/^ACTIVE=//p' /opt/var/kvas/aggregator.state 2>/dev/null | head -1)
+				case "$agg_active" in ''|*[!0-9]*) agg_active=0 ;; esac
+				# v659: warm standby slot (проверенный TCP-скринингом кандидат)
+				agg_standby=$(sed -n 's/^STANDBY=//p' /opt/var/kvas/aggregator.state 2>/dev/null | head -1)
+				case "$agg_standby" in ''|*[!0-9]*) agg_standby=0 ;; esac
+			fi
+			if [ -s /opt/etc/kvas.aggregator ]; then
+				# v659: grep -c при 0 совпадений печатает 0 и exit 1 -> старый "|| echo 0"
+				# давал "0\n0" в JSON (валидный ответ ломался, мертвы все чипы)
+				agg_total=$(grep -c '^vless://' /opt/etc/kvas.aggregator 2>/dev/null || true)
+				agg_dead=$(grep -c '^DEAD_.*=[^0]' /opt/var/kvas/aggregator.state 2>/dev/null || true)
+				case "$agg_total" in ''|*[!0-9]*) agg_total=0 ;; esac
+				case "$agg_dead" in ''|*[!0-9]*) agg_dead=0 ;; esac
+			fi
+			# валидация standby против пула/dead
+			[ "${agg_standby}" -gt "${agg_total}" ] 2>/dev/null && agg_standby=0
+			if [ "${agg_standby}" != "0" ]; then
+				_agg_sbd=$(sed -n "s/^DEAD_${agg_standby}=//p" /opt/var/kvas/aggregator.state 2>/dev/null | head -1)
+				[ -n "${_agg_sbd}" ] && [ "${_agg_sbd}" != "0" ] && agg_standby=0
+			fi
+			printf '{"ok":true,"vpn_proc":"%s","vpn_port":"%s","ag_conf":"%s","ag_http":"%s","ag_port":"%s","dns_alive":"%s","dns_resolve":"%s","dns_port":"%s","dns_holder":"%s","dns_lasterr":"%s","adblock":"%s","fo_mode":"%s","fo_daemon":"%s","agg_enabled":"%s","agg_active":%s,"agg_total":%s,"agg_dead":%s,"agg_standby":%s}\n' \
+				"$vpn_proc" "$vpn_port" "$ag_conf" "$ag_http" "$ag_port" "$dns_alive" "$dns_resolve" "$dns_port" "$dns_holder" "$dns_lasterr" "$adblock_conf" "$fo_mode" "$fo_daemon" "$agg_enabled" "$agg_active" "$agg_total" "$agg_dead" "$agg_standby"
 			;;
 		hosts)
 			check_token "$token"
 			[ ! -f "$KVAS_LIST" ] && echo '{"ok":true,"hosts":[]}' && return
-			sed 's/\\/\\\\/g; s/"/\\"/g' "$KVAS_LIST" | awk 'BEGIN{printf "{\"ok\":true,\"hosts\":["; f=1} {gsub(/\r/,""); if($0=="")next; if(!f)printf ","; f=0; printf "\"%s\"",$0} END{printf "]}"}'
+			tr -d '\000-\011\013-\037\177' < "$KVAS_LIST" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN{printf "{\"ok\":true,\"hosts\":["; f=1} {gsub(/\r/,""); if($0=="")next; if(!f)printf ","; f=0; printf "\"%s\"",$0} END{printf "]}"}'
 			;;
 		host_add)
 			check_token "$token"
@@ -445,8 +489,17 @@ main() {
 			[ -z "$domain" ] && json_error "domain required"
 			out=$($KVAS_BIN add "$domain" 2>&1)
 			rc=$?
-			[ $rc -ne 0 ] && json_error "add failed: $out"
-			json_ok "added $domain"
+			# v647: CLI пишет «Такой домен уже есть в защищенном списке!» (warning,
+			# зелёный) или «УЖЕ ЕСТЬ В СПИСКЕ» (when_alert) — ищем без учёта регистра
+			if echo "$out" | grep -qiE 'уже есть|УЖЕ ЕСТЬ'; then
+				json_ok "$domain already exists"
+			elif [ $rc -ne 0 ]; then
+				json_error "add failed: $out"
+			elif echo "$out" | grep -qE 'НЕ ДОБАВЛЕН|ОШИБКА|error'; then
+				json_error "add failed: $out"
+			else
+				json_ok "added $domain"
+			fi
 			;;
 		host_del)
 			check_token "$token"
@@ -456,9 +509,53 @@ main() {
 			out=$($KVAS_BIN del "$domain" 2>&1)
 			rc=$?
 			[ $rc -ne 0 ] && json_error "del failed: $out"
-			# Rebuild ipset and restart services
-			init_out=$($KVAS_BIN init 2>&1)
-			json_ok "removed $domain (ipset updated)"
+			# v645: вместо полного kvas init — лёгкий refresh dnsmasq + HUP.
+			# Полный init при удалении одного домена из веб = десятки секунд ожидания.
+			# ipset-правила обновятся при следующем init / cron / рефреше.
+			/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+			# фон: снять conntrack-записи по удалённому домену (если был статик IP)
+			(
+				_ip=$(printf '%s' "$domain" | sed -n -E 's|^(https?://)?([^/:]+).*|\2|p' | head -1)
+				if echo "$_ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+					conntrack -D --dst "$_ip" 2>/dev/null || true
+				fi
+				/opt/apps/kvas/bin/main/ipset &>/dev/null
+			) &
+			json_ok "removed $domain"
+			;;
+		host_del_multi)
+			# v688: массовое удаление — чекбоксы в списке доменов; тело POST:
+			# домены по \n (как uploadHosts/host_import). Один вызов kvas del на
+			# весь список (CLI принимает несколько аргументов) — один фоновый
+			# ipset/dnsmasq-рефреш вместо N-кратных, как в host_del.
+			check_token "$token"
+			_body="${KVAS_POST_BODY:-}"
+			[ -z "$_body" ] && json_error "no POST body"
+			[ -s "$_body" ] || json_error "empty body"
+			_out=$(
+				# subshell: set -- не трогает позиционные параметры manage.sh
+				set --
+				while IFS= read -r _d || [ -n "${_d}" ]; do
+					_d=$(printf '%s' "$_d" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+					[ -n "${_d}" ] || continue
+					set -- "$@" "${_d}"
+				done < "${_body}"
+				[ $# -gt 0 ] || { printf 'no domains\n'; exit 3; }
+				$KVAS_BIN del "$@" 2>&1
+			)
+			_rc=$?
+			rm -f "${_body}"
+			[ "${_rc}" = "3" ] && json_error "no domains"
+			_rm=$(printf '%s\n' "${_out}" | grep -c 'УДАЛЕН')
+			# v645-паттерн: лёгкий refresh dnsmasq + HUP, полный rebuild ipset в фоне
+			/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+			(
+				/opt/apps/kvas/bin/main/ipset &>/dev/null
+			) &
+			[ "${_rc}" -ne 0 ] && json_error "del failed: ${_out}"
+			json_ok "removed ${_rm} domains"
 			;;
 		host_import)
 			check_token "$token"
@@ -500,8 +597,19 @@ main() {
 			;;
 		host_clear)
 			check_token "$token"
+			# v645: раньше здесь был полный kvas init (перезапуск всех сервисов) —
+			# при загрузке файла с «заменить» веб висел на десятки секунд.
+			# Достаточно очистить файл + лёгкий refresh dnsmasq (ipset-таблица + HUP).
+			# Полный init не нужен: ipset пересоздастся при следующем import/init.
+			cp -f "$KVAS_LIST" "${KVAS_LIST}.bak.$$" 2>/dev/null || true
 			: > "$KVAS_LIST"
-			out=$($KVAS_BIN init 2>&1)
+			/opt/apps/kvas/bin/main/dnsmasq &>/dev/null
+			kill -HUP "$(pidof dnsmasq)" 2>/dev/null
+			# фон: полный rebuild ipset (не блокируем CGI)
+			(
+				/opt/apps/kvas/bin/main/ipset &>/dev/null
+				rm -f "${KVAS_LIST}.bak.$$" 2>/dev/null
+			) &
 			json_ok "list cleared"
 			;;
 		vpn_status)
@@ -534,12 +642,18 @@ main() {
 					}
 					;;
 			esac
-			# 2) VLESS: SOCKS-проба — в точности как tunnel_test_site в диагностике
+			# 2) VLESS: SOCKS-проба — как tunnel_test_site в диагностике
+			# v663: socks5h — DNS через тоннель (локальный DNS/AdGuard не должен
+			# ломать пробу при рабочем тоннеле); + литеральный IP 1.1.1.1 trace
 			if [ "$vless_ok" = "false" ]; then
-				_probe_ip=$(curl -s --connect-timeout 4 --max-time 10 -x "socks5://127.0.0.1:1097" "https://2ip.io" 2>/dev/null)
+				_probe_ip=$(curl -s --connect-timeout 4 --max-time 10 -x "socks5h://127.0.0.1:1097" "https://2ip.io" 2>/dev/null)
 				_tun_ip_ok "$_probe_ip" && vless_ok="true"
 				[ "$vless_ok" = "false" ] && {
-					_probe_ip=$(curl -s --connect-timeout 4 --max-time 6 -x "socks5://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+					_probe_ip=$(curl -s --connect-timeout 4 --max-time 6 -x "socks5h://127.0.0.1:1097" "https://ifconfig.me" 2>/dev/null)
+					_tun_ip_ok "$_probe_ip" && vless_ok="true"
+				}
+				[ "$vless_ok" = "false" ] && {
+					_probe_ip=$(curl -sk --connect-timeout 4 --max-time 8 -x "socks5h://127.0.0.1:1097" "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null | sed -n 's/^ip=//p' | head -1)
 					_tun_ip_ok "$_probe_ip" && vless_ok="true"
 				}
 			fi
@@ -564,24 +678,50 @@ main() {
 				command -v ss >/dev/null 2>&1 && ss -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="port"
 				[ "$hysteria_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":10808 " && hysteria_ok="port"
 			fi
-			# Check other VPN interface (OpenConnect, WG, etc.)
+			# Check other VPN interface (OpenConnect, WG, awg...)
 			case "$inface_cli" in
 				""|*Proxy21*|*vless*|*Proxy41*|*hysteria*) ;;
+				*Proxy42*|*awg*)
+					# v642: реальная проверка AWG — проба HTTPS через SOCKS wireproxy
+					# (реплика check_awg из failover); раньше было только link UP,
+					# а t2sXX поднимается в Keenetic всегда — «✓ работает» был мнимым
+					other_desc=$(grep "|${inface_ent}|" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f3 | sed 's/^"//; s/"$//')
+					[ -z "$other_desc" ] && other_desc="AmneziaWG"
+					_awg_port=10818
+					[ -f /opt/apps/kvas/awg/etc/conf/env.sh ] && {
+						_ap=$(grep '^PROXY_LOCAL_PORT_SOCKS=' /opt/apps/kvas/awg/etc/conf/env.sh 2>/dev/null | cut -d= -f2)
+						[ -n "${_ap}" ] && [ "${_ap}" -ge 1 ] 2>/dev/null && _awg_port="${_ap}"
+					}
+					_probe_ip=$(curl -s --connect-timeout 4 --max-time 10 -x "socks5://127.0.0.1:${_awg_port}" "https://2ip.io" 2>/dev/null)
+					_tun_ip_ok "$_probe_ip" && other_ok="true"
+					[ "$other_ok" = "false" ] && {
+						_probe_ip=$(curl -s --connect-timeout 4 --max-time 6 -x "socks5://127.0.0.1:${_awg_port}" "https://ifconfig.me" 2>/dev/null)
+						_tun_ip_ok "$_probe_ip" && other_ok="true"
+					}
+					# слабый сигнал: SOCKS-порт слушает (wireproxy поднят, но сервер недоступен)
+					[ "$other_ok" = "false" ] && {
+						command -v ss >/dev/null 2>&1 && ss -tlnp 2>/dev/null | grep -q ":${_awg_port} " && other_ok="port"
+						[ "$other_ok" = "false" ] && command -v netstat >/dev/null 2>&1 && netstat -tlnp 2>/dev/null | grep -q ":${_awg_port} " && other_ok="port"
+					}
+					;;
 				*)
 					other_desc=$(grep "|${inface_ent}|" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f3 | sed 's/^"//; s/"$//')
 					[ -z "$other_desc" ] && other_desc="$inface_ent"
 					/opt/sbin/ip link show "$inface_ent" 2>/dev/null | grep -q '<.*UP' && other_ok="true"
 					;;
 			esac
-			_other_json="false"
-			[ "$other_ok" = "true" ] && _other_json="true"
-			# vless/hysteria: true | port | false
 			# v634: aggregator state (enabled + active index) for the sysTunnel badge
 			_agg_en=$(sed -n 's/^ENABLED=//p' /opt/var/kvas/aggregator.state 2>/dev/null | head -1)
 			_agg_act=$(sed -n 's/^ACTIVE=//p' /opt/var/kvas/aggregator.state 2>/dev/null | head -1)
 			[ "${_agg_en}" = "1" ] && _agg_en=true || _agg_en=false
 			case "${_agg_act}" in ''|*[!0-9]*) _agg_act=0 ;; esac
-			printf '{"ok":true,"vless":"%s","hysteria":"%s","other":%s,"other_desc":"%s","agg":%s,"agg_active":%s}\n' "$vless_ok" "$hysteria_ok" "$_other_json" "$other_desc" "$_agg_en" "$_agg_act"
+			# v663: host активного сервера — чтобы в UI было видно КАКОЙ IP работает
+			_agg_host=""
+			if [ "${_agg_act}" -gt 0 ] 2>/dev/null; then
+				_agg_host=$(awk -v n="${_agg_act}" 'BEGIN{c=0} /^[[:space:]]*#/{next} /^[[:space:]]*$/{next} {c++; if(c==n){print; exit}}' /opt/etc/kvas.aggregator 2>/dev/null | sed 's|^vless://||; s|^[^@]*@||; s|[:/?#].*$||')
+			fi
+			# v642: other — строка "true"|"port"|"false" (как vless/hysteria); раньше был boolean
+			printf '{"ok":true,"vless":"%s","hysteria":"%s","other":"%s","other_desc":"%s","agg":%s,"agg_active":%s,"agg_host":"%s"}\n' "$vless_ok" "$hysteria_ok" "$other_ok" "$other_desc" "$_agg_en" "$_agg_act" "$_agg_host"
 			;;
 		agg_status)
 			check_token "$token"
@@ -597,30 +737,91 @@ main() {
 			_out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_add "${_agg_link}" 2>&1); _rc=$?
 			[ "${_rc}" -eq 0 ] && json_ok "${_out}" || json_error "${_out}"
 			;;
+		agg_addfile)
+			check_token "$token"
+			# v652: bulk import — body is raw vless:// lines (one per line)
+			_agg_body="${KVAS_POST_BODY:-}"
+			[ -z "${_agg_body}" ] && json_error "no POST body"
+			[ -s "${_agg_body}" ] || json_error "empty file"
+			_out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_addfile "${_agg_body}" 2>&1); _rc=$?
+			[ "${_rc}" -eq 0 ] && json_ok "${_out}" || json_error "${_out}"
+			;;
+		agg_sub)
+			# v680: URL подписки живёт ТОЛЬКО в /opt/etc/kvas.conf (в коде/гите —
+			# пустой дефолт). Пустой url= — очистка. Секретный путь в ответ не эхо.
+			check_token "$token"
+			_agg_url=$(echo "$QUERY_STRING" | sed 's/^.*&url=//; s/&token=[^&]*$//')
+			_agg_url=$(urldecode "${_agg_url}")
+			if [ -z "${_agg_url}" ]; then
+				tg_upsert AGG_SUB_URL ""
+				json_ok "Подписка отключена (автообновление пула выключено)"
+			fi
+			case "${_agg_url}" in
+				http://*|https://*) ;;
+				*) json_error "URL подписки должен начинаться с http:// или https://" ;;
+			esac
+			tg_upsert AGG_SUB_URL "${_agg_url}"
+			json_ok "Подписка сохранена: обновление пула — раз в 6 ч при включённом агрегаторе (v680)"
+			;;
+		agg_subfetch)
+			# v680: «Обновить из подписки сейчас» — fetch+отбор в фоне под локом.
+			# v682: без enabled-guard — при выключенном агрегаторе fetch только
+			# наполняет пул (agg_sub_select защищён: тоннель не переключает),
+			# далее «Включить агрегатор» проходит без ручной ссылки
+			check_token "$token"
+			sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_sub_fetch force && agg_sub_select' \
+				</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+			json_ok "Aggregator: subscription fetch started (waits if busy), then press On to enable (log: /opt/var/kvas/agg.last.log)"
+			;;
 		agg_del|agg_set)
 			check_token "$token"
 			# v635: greedy .*n= matched the n= inside "token=" (apiBtn appends &token= last) - anchor to &n=
 			_agg_n=$(echo "$QUERY_STRING" | sed 's/.*&n=//; s/&.*//')
 			[ "${_agg_n}" = "$QUERY_STRING" ] && _agg_n=""
 			case "${_agg_n}" in ''|*[!0-9]*) json_error "n required (1..pool)" ;; esac
-			case "$action" in
-				agg_del) _out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_del "${_agg_n}" 2>&1) ;;
-				*)       _out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_set "${_agg_n}" 2>&1) ;;
-			esac
-			_rc=$?
-			[ "${_rc}" -eq 0 ] && json_ok "${_out}" || json_error "${_out}"
+			# v660: всё в фон (httpd-таймаут CGI). v661: ждём чужой лок до 120с.
+			# v662: sh -c (не скобки) — в локе пишется pid этого sh; Off может его убить
+			# v663: t0 + abort — если пользователь нажал Off пока ждали лок, действие отменяется
+			if [ "$action" = "agg_set" ]; then
+				sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_cmd_set "'"${_agg_n}"'"' \
+					</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+				json_ok "Aggregator: switching to #${_agg_n} started (waits up to 2min if busy), refresh status in ~15s (log: /opt/var/kvas/agg.last.log)"
+			else
+				sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_cmd_del "'"${_agg_n}"'"' \
+					</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+				json_ok "Aggregator: removing #${_agg_n} started (waits up to 2min if busy), refresh status in ~15s (log: /opt/var/kvas/agg.last.log)"
+			fi
 			;;
 		agg_on)
 			check_token "$token"
 			# v634: pool scan runs full tests (xray restarts + probes) - too slow for CGI,
 			# run in background and let the UI poll agg_status
-			( . /opt/apps/kvas/bin/libs/aggregator 2>/dev/null && agg_cmd_on ) > /opt/var/kvas/agg.last.log 2>&1 </dev/null &
-			json_ok "Aggregator: scan started, refresh status in ~30s (log: /opt/var/kvas/agg.last.log)"
+			sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_cmd_on' \
+				</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+			json_ok "Aggregator: scan started (tests up to 5 servers; waits if busy), refresh status in ~30s (log: /opt/var/kvas/agg.last.log)"
+			;;
+		agg_purge)
+			check_token "$token"
+			# v661: фон + ожидание лока (раньше sync падал на «busy», пока идёт скан)
+			sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_cmd_purge' \
+				</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+			json_ok "Aggregator: purge started (waits up to 2min if busy), refresh status in ~15s (log: /opt/var/kvas/agg.last.log)"
+			;;
+		agg_clear)
+			# v689: «Очистить список» — весь пул + все метки; Вкл/Выкл и подписку
+			# не трогаем (после очистки «Из подписки» наполняет пул заново)
+			check_token "$token"
+			sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_cmd_clear' \
+				</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+			json_ok "Aggregator: clearing pool started (waits up to 2min if busy), refresh status in ~15s (log: /opt/var/kvas/agg.last.log)"
 			;;
 		agg_off)
 			check_token "$token"
-			_out=$(. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null; agg_cmd_off 2>&1); _rc=$?
-			[ "${_rc}" -eq 0 ] && json_ok "${_out}" || json_error "${_out}"
+			# v662: OFF немедленно ПРЕРЫВАЕТ текущую операцию (убивает держателя лока),
+			# без ожидания — пользовательское право остановить зависший скан
+			sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null && agg_cmd_off' \
+				</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+			json_ok "Aggregator: OFF started (interrupts current run if any), refresh status in ~10s (log: /opt/var/kvas/agg.last.log)"
 			;;
 		agg_check)
 			check_token "$token"
@@ -628,9 +829,45 @@ main() {
 			_agg_n=$(echo "$QUERY_STRING" | sed 's/.*&n=//; s/&.*//')
 			[ "${_agg_n}" = "$QUERY_STRING" ] && _agg_n=""
 			case "${_agg_n}" in ''|*[!0-9]*) _agg_n="" ;; esac
+			# v664: &all=1 — полный прогон пула с бюджетом по времени (~3 мин на нажатие)
+			_agg_all=$(echo "$QUERY_STRING" | sed 's/.*&all=//; s/&.*//')
+			[ "${_agg_all}" = "$QUERY_STRING" ] && _agg_all=""
 			# v634: full tests are slow (xray restarts) - background + UI poll
-			( . /opt/apps/kvas/bin/libs/aggregator 2>/dev/null && agg_cmd_check "${_agg_n}" ) > /opt/var/kvas/agg.last.log 2>&1 </dev/null &
-			json_ok "Aggregator: check started, refresh status in ~30s (log: /opt/var/kvas/agg.last.log)"
+			if [ "${_agg_all}" = "1" ]; then
+				sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_cmd_check all' \
+					</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+				json_ok "Aggregator: full pool sweep started (~3min per press, press again to continue), refresh status in ~60s (log: /opt/var/kvas/agg.last.log)"
+			elif [ -n "${_agg_n}" ]; then
+				sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_cmd_check "'"${_agg_n}"'"' \
+					</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+				json_ok "Aggregator: testing #${_agg_n} started (~15-30s), refresh status in ~30s (log: /opt/var/kvas/agg.last.log)"
+			else
+				sh -c '. /opt/apps/kvas/bin/libs/aggregator 2>/dev/null || exit 0; _t0=$(date +%s); agg_wait_lock 120 || exit 1; agg_abort_check "${_t0}" || { echo "Aggregator: aborted (Off pressed while waiting)"; exit 1; }; agg_cmd_check' \
+					</dev/null 2>&1 | /opt/apps/kvas/bin/main/tsfilter > /opt/var/kvas/agg.last.log &
+				json_ok "Aggregator: check started, refresh status in ~30s (log: /opt/var/kvas/agg.last.log)"
+			fi
+			;;
+		agg_log)
+			check_token "$token"
+			# v661: что реально произошло (действия идут в фон — ответ уходит сразу)
+			_log=$(tail -n 40 /opt/var/kvas/agg.last.log 2>/dev/null)
+			_log=$(printf '%s' "${_log}" | tr -d '\000-\011\013-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN{ORS="\\n"} {print}' | sed 's/\\n$//')
+			printf '{"ok":true,"log":"%s"}\n' "${_log}"
+			;;
+		sys_top)
+			check_token "$token"
+			# v664: снимок процессов + loadavg — «CPU 100% — что именно ест?»
+			# v665: авто-подсказка — параллельные kvas vpn set (главный CPU-убийца)
+			_load=$(cat /proc/loadavg 2>/dev/null)
+			_top=$(top -bn1 2>/dev/null | head -22)
+			[ -z "${_top}" ] && _top=$(ps w 2>/dev/null | head -30)
+			_vsn=$(ps w 2>/dev/null | grep -c '[k]vas vpn set')
+			if [ "${_vsn}" -gt 1 ] 2>/dev/null; then
+				_top="WARNING: ${_vsn} x 'kvas vpn set' running in parallel — this is the CPU hog (v665 blocks new ones; kill old PIDs or reboot)!
+${_top}"
+			fi
+			_top=$(printf '%s' "${_top}" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN{ORS="\\n"} {print}' | sed 's/\\n$//')
+			printf '{"ok":true,"load":"%s","top":"%s"}\n' "${_load}" "${_top}"
 			;;
 		vpn_interfaces)
 			check_token "$token"
@@ -662,6 +899,16 @@ main() {
 					"$_esc" "$_ese" "$_esd" "$_active"
 				_first=0
 			done < /opt/etc/inface_equals 2>/dev/null
+			# v654: aggregator как виртуальный пункт списка (пул непуст)
+			if [ -s /opt/etc/kvas.aggregator ]; then
+				[ $_first -eq 1 ] || printf ','
+				# v656: active=true если aggregator ENABLED=1
+				_agg_active=false
+				if [ "$(sed -n 's/^ENABLED=//p' /opt/var/kvas/aggregator.state 2>/dev/null | head -1)" = "1" ]; then
+					_agg_active=true
+				fi
+				printf '{"cli":"aggregator","ent":"aggregator","desc":"Aggregator VLESS","active":%s}' "$_agg_active"
+			fi
 			printf ']}'
 			;;
 		vpn_set)
@@ -679,14 +926,32 @@ main() {
 				esac
 				_vpn_arg="$proto"
 			fi
+			# v654: aggregator — включаем агрегатор (scan пула + VLESS из первого живого)
+			# v665: НЕ rm -f лока вслепую: если переключение уже идёт (живой pid в локе) —
+			# отказ. Раньше каждый клик убивал чужой лок и запускал ЕЩЁ ОДИН параллельный
+			# kvas vpn set / agg_cmd_on → полные init друг на друге → CPU 100%.
+			if [ -f /tmp/kvas_vpn_set.lock ]; then
+				_vlp=$(cat /tmp/kvas_vpn_set.lock 2>/dev/null)
+				case "${_vlp}" in ''|*[!0-9]*) _vlp="" ;; esac
+				if [ -n "${_vlp}" ] && kill -0 "${_vlp}" 2>/dev/null; then
+					json_error "Переключение тонеля уже идёт (pid ${_vlp}) — подождите завершения"
+				fi
+				rm -f /tmp/kvas_vpn_set.lock
+			fi
+			if [ "$_vpn_arg" = "aggregator" ]; then
+				# v655: полный vpn_progress паттерн (lock/rc/log) — иначе «код ?»
+				# v665: sh -c — pid в локе = живой родитель на всё время agg_cmd_on
+				rm -f /tmp/kvas_vpn_set.rc /tmp/kvas_vpn_set.log 2>/dev/null || true
+				sh -c 'echo $$ > /tmp/kvas_vpn_set.lock; . /opt/apps/kvas/bin/libs/aggregator 2>/dev/null && agg_cmd_on; echo $? > /tmp/kvas_vpn_set.rc; rm -f /tmp/kvas_vpn_set.lock' \
+					>/dev/null 2>&1 &
+				printf '{"ok":true,"pending":true,"msg":"Aggregator: scan started..."}\n'
+				return 0
+			fi
 			# v640: фон (как vless_new) — ручное переключение тонеля долбит дольше
 			# httpd-таймаута → «Failed to fetch» в браузере. Результат через vpn_progress.
-			rm -f /tmp/kvas_vpn_set.lock /tmp/kvas_vpn_set.rc /tmp/kvas_vpn_set.log 2>/dev/null || true
-			(
-				touch /tmp/kvas_vpn_set.lock
-				{ $KVAS_BIN vpn set "$_vpn_arg"; echo $? > /tmp/kvas_vpn_set.rc; } > /tmp/kvas_vpn_set.log 2>&1
-				rm -f /tmp/kvas_vpn_set.lock 2>/dev/null || true
-			) >/dev/null 2>&1 &
+			rm -f /tmp/kvas_vpn_set.rc /tmp/kvas_vpn_set.log 2>/dev/null || true
+			sh -c 'echo $$ > /tmp/kvas_vpn_set.lock; '"$KVAS_BIN"' vpn set "'"$_vpn_arg"'" > /tmp/kvas_vpn_set.log 2>&1; echo $? > /tmp/kvas_vpn_set.rc; rm -f /tmp/kvas_vpn_set.lock' \
+				>/dev/null 2>&1 &
 			printf '{"ok":true,"pending":true,"msg":"Переключение тонеля..."}\n'
 			;;
 		failover_status)
@@ -1002,7 +1267,7 @@ main() {
 						echo 0 > /tmp/kvas_ag_inst.rc
 					else
 						if ! pidof AdGuardHome >/dev/null 2>&1; then
-							/opt/bin/AdGuardHome -c /opt/etc/AdGuardHome/AdGuardHome.yaml -l /opt/var/log/AdGuardHome.log >/dev/null 2>&1 &
+							nohup /opt/bin/AdGuardHome -c /opt/etc/AdGuardHome/AdGuardHome.yaml -l /opt/var/log/AdGuardHome.log >/dev/null 2>&1 &
 							sleep 2
 						fi
 						_rip=$(ip -4 addr show 2>/dev/null | awk '/inet 192\.168\.|inet 10\.|inet 172\./{print $2}' | cut -d/ -f1 | head -1)
@@ -1117,6 +1382,8 @@ main() {
 				adblock_on) _lock=/tmp/kvas_adblock_on.lock; _rc=/tmp/kvas_adblock_on.rc; _log=/tmp/kvas_adblock_on.log ;;
 				restore) _lock=/tmp/kvas_restore.lock; _rc=/tmp/kvas_restore.rc; _log=/tmp/kvas_restore.log ;;
 				route_refresh) _lock=/tmp/kvas_route_refresh.lock; _rc=/tmp/kvas_route_refresh.rc; _log=/tmp/kvas_route_refresh.log ;;
+				guest_add) _lock=/tmp/kvas_guest_add.lock; _rc=/tmp/kvas_guest_add.rc; _log=/tmp/kvas_guest_add.log ;;
+				guest_del) _lock=/tmp/kvas_guest_del.lock; _rc=/tmp/kvas_guest_del.rc; _log=/tmp/kvas_guest_del.log ;;
 				kvas_test) _lock=/tmp/kvas_test.lock; _rc=/tmp/kvas_test.rc; _log=/tmp/kvas_test.log ;;
 				kvas_debug) _lock=/tmp/kvas_debug.lock; _rc=/tmp/kvas_debug.rc; _log=/tmp/kvas_debug.log ;;
 				kvas_debug_dns) _lock=/tmp/kvas_debug_dns.lock; _rc=/tmp/kvas_debug_dns.rc; _log=/tmp/kvas_debug_dns.log ;;
@@ -1151,9 +1418,10 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$($KVAS_BIN failover start >/dev/null 2>&1; run_service start /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(run_service start /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1) ;;
-				Proxy42|awg)           out=$($KVAS_BIN awg start 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$(rm -f /opt/var/kvas/svc.vless.disabled; $KVAS_BIN failover start >/dev/null 2>&1; run_service start /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(rm -f /opt/var/kvas/svc.hysteria.disabled; run_service start /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1) ;;
+				Proxy42|awg)           out=$(rm -f /opt/var/kvas/svc.awg.disabled; $KVAS_BIN awg start 2>&1) ;;
+				dnsmasq)               out=$($KVAS_BIN dnsmasq start 2>&1) ;;
 				*)
 					# Keenetic VPN - через RCI API
 					curl -s -d '{"up":"true"}' "localhost:79/rci/interface/${_iface}" &>/dev/null
@@ -1169,9 +1437,10 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$(run_service stop /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(run_service stop /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1) ;;
-				Proxy42|awg)           out=$($KVAS_BIN awg stop 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$(run_service stop /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1; mkdir -p /opt/var/kvas; touch /opt/var/kvas/svc.vless.disabled) ;;
+				Proxy41|hysteria|t2s41) out=$(run_service stop /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1; mkdir -p /opt/var/kvas; touch /opt/var/kvas/svc.hysteria.disabled) ;;
+				Proxy42|awg)           out=$($KVAS_BIN awg stop 2>&1; mkdir -p /opt/var/kvas; touch /opt/var/kvas/svc.awg.disabled) ;;
+				dnsmasq)               out=$($KVAS_BIN dnsmasq stop 2>&1) ;;
 				*)
 					curl -s -d '{"down":"true"}' "localhost:79/rci/interface/${_iface}" &>/dev/null
 					out="Interface ${_iface} down"
@@ -1186,9 +1455,10 @@ main() {
 			_iface=$(echo "$_iface" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null)
 			[ -z "$_iface" ] && json_error "iface required"
 			case "$_iface" in
-				Proxy21|vless|t2s21)   out=$(run_service restart /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1) ;;
-				Proxy41|hysteria|t2s41) out=$(run_service restart /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1) ;;
-				Proxy42|awg)           out=$($KVAS_BIN awg restart 2>&1) ;;
+				Proxy21|vless|t2s21)   out=$(rm -f /opt/var/kvas/svc.vless.disabled; run_service restart /opt/etc/init.d/S24xray /opt/etc/init.d/S97xray /opt/apps/kvas/etc/init.d/S97xray 2>&1) ;;
+				Proxy41|hysteria|t2s41) out=$(rm -f /opt/var/kvas/svc.hysteria.disabled; run_service restart /opt/etc/init.d/S99hysteria /opt/apps/kvas/hysteria/etc/init.d/S99hysteria 2>&1) ;;
+				Proxy42|awg)           out=$(rm -f /opt/var/kvas/svc.awg.disabled; $KVAS_BIN awg restart 2>&1) ;;
+				dnsmasq)               out=$($KVAS_BIN dnsmasq restart 2>&1) ;;
 				*)
 					json_error "restart not supported for ${_iface}"
 					;;
@@ -1286,39 +1556,71 @@ main() {
 			[ "$cmd" = "$QUERY_STRING" ] && cmd=""
 			case "$cmd" in
 				mirror_status)
+					# v687: opkg читает src/gz из /opt/etc/opkg.conf И /opt/etc/opkg.d/*.conf.
+					# Раньше смотрели только opkg.conf: после обновления entware рабочие
+					# URL уезжают в opkg.d, а в opkg.conf остаётся/возвращается официальный
+					# → Web UI писал «nju», а opkg ходил на официальный (жалоба: зеркало
+					# «слетает», UI врёт). Собираем ВСЕ src/gz и дедуплицируем.
 					_conf=/opt/etc/opkg.conf
-					_src1=$(grep '^src/gz ' "$_conf" 2>/dev/null | head -1 | awk '{print $3}')
+					_allsrc=$( { grep '^src/gz ' "$_conf" 2>/dev/null; cat /opt/etc/opkg.d/*.conf 2>/dev/null | grep '^src/gz '; } | awk '{print $3}' | sort -u)
+					_src1=$(echo "${_allsrc}" | grep -v '^$' | head -1)
 					_mirror="custom"
-					case "$_src1" in
-						*mirrors.nju.edu.cn*) _mirror="nju" ;;
-						*bin.entware.net*|*pkg.entware.net*) _mirror="official" ;;
-					esac
+					_has_nju=false
+					_has_off=false
+					for _u in ${_allsrc}; do
+						case "$_u" in
+							*mirrors.nju.edu.cn*) _has_nju=true ;;
+							*bin.entware.net*|*pkg.entware.net*) _has_off=true ;;
+						esac
+					done
+					# официальный приоритет: он «перетирает» зеркало при opkg update
+					if [ "${_has_off}" = "true" ]; then
+						_mirror="official"
+					elif [ "${_has_nju}" = "true" ]; then
+						_mirror="nju"
+					fi
 					_lock_pids=$(ps w 2>/dev/null | grep -E 'opkg (update|install|remove)|wget .*opkg' | grep -v grep | awk '{print $1}' | tr '\n' ' ')
 					_lock="free"
 					{ [ -f /opt/tmp/opkg.lock ] || [ -n "$_lock_pids" ]; } && _lock="busy"
-					printf '{"ok":true,"mirror":"%s","src":"%s","lock":"%s","lock_pids":"%s"}\n' \
-						"$_mirror" "$(json_str "$_src1")" "$_lock" "$(json_str "$_lock_pids")"
+					printf '{"ok":true,"mirror":"%s","src":"%s","nju":%s,"official":%s,"lock":"%s","lock_pids":"%s"}\n' \
+						"$_mirror" "$(json_str "${_allsrc}" | tr '\n' ' ')" "${_has_nju}" "${_has_off}" \
+						"$_lock" "$(json_str "$_lock_pids")"
 					;;
 				mirror_set)
 					val=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&token=.*//')
-					_conf=/opt/etc/opkg.conf
-					[ -f "$_conf" ] || json_error "no /opt/etc/opkg.conf"
+					# v687: зеркало пишется в opkg.conf И opkg.d/*.conf — иначе opkg
+					# читает src/gz из opkg.d и выбор не применяется (UI врёт).
+					_conf_files="/opt/etc/opkg.conf"
+					[ -d /opt/etc/opkg.d ] && _conf_files="${_conf_files} /opt/etc/opkg.d/"*.conf
 					# v638: зеркало только по http — busybox wget на Keenetic собран без SSL
 					# и отказывается качать https:// («wget: not an http or ftp url»)
 					case "$val" in
 						nju)
-							sed -i 's|http://bin\.entware\.net|http://mirrors.nju.edu.cn/entware|g' "$_conf"
-							sed -i 's|http://pkg\.entware\.net|http://mirrors.nju.edu.cn/entware|g' "$_conf"
-							# уже переключённый https → конвертируем в рабочий http
-							sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://mirrors.nju.edu.cn/entware|g' "$_conf"
+							for _f in ${_conf_files}; do
+								[ -f "$_f" ] || continue
+								sed -i 's|http://bin\.entware\.net|http://mirrors.nju.edu.cn/entware|g' "$_f"
+								sed -i 's|http://pkg\.entware\.net|http://mirrors.nju.edu.cn/entware|g' "$_f"
+								# уже переключённый https → конвертируем в рабочий http
+								sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://mirrors.nju.edu.cn/entware|g' "$_f"
+							done
 							;;
 						official)
-							sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "$_conf"
-							sed -i 's|http://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "$_conf"
+							for _f in ${_conf_files}; do
+								[ -f "$_f" ] || continue
+								sed -i 's|https://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "$_f"
+								sed -i 's|http://mirrors\.nju\.edu\.cn/entware|http://bin.entware.net|g' "$_f"
+							done
 							;;
 						*) json_error "val must be nju|official" ;;
 					esac
-					out=$(grep '^src/gz ' "$_conf" 2>/dev/null | awk '{print $3}' | tr '\n' ' ')
+					# v687: запоминаем выбор — postinst/upgrade пере-применяет его,
+					# чтобы entware-обновление не «слетало» обратно на официальный.
+					if [ "${val}" = "nju" ] || [ "${val}" = "official" ]; then
+						grep -q '^ENTWARE_MIRROR=' "${KVAS_CONF_FILE}" 2>/dev/null \
+							&& sed -i "s|^ENTWARE_MIRROR=.*|ENTWARE_MIRROR=${val}|" "${KVAS_CONF_FILE}" \
+							|| printf 'ENTWARE_MIRROR=%s\n' "${val}" >> "${KVAS_CONF_FILE}"
+					fi
+					out=$( { grep '^src/gz ' /opt/etc/opkg.conf 2>/dev/null; cat /opt/etc/opkg.d/*.conf 2>/dev/null | grep '^src/gz '; } | awk '{print $3}' | sort -u | tr '\n' ' ')
 					json_ok "mirror: $out"
 					;;
 				lock_clear)
@@ -1763,6 +2065,11 @@ adblock_off)
 			_entries=$(echo "$_out" | sed -n 's/^entries=//p' | head -1)
 			_table=$(echo "$_out" | sed -n 's/^table=//p' | head -1)
 			_mark=$(echo "$_out" | sed -n 's/^mark=//p' | head -1)
+			# v670: вкл/выкл Списка 2 (флаг list2.disabled); старый CLI без
+			# поля enabled= считается включённым
+			_enabled=$(echo "$_out" | sed -n 's/^enabled=//p' | head -1)
+			[ -z "$_enabled" ] && _enabled=yes
+			case "$_enabled" in no) ;; *) _enabled=yes ;; esac
 			[ -z "$_tunnel" ] && _tunnel=current
 			[ -z "$_up" ] && _up=no
 			echo "$_entries" | grep -qE '^[0-9]+$' || _entries=0
@@ -1784,8 +2091,28 @@ adblock_off)
 			done <<EOL2
 ${_out}
 EOL2
-			printf '{"ok":true,"tunnel":"%s","iface":"%s","iface_up":"%s","available":"%s","entries":%s,"table":"%s","mark":"%s","names":{%s}}\n' \
-				"$(json_str "$_tunnel")" "$(json_str "$_iface")" "$_up" "$(json_str "$_avail")" "$_entries" "$(json_str "$_table")" "$(json_str "$_mark")" "$_names"
+			printf '{"ok":true,"tunnel":"%s","iface":"%s","iface_up":"%s","available":"%s","entries":%s,"table":"%s","mark":"%s","enabled":"%s","names":{%s}}\n' \
+				"$(json_str "$_tunnel")" "$(json_str "$_iface")" "$_up" "$(json_str "$_avail")" "$_entries" "$(json_str "$_table")" "$(json_str "$_mark")" "$_enabled" "$_names"
+			;;
+		list2_set)
+			check_token "$token"
+			_state=$(echo "$QUERY_STRING" | sed 's/.*state=//; s/&.*//')
+			case "$_state" in
+				on|off) ;;
+				*) json_error "state must be on or off" ;;
+			esac
+			_out=$($KVAS_BIN list2 "$_state" 2>&1)
+			_rc=$?
+			if [ "$_rc" -eq 0 ]; then
+				if [ "$_state" = "on" ]; then
+					json_ok "Список 2 включён — правила применены"
+				else
+					json_ok "Список 2 выключен — перехват полосы снят (список и настройки сохранены)"
+				fi
+			else
+				_out=$(echo "$_out" | tr -d '\033\r\n' | sed 's/\[[0-9][0-9;]*[a-zA-Z]//g; s/\[m//g')
+				json_error "list2 ${_state} failed: ${_out}"
+			fi
 			;;
 		list2_list)
 			check_token "$token"
@@ -1961,24 +2288,37 @@ EOL2
 				[ -n "$current" ] && current="${current},${net}" || current="$net"
 				sed -i "/^INFACE_GUEST_ENT=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				echo "INFACE_GUEST_ENT=${current}" >> "$KVAS_CONF_FILE"
-				# Добавляем listen-address в dnsmasq.conf (или AdGuard)
-				_guest_ip=$(/opt/sbin/ip a 2>/dev/null | grep global | grep -E " ${net}\$" | sed 's/inet \([0-9.]*\).*/\1/')
-				[ -n "$_guest_ip" ] && {
-					if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
-						# AdGuard
-						grep -q "\- ${_guest_ip}" /opt/etc/AdGuardHome/AdGuardHome.yaml || \
-							sed -i '/bind_hosts/,/port/ s/.*\(port.*\)/    - '"${_guest_ip}"'\n  \1/' /opt/etc/AdGuardHome/AdGuardHome.yaml
-						/opt/etc/init.d/S99adguardhome restart &>/dev/null
-					else
-						# dnsmasq
-						grep -q "listen-address=${_guest_ip}" /opt/etc/dnsmasq.conf 2>/dev/null || \
-							sed -i "/listen-address 127.0.0.1/a listen-address=${_guest_ip}" /opt/etc/dnsmasq.conf
-						/opt/etc/init.d/S56dnsmasq restart &>/dev/null
-					fi
-				}
-				# Пересоздаём iptables
-				$KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1
-				json_ok "added $net"
+				# v670: рестарт DNS-демона + route refresh в фоне (паттерн route_refresh):
+				# раньше всё шло синхронно в CGI — httpd-таймаут обрывал apply посреди
+				# пересборки цепочек, и сеть «не применялась» до ручного «Обновить».
+				# Результат через vpn_progress (task=guest_add).
+				rm -f /tmp/kvas_guest_add.lock /tmp/kvas_guest_add.rc /tmp/kvas_guest_add.log 2>/dev/null || true
+				(
+					touch /tmp/kvas_guest_add.lock
+					{
+						# Добавляем listen-address в dnsmasq.conf (или AdGuard)
+						_guest_ip=$(/opt/sbin/ip a 2>/dev/null | grep global | grep -E " ${net}\$" | sed 's/inet \([0-9.]*\).*/\1/')
+						[ -n "$_guest_ip" ] && {
+							if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
+								# AdGuard
+								grep -q "\- ${_guest_ip}" /opt/etc/AdGuardHome/AdGuardHome.yaml || \
+									sed -i '/bind_hosts/,/port/ s/.*\(port.*\)/    - '"${_guest_ip}"'\n  \1/' /opt/etc/AdGuardHome/AdGuardHome.yaml
+								/opt/etc/init.d/S99adguardhome restart &>/dev/null
+							else
+								# dnsmasq
+								grep -q "listen-address=${_guest_ip}" /opt/etc/dnsmasq.conf 2>/dev/null || \
+									sed -i "/listen-address 127.0.0.1/a listen-address=${_guest_ip}" /opt/etc/dnsmasq.conf
+								/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+							fi
+						}
+						# Пересоздаём iptables
+						$KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1
+						echo "Сеть ${net} добавлена и применена"
+						echo 0 > /tmp/kvas_guest_add.rc
+					} > /tmp/kvas_guest_add.log 2>&1
+					rm -f /tmp/kvas_guest_add.lock 2>/dev/null || true
+				) >/dev/null 2>&1 &
+				printf '{"ok":true,"pending":true,"task":"guest_add","msg":"Добавление гостевой сети..."}\n'
 			fi
 			;;
 		route_guest_del)
@@ -1993,20 +2333,30 @@ EOL2
 				new_list=$(echo "$current" | tr ',' '\n' | grep -v "^${net}$" | tr '\n' ',' | sed 's/,$//')
 				sed -i "/^INFACE_GUEST_ENT=/d" "$KVAS_CONF_FILE" 2>/dev/null
 				[ -n "$new_list" ] && echo "INFACE_GUEST_ENT=${new_list}" >> "$KVAS_CONF_FILE"
-				# Удаляем listen-address из dnsmasq.conf
-				_guest_ip=$(/opt/sbin/ip a 2>/dev/null | grep global | grep -E " ${net}\$" | sed 's/inet \([0-9.]*\).*/\1/')
-				[ -n "$_guest_ip" ] && {
-					if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
-						sed -i -e "/bind_hosts/,/port/{ /- ${_guest_ip}/d }" /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null
-						/opt/etc/init.d/S99adguardhome restart &>/dev/null
-					else
-						sed -i "/listen-address=${_guest_ip}/d" /opt/etc/dnsmasq.conf 2>/dev/null
-						/opt/etc/init.d/S56dnsmasq restart &>/dev/null
-					fi
-				}
-				# Пересоздаём iptables (без удалённой сети)
-				$KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1
-				json_ok "removed $net"
+				# v670: фоном — как и добавление (см. route_guest_add)
+				rm -f /tmp/kvas_guest_del.lock /tmp/kvas_guest_del.rc /tmp/kvas_guest_del.log 2>/dev/null || true
+				(
+					touch /tmp/kvas_guest_del.lock
+					{
+						# Удаляем listen-address из dnsmasq.conf
+						_guest_ip=$(/opt/sbin/ip a 2>/dev/null | grep global | grep -E " ${net}\$" | sed 's/inet \([0-9.]*\).*/\1/')
+						[ -n "$_guest_ip" ] && {
+							if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] && grep -q 'kvas.ipset' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null; then
+								sed -i -e "/bind_hosts/,/port/{ /- ${_guest_ip}/d }" /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null
+								/opt/etc/init.d/S99adguardhome restart &>/dev/null
+							else
+								sed -i "/listen-address=${_guest_ip}/d" /opt/etc/dnsmasq.conf 2>/dev/null
+								/opt/etc/init.d/S56dnsmasq restart &>/dev/null
+							fi
+						}
+						# Пересоздаём iptables (без удалённой сети)
+						$KVAS_BIN route refresh >> /tmp/kvas-route-refresh.log 2>&1
+						echo "Сеть ${net} удалена и применено"
+						echo 0 > /tmp/kvas_guest_del.rc
+					} > /tmp/kvas_guest_del.log 2>&1
+					rm -f /tmp/kvas_guest_del.lock 2>/dev/null || true
+				) >/dev/null 2>&1 &
+				printf '{"ok":true,"pending":true,"task":"guest_del","msg":"Удаление гостевой сети..."}\n'
 			fi
 			;;
 		tags_list)
@@ -2248,27 +2598,81 @@ EOL2
 					[ -z "$_log" ] && _log="Лог ошибок пуст"
 					;;
 				info)
-					_log=$(logread 2>/dev/null | grep 'КВАС' | tail -50)
-					[ -z "$_log" ] && _log="Сообщений КВАС в системном логе нет"
+					# v642: основной источник — постоянный лог /opt/var/log/kvas.log
+					# (logread в CGI-контексте Keenetic нередко отдаёт пусто — жалоба «Квас пуст»);
+					# logread 'КВАС' — фоллбэк для старых записей до v642
+					_log=$(tail -n 100 /opt/var/log/kvas.log 2>/dev/null)
+					[ -z "$_log" ] && _log=$(logread 2>/dev/null | grep 'КВАС' | tail -50)
+					[ -z "$_log" ] && _log="Лог пуст (записи появятся после операций КВАС; до v642 logread мог отдавать пустой вывод в CGI)"
 					;;
 				syslog)
-					_log=$(logread 2>/dev/null | tail -100)
-					[ -z "$_log" ] && _log="Системный лог недоступен"
+					# v643: logread в CGI-контексте Keenetic (httpd) молчит —
+					# сокет syslogd недоступен, хотя из SSH/cron работает.
+					# v655: основной источник — /var/log/messages (доступен из CGI);
+					# dmesg — дополнение; logread — фоллбэк
+					_log=$(tail -n 100 /opt/var/log/kvas-syslog.log 2>/dev/null)
+					# v654: symlink мог не создаться (postinst не прогнал) — создаём на месте
+					if [ ! -e /opt/etc/cron.1min/syslog_snapshot ] && [ -x /opt/apps/kvas/bin/main/syslog_snapshot ]; then
+						mkdir -p /opt/etc/cron.1min 2>/dev/null
+						ln -sf /opt/apps/kvas/bin/main/syslog_snapshot /opt/etc/cron.1min/syslog_snapshot 2>/dev/null
+					fi
+					# снимок ещё не создан — запустить сразу
+					if [ -z "$_log" ] && [ -x /opt/apps/kvas/bin/main/syslog_snapshot ]; then
+						/opt/apps/kvas/bin/main/syslog_snapshot 2>/dev/null
+						_log=$(tail -n 100 /opt/var/log/kvas-syslog.log 2>/dev/null)
+					fi
+					# прямые источники (если снимок пуст)
+					[ -z "$_log" ] && [ -r /var/log/messages ] && _log=$(tail -n 100 /var/log/messages 2>/dev/null)
+					[ -z "$_log" ] && _log=$(dmesg 2>/dev/null | tail -50)
+					[ -z "$_log" ] && _log=$(logread 2>/dev/null | tail -100)
+					[ -z "$_log" ] && [ -x /usr/sbin/logread ] && _log=$(/usr/sbin/logread 2>/dev/null | tail -100)
+					[ -z "$_log" ] && _log="Системный лог пуст: /var/log/messages и dmesg недоступны из CGI"
 					;;
 				upgrade)
 					# v637: лог установки/обновления (main/upgrade пишет сюда вывод opkg)
 					_log=$(tail -n 100 /opt/var/log/kvas-upgrade.log 2>/dev/null)
 					[ -z "$_log" ] && _log="Лог обновления пуст (записи появятся после kvas upgrade)"
 					;;
+				agg)
+					# v643: лог последнего скана/чека агрегатора
+					_log=$(tail -n 100 /opt/var/kvas/agg.last.log 2>/dev/null)
+					[ -z "$_log" ] && _log="Лог агрегатора пуст (появится после scan/check в Web UI или kvas aggregator on/check)"
+					;;
 				*) _log="Неизвестный тип лога" ;;
 			esac
-			_log=$(printf '%s' "$_log" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
+			# v677: control-символы (ESC/BS/TAB/CR) из логов ломали
+			# JSON.parse в браузере ("Bad control character in string literal")
+			_log=$(printf '%s' "$_log" | tr -d '\000-\011\013-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\n')
 			printf '{"ok":true,"log":"%s"}\n' "$_log"
 			;;
 		kvas_log_clear)
 			check_token "$token"
 			> /opt/tmp/kvas_errors.log 2>/dev/null
 			json_ok "лог ошибок очищен"
+			;;
+		uiconf)
+			# v687: настройки Web UI на сервере (kvas.conf) — localStorage не переживает
+			# чистку кэша/смену origin, из-за чего мобильный вид «слетал» после обновлений.
+			check_token "$token"
+			_ukey=$(echo "$QUERY_STRING" | sed 's/.*key=//; s/&.*//')
+			[ "${_ukey}" = "$QUERY_STRING" ] && _ukey=""
+			case "$_ukey" in
+				mobile_view)
+					if echo "$QUERY_STRING" | grep -q 'val='; then
+						_uval=$(echo "$QUERY_STRING" | sed 's/.*val=//; s/&.*//')
+						[ "${_uval}" = "1" ] || [ "${_uval}" = "0" ] || json_error "val must be 1|0"
+						grep -q '^WEB_MOBILE_VIEW=' "${KVAS_CONF_FILE}" 2>/dev/null \
+							&& sed -i "s|^WEB_MOBILE_VIEW=.*|WEB_MOBILE_VIEW=${_uval}|" "${KVAS_CONF_FILE}" \
+							|| printf 'WEB_MOBILE_VIEW=%s\n' "${_uval}" >> "${KVAS_CONF_FILE}"
+						printf '{"ok":true,"key":"mobile_view","val":"%s"}\n' "${_uval}"
+					else
+						_uval=$(sed -n 's/^WEB_MOBILE_VIEW=//p' "${KVAS_CONF_FILE}" 2>/dev/null | head -1)
+						[ -z "${_uval}" ] && _uval="0"
+						printf '{"ok":true,"key":"mobile_view","val":"%s"}\n' "${_uval}"
+					fi
+					;;
+				*) json_error "unknown key" ;;
+			esac
 			;;
 		kvas_test)
 			check_token "$token"
@@ -2341,6 +2745,13 @@ EOL2
 			ln -sf /opt/apps/kvas/bin/tg_sender.sh /opt/etc/cron.1min/tg_sender 2>/dev/null
 			ln -sf /opt/apps/kvas/bin/tg_health.sh /opt/etc/cron.15min/tg_health 2>/dev/null
 			ln -sf /opt/apps/kvas/bin/main/aggregator_cron /opt/etc/cron.15min/aggregator 2>/dev/null
+			# v652: syslog snapshot for Web UI
+			ln -sf /opt/apps/kvas/bin/main/syslog_snapshot /opt/etc/cron.1min/syslog_snapshot 2>/dev/null
+			# v658: fast-fail probe aggregator
+			ln -sf /opt/apps/kvas/bin/main/aggregator_fastprobe /opt/etc/cron.1min/aggregator_fastprobe 2>/dev/null
+			# v690: снапшот памяти + сторож failover-демона
+			ln -sf /opt/apps/kvas/bin/main/memhistory /opt/etc/cron.15min/memhistory 2>/dev/null
+			ln -sf /opt/apps/kvas/bin/main/failover_heal /opt/etc/cron.15min/failover_heal 2>/dev/null
 			json_ok "Настройки уведомлений сохранены"
 			;;
 		tg_getchat)
@@ -2511,13 +2922,15 @@ EOL2
 			[ -z "$_iface" ] && json_error "iface required"
 			[ -z "$_site" ] && json_error "site required"
 			# Определяем метод: SOCKS5 для Proxy21/41/42, --interface для остальных
+			# v670: aggregator — тот же SOCKS-порт 1097 (раньше уходил в --interface
+			# aggregator → «нет ответа» на тесте сайта)
 			local _method=""
 			local _socks_port=""
 			local _curl_opt=""
 			case "$_iface" in
-				Proxy21|t2s21|vless)    _method="socks"; _socks_port="1097"; _curl_opt="-x socks5://127.0.0.1:${_socks_port}" ;;
-				Proxy41|t2s41|hysteria) _method="socks"; _socks_port="10808"; _curl_opt="-x socks5://127.0.0.1:${_socks_port}" ;;
-				Proxy42|awg)           _method="socks"; _socks_port="10818"; _curl_opt="-x socks5://127.0.0.1:${_socks_port}" ;;
+				Proxy21|t2s21|vless|aggregator) _method="socks"; _socks_port="1097"; _curl_opt="-x socks5h://127.0.0.1:${_socks_port}" ;;
+				Proxy41|t2s41|hysteria) _method="socks"; _socks_port="10808"; _curl_opt="-x socks5h://127.0.0.1:${_socks_port}" ;;
+				Proxy42|awg)           _method="socks"; _socks_port="10818"; _curl_opt="-x socks5h://127.0.0.1:${_socks_port}" ;;
 				*)
 					_method="interface"
 					_ent=$(grep "$_iface" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f2)
@@ -2560,10 +2973,12 @@ EOL2
 			[ -z "$_iface" ] && json_error "iface required"
 			local _url="https://nbg1-speed.hetzner.com/100MB.bin"
 			local _curl_opt=""
+			# v670: aggregator — тот же SOCKS 1097 (раньше тест скорости вёл на
+			# несуществующий интерфейс)
 			case "$_iface" in
-				Proxy21|t2s21|vless)    _curl_opt="-x socks5://127.0.0.1:1097" ;;
-				Proxy41|t2s41|hysteria) _curl_opt="-x socks5://127.0.0.1:10808" ;;
-				Proxy42|awg)           _curl_opt="-x socks5://127.0.0.1:10818" ;;
+				Proxy21|t2s21|vless|aggregator) _curl_opt="-x socks5h://127.0.0.1:1097" ;;
+				Proxy41|t2s41|hysteria) _curl_opt="-x socks5h://127.0.0.1:10808" ;;
+				Proxy42|awg)           _curl_opt="-x socks5h://127.0.0.1:10818" ;;
 				*)
 					_ent=$(grep "$_iface" /opt/etc/inface_equals 2>/dev/null | head -1 | cut -d'|' -f2)
 					[ -z "$_ent" ] && _ent="$_iface"

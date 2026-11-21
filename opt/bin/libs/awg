@@ -480,9 +480,15 @@ cmd_awg_test() {
     if [ -f "$AWG_TEST_SCRIPT" ]; then
         "$AWG_TEST_SCRIPT"
     else
-        local test_ip=$(curl -s --max-time 10 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://2ip.io" 2>/dev/null)
+        # v690: канон проб — socks5h://127.0.0.1:10818 (DNS через тоннель),
+        # как check_awg/watchdog; раньше socks5:// резолвил 2ip.io локально
+        local _tp="${PROXY_LOCAL_PORT_SOCKS:-10818}"
+        local test_ip=$(curl -s --max-time 10 -x "socks5h://127.0.0.1:${_tp}" "https://2ip.io" 2>/dev/null)
         if [ -z "$test_ip" ] || echo "$test_ip" | grep -q -E "(Failed|Error|404|html)"; then
-            test_ip=$(curl -s --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "https://ifconfig.me" 2>/dev/null)
+            test_ip=$(curl -s --max-time 15 -x "socks5h://127.0.0.1:${_tp}" "https://ifconfig.me" 2>/dev/null)
+        fi
+        if [ -z "$test_ip" ] || ! echo "$test_ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
+            test_ip=$(curl -sk --max-time 10 -x "socks5h://127.0.0.1:${_tp}" "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null | sed -n 's/^ip=//p' | head -1)
         fi
         if [ -n "$test_ip" ] && echo "$test_ip" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$"; then
             echo -e "${GREEN}РАБОТАЕТ (IP: $test_ip)${NC}"
@@ -499,11 +505,17 @@ check_awg() {
     [ -f "$AWG_CONFIG" ] || return 1
     # порт/адрес socks берём из env wireproxy (как check_hysteria для hysteria)
     [ -f "$AWG_ENV" ] && . "$AWG_ENV" 2>/dev/null
-    [ -z "$PROXY_LOCAL_IP" ] || [ -z "$PROXY_LOCAL_PORT_SOCKS" ] && return 1
-    # v636: PROBE_URL1/2 из kvas.failover.conf + валидация ответа на голый IP
-    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
+    # v690: канон проб — socks5h://127.0.0.1 (DNS через тоннель, как watchdog
+    # и check_vless v663), порт из env с дефолтом 10818; раньше socks5://
+    # резолвил 2ip.io локально и сбой локального DNS давал false-negative при
+    # живом тоннеле (16.11). Тройной URL-chain + литеральный 1.1.1.1 trace.
+    local _p="${PROXY_LOCAL_PORT_SOCKS:-10818}"
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5h://127.0.0.1:${_p}" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
     if ! _fo_valid_ip "$test_ip"; then
-        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5h://127.0.0.1:${_p}" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
+    fi
+    if ! _fo_valid_ip "$test_ip"; then
+        test_ip=$(curl -sk --connect-timeout 5 --max-time 10 -x "socks5h://127.0.0.1:${_p}" "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null | sed -n 's/^ip=//p' | head -1)
     fi
     if _fo_valid_ip "$test_ip"; then
         AWG_IP="$test_ip"
@@ -638,6 +650,7 @@ cmd_awg_log() {
 # Управление службой
 cmd_awg_start() {
     [ -f /opt/etc/init.d/S99awg ] || { echo "Служба не инициализирована. kvas awg new"; return 1; }
+    rm -f /opt/var/kvas/svc.awg.disabled
     /opt/etc/init.d/S99awg start
     sleep 2
     cmd_awg_test
@@ -649,6 +662,7 @@ cmd_awg_stop() {
 
 cmd_awg_restart() {
     [ -f /opt/etc/init.d/S99awg ] || { echo "Служба не инициализирована. kvas awg new"; return 1; }
+    rm -f /opt/var/kvas/svc.awg.disabled
     /opt/etc/init.d/S99awg restart
     sleep 2
     cmd_awg_test

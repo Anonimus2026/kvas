@@ -126,13 +126,51 @@ vless_link_parse() {
     local vless_port=$(echo "${tag}" | sed 's/.*@.*:\(.*\)?.*/\1/')
     # Используем [?&] для корректного поиска параметров в query string
     # BusyBox sed не поддерживает \? как GNU sed, поэтому [?&] надёжнее
+    # v686: ВСЕ параметры разбираются ТОЛЬКО grep-идиомой. Раньше снимок значений
+    # шёл через `sed 's/.*[?&]key=\([^&]*\).*/\1/'` — при отсутствии параметра
+    # шаблон не срабатывает и sed ВОЗВРАЩАЕТ ВСЮ СТРОКУ (целый tag) вместо пустого
+    # значения: ссылка без flow/sni/sid получала мусор вместо дефолта.
     local vless_network=$(echo "${tag}" | grep -oE '[?&]type=[^&]*' | head -1 | cut -d= -f2-)
-    local vless_sni=$(echo "${tag}" | sed 's/.*[?&]sni=\([^&]*\).*/\1/')
-    local vless_short_id=$(echo "${tag}" | sed 's/.*[?&]sid=\([^&]*\).*/\1/')
-    local vless_browser_fp=$(echo "${tag}" | sed 's/.*[?&]fp=\([^&]*\).*/\1/')
-    local vless_pub_key=$(echo "${tag}" | sed 's/.*[?&]pbk=\([^&]*\).*/\1/')
-    local vless_security=$(echo "${tag}" | sed 's/.*[?&]security=\([^&]*\).*/\1/')
-    local vless_flow=$(echo "${tag}" | sed 's/.*[?&]flow=\([^&]*\).*/\1/')
+    local vless_sni=$(echo "${tag}" | grep -oE '[?&]sni=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_short_id=$(echo "${tag}" | grep -oE '[?&]sid=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_browser_fp=$(echo "${tag}" | grep -oE '[?&]fp=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_pub_key=$(echo "${tag}" | grep -oE '[?&]pbk=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_security=$(echo "${tag}" | grep -oE '[?&]security=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_flow=$(echo "${tag}" | grep -oE '[?&]flow=[^&]*' | head -1 | cut -d= -f2-)
+    # v686: параметры транспорта (xhttp/ws/grpc) — path/host/mode/serviceName
+    local vless_path=$(echo "${tag}" | grep -oE '[?&]path=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_host=$(echo "${tag}" | grep -oE '[?&]host=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_mode=$(echo "${tag}" | grep -oE '[?&]mode=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_svc=$(echo "${tag}" | grep -oE '[?&]serviceName=[^&]*' | head -1 | cut -d= -f2-)
+    # v687: xhttp поверх TLS требует alpn и xPaddingBytes — без них сервер
+    # отвергает соединение (жалоба: ссылка работает в v2rayTun, в kvas нет).
+    # v2rayTun передаёт xPaddingBytes и внутри параметра extra (JSON), и отдельным
+    # x_padding_bytes; alpn приходит url-encoded (http%2F1.1 → http/1.1).
+    local vless_alpn=$(echo "${tag}" | grep -oE '[?&]alpn=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_xpad=$(echo "${tag}" | grep -oE '[?&]x_padding_bytes=[^&]*' | head -1 | cut -d= -f2-)
+    local vless_extra=$(echo "${tag}" | grep -oE '[?&]extra=[^&]*' | head -1 | cut -d= -f2-)
+
+    # v686: urldecode (%XX/+ → символы) — идиома manage.sh: при отсутствии
+    # percent-кодирования возвращаем значение как есть
+    _vless_urldec(){
+        case "$1" in
+            *%*|*+*) printf '%s' "$1" | sed 's/+/ /g; s/%/\\x/g' | xargs -0 printf 2>/dev/null ;;
+            *) printf '%s' "$1" ;;
+        esac
+    }
+    vless_path=$(_vless_urldec "${vless_path}")
+    vless_host=$(_vless_urldec "${vless_host}")
+    vless_svc=$(_vless_urldec "${vless_svc}")
+    # v687: xhttp/TLS параметры (urldecode; extra — источник xPaddingBytes)
+    vless_alpn=$(_vless_urldec "${vless_alpn}")
+    vless_xpad=$(_vless_urldec "${vless_xpad}")
+    vless_extra=$(_vless_urldec "${vless_extra}")
+    if [ -z "${vless_xpad}" ] && [ -n "${vless_extra}" ]; then
+        vless_xpad=$(echo "${vless_extra}" | grep -oE '"xPaddingBytes"[[:space:]]*:[[:space:]]*"[^"]*"' \
+            | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/')
+    fi
+    # v686: splithttp — старое имя xhttp, ссылки с ним не распознавались
+    [ "${vless_network}" = "splithttp" ] && vless_network="xhttp"
 
     # Проверка наличия обязательных параметров
 
@@ -200,6 +238,57 @@ vless_link_parse() {
                     \"serverName\": \"${vless_sni}\"
                 },"
     fi
+
+    # v687: alpn обязателен для xhttp поверх TLS — без него сервер отвергает
+    # handshake, соединение не поднимается (жалоба: ссылка работает в v2rayTun,
+    # в kvas нет). Добавляем и в другие tls-ветки: список "h2,http/1.1" совместим
+    # с ws/grpc/tcp (там alpn либо не задан, либо приходит корректный).
+    local alpn_line=""
+    if [ -n "${vless_alpn}" ]; then
+        alpn_line=",
+                    \"alpn\": [$(echo "${vless_alpn}" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | sed 's/.*/"&"/' | tr '\n' ',' | sed 's/,$//')]"
+    fi
+
+    # v686: настройки ТРАНСПОРТА — отдельно от ветки security (reality/tls).
+    # Раньше обе ветки конфига жёстко писали "tcpSettings": у ссылок
+    # type=xhttp (и ws/grpc) не было своих настроек → `xray -test` проходил
+    # (конфиг формально валиден), а соединение не поднималось — path/host/mode
+    # оставались дефолтными и не совпадали с сервером (жалоба: type=xhttp
+    # не подключается). Алиас splithttp нормализован выше. Для tcp (и h2)
+    # блок воспроизводится побайтово — регрессии нет.
+    local transport_block=""
+    case "${vless_network}" in
+        xhttp)
+            # v687: xPaddingBytes — сервер xhttp требует согласованную длину
+            # паддинга; без неё соединение сбрасывается (v2rayTun её передаёт).
+            local xpad_line=""
+            [ -n "${vless_xpad}" ] && xpad_line=",
+                    \"xPaddingBytes\": \"${vless_xpad}\""
+            transport_block="                \"xhttpSettings\": {
+                    \"path\": \"${vless_path:-/}\",
+                    \"host\": \"${vless_host}\",
+                    \"mode\": \"${vless_mode:-auto}\"${xpad_line}
+                }"
+            ;;
+        ws)
+            transport_block="                \"wsSettings\": {
+                    \"path\": \"${vless_path:-/}\",
+                    \"host\": \"${vless_host}\"
+                }"
+            ;;
+        grpc)
+            transport_block="                \"grpcSettings\": {
+                    \"serviceName\": \"${vless_svc:-${vless_path}}\"
+                }"
+            ;;
+        *)
+            transport_block="                \"tcpSettings\": {
+                    \"header\": {
+                        \"type\": \"none\"
+                    }
+                }"
+            ;;
+    esac
 
     # Генерируем конфиг в зависимости от типа подключения
     # flow нужен ТОЛЬКО для reality + НЕ xhttp (v641: и НЕ grpc — xray отклоняет
@@ -270,11 +359,7 @@ vless_link_parse() {
                     "shortId": "${vless_short_id}",
                     "spiderX": "/"
                 },
-                "tcpSettings": {
-                    "header": {
-                        "type": "none"
-                    }
-                }
+${transport_block}
             }
         }
     ]
@@ -327,13 +412,9 @@ EOF
                 "security": "${vless_security}",
                 "tlsSettings": {
                     "serverName": "${vless_sni}",
-                    "fingerprint": "${vless_browser_fp:-chrome}"
+                    "fingerprint": "${vless_browser_fp:-chrome}"${alpn_line}
                 },
-                "tcpSettings": {
-                    "header": {
-                        "type": "none"
-                    }
-                }
+${transport_block}
             }
         }
     ]

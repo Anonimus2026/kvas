@@ -4,6 +4,26 @@ source /opt/apps/kvas/bin/libs/main
 get_config_value(){
         grep "${1}" "${KVAS_CONF_FILE}" | cut -d'=' -f2
 }
+
+# v674: локальный socks-порт прокси-интерфейса (Proxy41=hysteria, Proxy42=awg):
+# порт берём из env.sh сервиса, дефолт — если файл недоступен
+proxy_probe_port(){
+        case "${1}" in
+                Proxy41) _f=/opt/apps/kvas/hysteria/etc/conf/env.sh; _d=10808 ;;
+                Proxy42) _f=/opt/apps/kvas/awg/etc/conf/env.sh;      _d=10818 ;;
+                *) return 1 ;;
+        esac
+        _p=$(sed -n 's/^PROXY_LOCAL_PORT_SOCKS=//p' "${_f}" 2>/dev/null | head -1)
+        case "${_p}" in ''|*[!0-9]*) _p="${_d}" ;; esac
+        printf '%s' "${_p}"
+}
+
+# v674: проба тоннеля через локальный socks (0 = жив)
+test_proxy_connection(){
+        [ -n "${1}" ] || return 1
+        curl -s -m 5 --connect-timeout 4 -x "socks5h://127.0.0.1:${1}" https://api.ipify.org >/dev/null 2>&1
+}
+
 get_current_entware_vpn_interface() {
         inface_entware=$(get_config_value INFACE_ENT)
         inface=$(grep "${inface_entware}" "${INFACE_NAMES_FILE}" | cut -d'|' -f2)
@@ -19,6 +39,16 @@ get_current_cli_vpn_interface() {
 ENTWARE_INTERFACE=$(get_current_entware_vpn_interface)
 CLI_INTERFACE=$(get_current_cli_vpn_interface)
 
+# v680: guard — INFACE_ENT не разрешается в интерфейс (нет строки в
+# /opt/etc/inface_equals или нет ключа в kvas.conf). Без guard каждый тик
+# cron.5mins шлёт два битых RCI-запроса на `rci/interface/` с пустым именем:
+# [E] "no input [...] agent curl" + [E] "Обнаружена ошибка при переключении '' сети",
+# а jq-проверка с id=="" всегда роняла restart. В логе 679: 07:30/07:35 каждые 5 мин.
+if [ -z "${CLI_INTERFACE}" ] || [ -z "${ENTWARE_INTERFACE}" ]; then
+        logger -t "КВАС" "check_vpn: INFACE_ENT не разрешается в интерфейс (CLI='${CLI_INTERFACE}' ENT='${ENTWARE_INTERFACE}') - проверка пропущена"
+        exit 0
+fi
+
 reset_logger(){
         logger -t "КВАС"  "Осуществляем перезапуск ${CLI_INTERFACE}::${ENTWARE_INTERFACE}"
 }
@@ -29,12 +59,43 @@ restart_ssr_connection(){
         /opt/etc/init.d/S22shadowsocks restart &>/dev/null
 }
 restart_vpn_connection(){
+        # v690: pressure-guard — при исчерпании памяти bounce откладывается.
+        # В инцидент 16.11 RCI-цепочка висела в D-состоянии (swap-in через zram),
+        # а down/up туннеля добавлял нагрузку и превращал деградацию в зависание.
+        # Пороги переопределяются env'ом (тесты t690).
+        _ma_min=${KVAS_CV_MA_MIN:-10240}
+        _sw_pct=${KVAS_CV_SWAP_PCT:-90}
+        _ma=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)
+        if [ -n "${_ma}" ] && [ "${_ma}" -lt "${_ma_min}" ] 2>/dev/null; then
+                logger -t "КВАС" "check_vpn: bounce ${CLI_INTERFACE} отложен (MemAvailable ${_ma}КБ < ${_ma_min}КБ)"
+                return 0
+        fi
+        _st=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null)
+        _sf=$(awk '/^SwapFree:/{print $2}' /proc/meminfo 2>/dev/null)
+        if [ -n "${_st}" ] && [ "${_st}" -gt 0 ] 2>/dev/null; then
+                _sp=$(( (_st - _sf) * 100 / _st ))
+                if [ "${_sp}" -ge "${_sw_pct}" ] 2>/dev/null; then
+                        logger -t "КВАС" "check_vpn: bounce ${CLI_INTERFACE} отложен (swap ${_sp}%)"
+                        return 0
+                fi
+        fi
+        # v690: rate-limit — не чаще 1 bounce/10 мин на интерфейс (лого-флеш-шум
+        # и петля check_vpn<->ndm во время деградации)
+        _rl=/tmp/kvas-check_vpn.bounce.${CLI_INTERFACE}
+        _now=$(date +%s)
+        _last=$(cat "${_rl}" 2>/dev/null); [ -n "${_last}" ] || _last=0
+        if [ $((_now - _last)) -lt 600 ] 2>/dev/null; then
+                logger -t "КВАС" "check_vpn: bounce ${CLI_INTERFACE} пропущен (rate-limit 10 мин)"
+                return 0
+        fi
 
         cli_request="localhost:79/rci/interface/${CLI_INTERFACE}"
         reset_logger
-        curl -s -d '{"down":"true"}' "${cli_request}"
+        # v690: --max-time 5 — RCI без таймаута висел вечно при wedged ndm (16.11)
+        curl -s --max-time 5 -d '{"down":"true"}' "${cli_request}"
         sleep 1
-        curl -s -d '{"up":"true"}' "${cli_request}"
+        curl -s --max-time 5 -d '{"up":"true"}' "${cli_request}"
+        echo "${_now}" > "${_rl}" 2>/dev/null
 }
 
 get_host_ip(){
@@ -84,12 +145,37 @@ _tg_probe_state(){
 			echo down
 		fi
 	else
-		if [ "$(curl -s --max-time 5 'http://localhost:79/rci/show/interface' 2>/dev/null | jq -r '.[] | select(.id=="'"${CLI_INTERFACE}"'") | .connected' 2>/dev/null | head -1)" = "yes" ]; then
-			echo ok
-		else
-			echo down
-		fi
+		case "${CLI_INTERFACE}" in
+			Proxy41|Proxy42)
+				# v674: connected у прокси всегда "no" — состояние тоннеля по socks-пробе
+				if test_proxy_connection "$(proxy_probe_port "${CLI_INTERFACE}")" ; then
+					echo ok
+				else
+					echo down
+				fi
+				;;
+			*)
+				if [ "$(curl -s --max-time 5 'http://localhost:79/rci/show/interface' 2>/dev/null | jq -r '.[] | select(.id=="'"${CLI_INTERFACE}"'") | .connected' 2>/dev/null | head -1)" = "yes" ]; then
+					echo ok
+				else
+					echo down
+				fi
+				;;
+		esac
 	fi
+}
+
+# v690: порог 2 неудач подряд до bounce — единичная потерянная проба не должна
+# ронять рабочий тоннель (16.11: одна неудача = немедленный down/up живого awg)
+_cv_fail_count(){
+        _cf=/tmp/kvas-check_vpn.fails.${CLI_INTERFACE}
+        _n=$(cat "${_cf}" 2>/dev/null); [ -n "${_n}" ] || _n=0
+        _n=$((_n + 1))
+        echo "${_n}" > "${_cf}" 2>/dev/null
+        [ "${_n}" -ge 2 ] 2>/dev/null
+}
+_cv_fail_reset(){
+        rm -f "/tmp/kvas-check_vpn.fails.${CLI_INTERFACE}" 2>/dev/null
 }
 
 test_connection(){
@@ -103,9 +189,31 @@ test_connection(){
         else
 #        	если соединение отлично от ssr и его состояния: state и link отличны от up,
 #        	а состояние флага connected отлично от состояния yes, то vpn соединение перезапускаем
-			if curl -s "http://localhost:79/rci/show/interface" | jq -r '.[] | select(.id=="'"${CLI_INTERFACE}"'" and .state=="up" and .link=="up") | .connected' | grep -qv 'yes' ; then
-					restart_vpn_connection
-			fi
+			case "${CLI_INTERFACE}" in
+				Proxy41|Proxy42)
+					# v674: у прокси-интерфейсов RCI connected ВСЕГДА "no" — каждые
+					# 5 мин check_vpn делал down/up рабочего тоннеля. Вместо bounce —
+					# проба локального socks-порта: жив — молчим, мёртв — перезапуск.
+					# v690: bounce только со 2-й неудачи подряд (см. _cv_fail_count)
+					if ! test_proxy_connection "$(proxy_probe_port "${CLI_INTERFACE}")" ; then
+						if _cv_fail_count; then
+							restart_vpn_connection
+						fi
+					else
+						_cv_fail_reset
+					fi
+					;;
+				*)
+					# v690: --max-time 5 (как в _tg_probe_state) + порог-2
+					if curl -s --max-time 5 "http://localhost:79/rci/show/interface" | jq -r '.[] | select(.id=="'"${CLI_INTERFACE}"'" and .state=="up" and .link=="up") | .connected' | grep -qv 'yes' ; then
+						if _cv_fail_count; then
+							restart_vpn_connection
+						fi
+					else
+						_cv_fail_reset
+					fi
+					;;
+			esac
 
         fi
 
@@ -124,4 +232,20 @@ test_connection(){
 	echo "${_now}" > "${_sf}" 2>/dev/null
 }
 
-test_connection &
+# v690: одиночный экземпляр — cron.5mins + ручные запуски не должны гонять
+# test_connection параллельно (два RCI down/up одновременно = буря на ndm,
+# как в v664). Лок в /tmp; протухший (>5 мин, владелец убит) забираем сами.
+(
+	_cv_lock=/tmp/kvas-check_vpn.lock
+	if ! mkdir "${_cv_lock}" 2>/dev/null; then
+		_cv_age=$(( $(date +%s) - $(stat -c %Y "${_cv_lock}" 2>/dev/null || echo 0) ))
+		if [ "${_cv_age}" -gt 300 ] 2>/dev/null; then
+			rm -rf "${_cv_lock}" 2>/dev/null
+			mkdir "${_cv_lock}" 2>/dev/null || exit 0
+		else
+			exit 0
+		fi
+	fi
+	trap 'rmdir "${_cv_lock}" 2>/dev/null' EXIT INT TERM
+	test_connection
+) &

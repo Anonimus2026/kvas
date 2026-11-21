@@ -1,0 +1,8 @@
+#!/bin/sh
+# v689: timestamp-filter для /opt/var/kvas/agg.last.log: каждая строка stdin
+# получает префикс [MM-DD HH:MM:SS]. Используется CGI-обёртками manage.sh и
+# cron-хуками агрегатора: раньше строки CGI не имели времени, а cron вообще
+# выбрасывал вывод в /dev/null — «когда это произошло» было не видно.
+while IFS= read -r _l || [ -n "${_l}" ]; do
+	printf '[%s] %s\n' "$(date '+%m-%d %H:%M:%S')" "${_l}"
+done

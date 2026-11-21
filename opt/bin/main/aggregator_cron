@@ -1,4 +1,16 @@
 #!/bin/sh
 # VLESS aggregator cron hook (v634): symlinked into /opt/etc/cron.15min/aggregator.
 # The library gates the real re-check to every 30 minutes (AGG_RECHECK_SEC).
-exec /opt/apps/kvas/bin/kvas aggregator cron >/dev/null 2>&1
+# v689: раньше вывод уходил в /dev/null — cron-действия (автоскан, воскрешение,
+# подписка) были невидимы в логе. Пишем в общий лог с таймстемпами (tsfilter)
+# + лёгкая ротация файла, чтобы он не рос бесконечно.
+LOG=/opt/var/kvas/agg.last.log
+TSF=/opt/apps/kvas/bin/main/tsfilter
+if [ -f "${LOG}" ] && [ "$(wc -c < "${LOG}" 2>/dev/null)" -gt 204800 ]; then
+	tail -n 300 "${LOG}" > "${LOG}.tmp" 2>/dev/null && mv -f "${LOG}.tmp" "${LOG}"
+fi
+if [ -x "${TSF}" ]; then
+	/opt/apps/kvas/bin/kvas aggregator cron 2>&1 | "${TSF}" >> "${LOG}"
+else
+	/opt/apps/kvas/bin/kvas aggregator cron >> "${LOG}" 2>&1
+fi

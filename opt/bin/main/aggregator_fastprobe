@@ -1,0 +1,14 @@
+#!/bin/sh
+# v658: fast-fail probe aggregator (cron.1min).
+# Лёгкая проверка активного сервера каждую минуту (curl через socks).
+# 2 неудачи подряд → немедленный emergency scan (без ожидания 3×15 мин).
+# Полная проверка dead-серверов остаётся в cron.15min/aggregator.
+# v689: вывод идёт в общий лог с таймстемпами (раньше /dev/null — быстрые
+# автопереключения были невидимы). Ротация — в cron.15min хуке.
+LOG=/opt/var/kvas/agg.last.log
+TSF=/opt/apps/kvas/bin/main/tsfilter
+if [ -x "${TSF}" ]; then
+	/opt/apps/kvas/bin/kvas aggregator fastprobe 2>&1 | "${TSF}" >> "${LOG}"
+else
+	/opt/apps/kvas/bin/kvas aggregator fastprobe >> "${LOG}" 2>&1
+fi

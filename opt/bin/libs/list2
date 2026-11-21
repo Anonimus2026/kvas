@@ -9,9 +9,19 @@
 #	При недоступности тоннеля таблица 201 очищается — трафик уходит
 #	в таблицу 200 (правило фоллбэка 1779).
 #
-#	Команды: kvas list2 [add|del|list|tunnel|tunnel-list|status] [значение]
+#	Команды: kvas list2 [add|del|list|tunnel|tunnel-list|status|on|off] [значение]
+#
+#	v670: вкл/выкл (флаг LIST2_DISABLED_FILE), фильтр available — только
+#	существующие интерфейсы (как в списке «VPN тоннель»), токен aggregator.
 #
 # ------------------------------------------------------------------------------------------
+
+# v670: флаг выключения Списка 2 (переживает ребут; снимается через list2 on)
+LIST2_DISABLED_FILE="${LIST2_DISABLED_FILE:-/opt/var/kvas/list2.disabled}"
+
+cmd_list2__is_enabled() {
+	[ ! -f "${LIST2_DISABLED_FILE}" ]
+}
 
 # файл списка создаётся при первом обращении
 cmd_list2__ensure_file() {
@@ -42,6 +52,9 @@ cmd_list2__is_domain() {
 
 # список настроенных тоннелей lane2 (current всегда доступен;
 # плюс тоннели, поднятые в самом Keenetic — OpenVPN/SSTP/WG/... — как у основного списка)
+# v670: фильтрация как в manage.sh vpn_interfaces — только существующие
+# интерфейсы (устаревшие строки inface_equals не показываем), плюс aggregator
+# как виртуальный пункт (как в списке «VPN тоннель»)
 cmd_list2__available() {
 	local out="current"
 	local cli _rest
@@ -49,13 +62,26 @@ cmd_list2__available() {
 	grep -q "^Proxy41|" "${INFACE_NAMES_FILE}" 2>/dev/null && out="${out} hysteria"
 	grep -q "^Proxy42|" "${INFACE_NAMES_FILE}" 2>/dev/null && out="${out} awg"
 	if [ -f "${INFACE_NAMES_FILE}" ]; then
-		while IFS='|' read -r cli _rest; do
+		local ent
+		while IFS='|' read -r cli ent _rest; do
 			case "${cli}" in
 				''|shadowsocks|Proxy21|proxy21|Proxy41|proxy41|Proxy42|proxy42) continue ;;
 			esac
 			case " ${out} " in *" ${cli} "*) continue ;; esac
+			# строка без интерфейса — мусор; интерфейс должен существовать
+			# (t2s*/ezcfg* — SOCKS-интерфейсы: могут не существовать при
+			# выключенном прокси — оставляем, как в vpn_interfaces)
+			[ -n "${ent}" ] || continue
+			case "${ent}" in
+				t2s*|ezcfg*) ;;
+				*) ip link show "${ent}" 2>/dev/null | grep -q '<' || continue ;;
+			esac
 			out="${out} ${cli}"
 		done < "${INFACE_NAMES_FILE}"
+	fi
+	# v670: aggregator — как в списке «VPN тоннель» в управлении
+	if [ -s "${AGG_POOL_FILE:-/opt/etc/kvas.aggregator}" ]; then
+		case " ${out} " in *" aggregator "*) ;; *) out="${out} aggregator" ;; esac
 	fi
 	echo "${out}"
 }
@@ -67,6 +93,10 @@ cmd_list2__label() {
 		vless)    cli='Proxy21' ;;
 		hysteria) cli='Proxy41' ;;
 		awg)      cli='Proxy42' ;;
+		aggregator)
+			# v670: как в списке «VPN тоннель» в управлении
+			echo "Aggregator VLESS"
+			return ;;
 		current)
 			ent=$(get_config_value 'INFACE_ENT')
 			desc=$(awk -F'|' -v e="${ent}" '$2==e {print $3; exit}' "${INFACE_NAMES_FILE}" 2>/dev/null)
@@ -131,6 +161,8 @@ cmd_list2__apply() {
 	cmd_list2__ensure_ipset
 	/opt/apps/kvas/bin/main/ipset >/dev/null 2>&1
 	cmd_list2__regen_dns
+	# v670: выключен — только список/ipset/dns, цепочку и таблицу не поднимаем
+	cmd_list2__is_enabled || return 0
 	ip4__mark2__create_chain
 	ip4__mark2__add_routing_for_home
 	ip4__route2__add_table
@@ -276,7 +308,7 @@ cmd_list2_tunnel() {
 		return
 	fi
 	case "${tun}" in
-		current|vless|hysteria|awg) ;;
+		current|vless|hysteria|awg|aggregator) ;;
 		*)
 			# тоннели Keenetic (sstp/openconnect/...) — по списку inface_equals
 			if ! echo " $(cmd_list2__available) " | grep -qF " ${tun} " ; then
@@ -310,9 +342,44 @@ cmd_list2_status() {
 	echo "entries=$(cmd_list2__count)"
 	echo "mark=${MARK2_NUM}"
 	echo "table=${ROUTE_TABLE2_ID}"
+	# v670: состояние вкл/выкл для Web UI
+	if cmd_list2__is_enabled ; then
+		echo "enabled=yes"
+	else
+		echo "enabled=no"
+	fi
 	# подписи для Web UI: label.<токен>=<описание>
 	local t
 	for t in $(cmd_list2__available) ; do
 		echo "label.${t}=$(cmd_list2__label "${t}")"
 	done
+}
+
+# ------------------------------------------------------------------------------------------
+#
+#	v670: вкл/выкл Списка 2 (кнопка в Web UI)
+#
+# ------------------------------------------------------------------------------------------
+
+cmd_list2_on() {
+	if cmd_list2__is_enabled ; then
+		echo "Список 2 уже включён"
+		return 0
+	fi
+	rm -f "${LIST2_DISABLED_FILE}" 2>/dev/null
+	cmd_list2__apply
+	echo "Список 2 включён: перехват и таблица ${ROUTE_TABLE2_ID} восстановлены"
+}
+
+cmd_list2_off() {
+	if ! cmd_list2__is_enabled ; then
+		echo "Список 2 уже выключен"
+		return 0
+	fi
+	mkdir -p "$(dirname "${LIST2_DISABLED_FILE}")" 2>/dev/null
+	touch "${LIST2_DISABLED_FILE}" 2>/dev/null
+	# снять вход в цепочку, выкинуть цепочку, ip rule и таблицу 201;
+	# ipset/dns/список остаются — при повторном включении ничего не пересобирать
+	ip4__mark2__disable
+	echo "Список 2 выключен: перехват полосы снят, список и настройки сохранены"
 }

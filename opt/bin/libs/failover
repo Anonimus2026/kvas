@@ -99,16 +99,17 @@ EOF
 # Возвращает список имён через пробел
 get_available_channels() {
     local channels=""
+    # v667: исключаем каналы, выключенные пользователем («Стоп» — флаг svc.*.disabled)
     # vless — если xray запущен
-    if pidof xray >/dev/null 2>&1; then
+    if pidof xray >/dev/null 2>&1 && [ ! -f /opt/var/kvas/svc.vless.disabled ]; then
         channels="$channels vless"
     fi
     # hysteria — если бинарник и конфиг есть
-    if [ -f /opt/apps/kvas/hysteria/bin/hysteria ] && [ -f /opt/apps/kvas/hysteria/etc/conf/env.sh ]; then
+    if [ -f /opt/apps/kvas/hysteria/bin/hysteria ] && [ -f /opt/apps/kvas/hysteria/etc/conf/env.sh ] && [ ! -f /opt/var/kvas/svc.hysteria.disabled ]; then
         channels="$channels hysteria"
     fi
     # awg — если бинарник и конфиг есть
-    if [ -f /opt/apps/kvas/awg/bin/wireproxy ] && [ -f /opt/apps/kvas/awg/etc/conf/env.sh ]; then
+    if [ -f /opt/apps/kvas/awg/bin/wireproxy ] && [ -f /opt/apps/kvas/awg/etc/conf/env.sh ] && [ ! -f /opt/var/kvas/svc.awg.disabled ]; then
         channels="$channels awg"
     fi
     # Другие интерфейсы из inface_equals (кроме bridges и ethernet)
@@ -122,7 +123,14 @@ get_available_channels() {
                 ;;
         esac
     done < /opt/etc/inface_equals 2>/dev/null
-    echo "$channels" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' '
+    echo "$channels" | tr ' ' '\n' | grep -v '^$' | sort -u | awk '
+        # v686: основные протоколы вперёд. Раньше сортировка sort -u (байтовый
+        # порядок) ставила ЗАГЛАВНЫЕ имена чужих интерфейсов (KVN, WG-CL1) выше
+        # vless/hysteria/awg — автонастройка брала первые два и очередь состояла
+        # из чужих ifaces при живых hysteria/awg («Ни один канал не доступен»).
+        /^(vless|hysteria|awg)$/ { core = core $0 " "; next }
+        { rest = rest $0 " " }
+        END { printf "%s%s", core, rest }'
 }
 
 # Интерактивный выбор каналов при 'kvas failover on'
@@ -221,7 +229,25 @@ interactive_setup_channels() {
 auto_setup_channels() {
     local active=$(get_active_iface)
     local available=$(get_available_channels)
-    
+    # v686: автонастройка предпочитает основные протоколы (vless/hysteria/awg):
+    # раньше бралось первое из sort -u — заглавные имена чужих интерфейсов
+    # (KVN, WG-CL1) обгоняли vless/hysteria/awg, в очередь попадали чужие ifaces
+    # и failover отвечал «Ни один канал не доступен» при живых резервах.
+    # Основных меньше 2 — чужие оставляем как запасной вариант (иначе secondary
+    # остался бы пустым у тех, у кого настроен только один протокол).
+    local _core="" _rest="" _ch
+    for _ch in ${available}; do
+        case "${_ch}" in
+            vless|hysteria|awg) _core="${_core} ${_ch}" ;;
+            *) _rest="${_rest} ${_ch}" ;;
+        esac
+    done
+    if [ "$(echo ${_core} | wc -w)" -ge 2 ] 2>/dev/null; then
+        available="${_core}"
+    else
+        available="${_core}${_rest}"
+    fi
+
     if [ "$active" != "none" ]; then
         PRIMARY="$active"
     else
@@ -297,9 +323,14 @@ _fo_valid_ip() {
 
 # Проверка vless через socks5
 check_vless() {
-    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5://127.0.0.1:1097" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
+    # v663: socks5h — DNS через тоннель (локальный DNS/AdGuard не должен давать
+    # false-negative при рабочем тоннеле); + литеральный IP 1.1.1.1 trace
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5h://127.0.0.1:1097" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
     if ! _fo_valid_ip "$test_ip"; then
-        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://127.0.0.1:1097" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5h://127.0.0.1:1097" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
+    fi
+    if ! _fo_valid_ip "$test_ip"; then
+        test_ip=$(curl -sk --connect-timeout 5 --max-time 10 -x "socks5h://127.0.0.1:1097" "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null | sed -n 's/^ip=//p' | head -1)
     fi
     if _fo_valid_ip "$test_ip"; then
         VLESS_IP="$test_ip"
@@ -311,12 +342,18 @@ check_vless() {
 # Проверка hysteria через socks5
 check_hysteria() {
     local env_conf="/opt/apps/kvas/hysteria/etc/conf/env.sh"
-    [ -f "$env_conf" ] || return 1
-    . "$env_conf"
-    [ -z "$PROXY_LOCAL_IP" ] || [ -z "$PROXY_LOCAL_PORT_SOCKS" ] && return 1
-    local test_ip=$(curl -s --connect-timeout 6 --max-time 15 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
+    [ -f "$env_conf" ] && . "$env_conf" 2>/dev/null
+    # v690: канон проб — socks5h://127.0.0.1 (DNS через тоннель, как watchdog
+    # и check_vless v663), порт из env с дефолтом; раньше socks5:// резолвил
+    # 2ip.io локально и сбой локального DNS давал false-negative при живом
+    # тоннеле (16.11). Тройной URL-chain + литеральный 1.1.1.1 trace.
+    local _p="${PROXY_LOCAL_PORT_SOCKS:-10808}"
+    local test_ip=$(curl -s --connect-timeout 5 --max-time 15 -x "socks5h://127.0.0.1:${_p}" "${PROBE_URL1:-https://2ip.io}" 2>/dev/null)
     if ! _fo_valid_ip "$test_ip"; then
-        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5://${PROXY_LOCAL_IP}:${PROXY_LOCAL_PORT_SOCKS}" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
+        test_ip=$(curl -s --connect-timeout 10 --max-time 20 -x "socks5h://127.0.0.1:${_p}" "${PROBE_URL2:-https://ifconfig.me}" 2>/dev/null)
+    fi
+    if ! _fo_valid_ip "$test_ip"; then
+        test_ip=$(curl -sk --connect-timeout 5 --max-time 10 -x "socks5h://127.0.0.1:${_p}" "https://1.1.1.1/cdn-cgi/trace" 2>/dev/null | sed -n 's/^ip=//p' | head -1)
     fi
     if _fo_valid_ip "$test_ip"; then
         HYSTERIA_IP="$test_ip"
@@ -396,10 +433,16 @@ switch_to() {
     # чеках демона, пока активный интерфейс ещё не сменился.
     {
         sleep 10
-        /opt/apps/kvas/bin/kvas vpn set "$proto" >> /opt/var/log/kvas-failover.log 2>&1
+        # v686: причина=auto пробрасывается в `kvas vpn set` — там решают, трогать
+        # ли очередь failover (при auto НЕ трогать: иначе каждый авто-сдвиг переписывал
+        # бы PRIMARY и настроенная юзером очередь «исчезала») и гасить ли агрегатор
+        # (при auto НЕ гасить). История пишется внутри `vpn set` ПО ФАКТУ
+        # (подтверждённый активный канал) — record_switch из этого блока убран:
+        # он писал до подтверждения и дублировался при повторных чеках.
+        KVAS_SWITCH_REASON=auto /opt/apps/kvas/bin/kvas vpn set "$proto" >> /opt/var/log/kvas-failover.log 2>&1
         _fo_sw_rc=$?
         if [ "$_fo_sw_rc" -eq 0 ]; then
-            record_switch "$from" "$proto" "auto"
+            _fo_mark_switch
         else
             log_failover "Переключение на $proto не удалось (vpn set rc=${_fo_sw_rc}) — остаёмся на $from"
         fi
@@ -444,6 +487,17 @@ log_failover() {
     local msg="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     mkdir -p /opt/var/log
+    # v690: троттлинг повторов — одинаковое сообщение не чаще 1/5 мин.
+    # Инцидент 16.11: «awg недоступен»+«Ни один канал» каждые ~1.5 мин =
+    # сотни append+tail-100 на USB-флешку (write cache disabled) впустую.
+    local _k _lt _now
+    _k=$(printf '%s' "${msg}" | cut -c1-40 | tr -c 'A-Za-z0-9' '_')
+    _now=$(date +%s)
+    _lt=$(cat "/tmp/kvas-fo-thr.${_k}" 2>/dev/null); [ -n "${_lt}" ] || _lt=0
+    if [ $((_now - _lt)) -lt 300 ] 2>/dev/null; then
+        return 0
+    fi
+    echo "${_now}" > "/tmp/kvas-fo-thr.${_k}" 2>/dev/null
     echo "[$timestamp] $msg" >> "$FAILOVER_LOG"
     tail -100 "$FAILOVER_LOG" > "${FAILOVER_LOG}.tmp" 2>/dev/null
     mv "${FAILOVER_LOG}.tmp" "$FAILOVER_LOG" 2>/dev/null
@@ -474,7 +528,25 @@ _fo_threshold_reached() {
 }
 
 # Вызывается при УСПЕШНОЙ проверке активного канала — сбрасывает счётчики
+# v690: IP последней успешной пробы канала (для лога перехода fail→ok)
+_fo_chan_ip(){
+    case "$1" in
+        awg)      printf '%s' "${AWG_IP:-?}" ;;
+        hysteria) printf '%s' "${HYSTERIA_IP:-?}" ;;
+        vless)    printf '%s' "${VLESS_IP:-?}" ;;
+        *)        printf '?' ;;
+    esac
+}
+
 _fo_note_success() {
+    # v690: лог перехода fail→ok. Раньше успех молчал (дизайн «не спамить»),
+    # но после инцидента 16.11 37 мин тишины было не отличить «канал здоров»
+    # от «демон завис». Логируем ТОЛЬКО если до этого были неудачи.
+    local _n
+    _n=$(_fo_get_fail_count)
+    if [ -n "${_n}" ] && [ "${_n}" -gt 0 ] 2>/dev/null; then
+        log_failover "${1:-канал} восстановлен (проверка ок, IP=${2:-?})"
+    fi
     _fo_reset_fail_count
     _fo_reset_succ_count
 }
@@ -515,6 +587,30 @@ _fo_note_primary_ok() {
     return 1
 }
 
+# v654: cooldown после переключения — не возвращаться на primary сразу же.
+# Без этого: hysteria падает → vless → hysteria кратко отвечает → возврат →
+# hysteria падает снова → цикл каждые ~30 мин (жалоба пользователя).
+FO_SWITCH_COOLDOWN_SEC=600
+_fo_last_switch_file="/tmp/kvas-failover-lastswitch"
+
+_fo_in_cooldown() {
+    local _now _last _age
+    [ -f "$_fo_last_switch_file" ] || return 1
+    _last=$(cat "$_fo_last_switch_file" 2>/dev/null)
+    case "$_last" in ''|*[!0-9]*) return 1 ;; esac
+    _now=$(date +%s)
+    _age=$((_now - _last))
+    if [ "$_age" -lt "$FO_SWITCH_COOLDOWN_SEC" ]; then
+        log_failover "Cooldown возврата: ещё $((FO_SWITCH_COOLDOWN_SEC - _age))с после последнего переключения"
+        return 0
+    fi
+    return 1
+}
+
+_fo_mark_switch() {
+    date +%s > "$_fo_last_switch_file" 2>/dev/null
+}
+
 # Вызывается при НЕУДАЧНОЙ проверке — инкрементирует, логирует
 # Возвращает 0 только если порог достигнут (можно переключать)
 _fo_note_failure() {
@@ -536,17 +632,43 @@ _fo_note_failure() {
 
 run_failover_check() {
     load_failover_conf
-    
+    # v690: tick каждым циклом (до любых ранних return) — failover_heal
+    # (cron.15min) отличает живой цикл от зависшего do_wait. Инцидент 16.11:
+    # pidfile жив, а демон молчал 37+ мин — снаружи это было неотличимо.
+    touch /tmp/kvas-failover.tick 2>/dev/null
+
     [ "$FAILOVER_MODE" != "failover" ] && return 0
-    
+
+    # v686: агрегатор занят сканом/переключением (свежий AGG_LOCK) — цикл
+    # пропускаем: рестарт xray внутри скана рвёт пробы failover и наоборот,
+    # а неудачи, накопленные за время скана, приводили к ложному уходу с
+    # активного тоннеля при живом агрегаторе. Лок старше 15 мин считаем
+    # протухшим (владелец снимает его сам) и проверку не блокирует.
+    if grep -q '^ENABLED=1$' /opt/var/kvas/aggregator.state 2>/dev/null && [ -f /tmp/kvas-aggregator.lock ]; then
+        local _agg_age=$(( $(date +%s) - $(stat -c %Y /tmp/kvas-aggregator.lock 2>/dev/null || echo 0) ))
+        if [ "${_agg_age}" -lt 900 ] 2>/dev/null; then
+            log_failover "Агрегатор занят сканом (лок ${_agg_age}с) — цикл проверки пропущен"
+            return 0
+        fi
+    fi
+
     local active=$(get_active_iface)
     local secondary="${SECONDARY:-manual}"
     local tertiary="${TERTIARY:-}"
-    
+    # v690: heartbeat ≤1/30 мин — в логе видно, что демон жив и что он видит
+    # (после успеха цикл молчит по дизайну; тишина ≠ здоровье)
+    local _hb_now _hb_last
+    _hb_now=$(date +%s)
+    _hb_last=$(cat /tmp/kvas-failover.hb 2>/dev/null); [ -n "${_hb_last}" ] || _hb_last=0
+    if [ $((_hb_now - _hb_last)) -ge 1800 ] 2>/dev/null; then
+        echo "${_hb_now}" > /tmp/kvas-failover.hb 2>/dev/null
+        log_failover "heartbeat: active=${active} primary=${PRIMARY}"
+    fi
+
     # Если active == PRIMARY — проверяем PRIMARY
     if [ "$active" = "$PRIMARY" ]; then
         if check_protocol "$PRIMARY"; then
-            _fo_note_success
+            _fo_note_success "$PRIMARY" "$(_fo_chan_ip "$PRIMARY")"
             return 0
         else
             log_failover "$PRIMARY недоступен."
@@ -574,6 +696,11 @@ run_failover_check() {
     if [ "$active" = "$secondary" ]; then
         log_failover "Обнаружен $secondary. Проверяем $PRIMARY..."
         if check_protocol "$PRIMARY"; then
+            # v654: cooldown — не возвращаемся сразу после переключения (флап-фикс)
+            if _fo_in_cooldown; then
+                _fo_reset_succ_count
+                return 0
+            fi
             # v636: возврат по порогу успехов подряд (FAIL_THRESHOLD)
             if _fo_note_primary_ok; then
                 log_failover "$PRIMARY восстановлен. Возврат."
@@ -590,6 +717,11 @@ run_failover_check() {
     if [ -n "$tertiary" ] && [ "$active" = "$tertiary" ]; then
         log_failover "Активен $tertiary (второй резерв). Проверяем выше..."
         if check_protocol "$PRIMARY"; then
+            # v654: cooldown — не возвращаемся сразу после переключения (флап-фикс)
+            if _fo_in_cooldown; then
+                _fo_reset_succ_count
+                return 0
+            fi
             # v636: возврат по порогу успехов подряд (FAIL_THRESHOLD)
             if _fo_note_primary_ok; then
                 log_failover "$PRIMARY восстановлен. Возврат."
@@ -714,6 +846,10 @@ show_failover_status() {
         echo "Последние события:"
         tail -5 "$FAILOVER_LOG" | sed 's/^/  /'
     }
+    # v675: раньше функция возвращала rc последней команды — отсутствие лога
+    # давало 1, и debug по этому rc ложно печатал «Failover не настроен»
+    # при полностью настроенном конфиге
+    return 0
 }
 
 # Показать статус канала с различением типов
@@ -770,14 +906,28 @@ _show_channel_status() {
 cmd_failover() {
     case "${1}" in
         on)
+            # v686: bootstrap-детект ДО load — load_failover_conf сам создаёт файл
+            # шаблоном, поэтому факт наличия очереди проверяем до него
+            local _fo_boot=1
+            [ -f "$FAILOVER_CONF" ] && _fo_boot=0
             load_failover_conf
             FAILOVER_MODE=failover
             touch "$FAILOVER_FLAG"
-            # Интерактивный выбор если есть TTY, иначе автонастройка
-            if [ -t 0 ]; then
-                interactive_setup_channels
+            # v686: очередь настраивается ТОЛЬКО при первом включении. Раньше каждый
+            # `on` (в т.ч. Web-кнопка «Включить» при уже настроенной очереди) прогонял
+            # auto_setup_channels и ПОЛНОСТЬЮ переписывал PRIMARY/SECONDARY/TERTIARY —
+            # настроенный юзером состав терялся и подставлялись чужие интерфейсы
+            # (жалоба: «failover теряет очередь»).
+            if [ "${_fo_boot}" = "1" ] || [ -z "${PRIMARY}" ]; then
+                # Интерактивный выбор если есть TTY, иначе автонастройка
+                if [ -t 0 ]; then
+                    interactive_setup_channels
+                else
+                    auto_setup_channels
+                fi
+                echo "Очередь каналов настроена автоматически"
             else
-                auto_setup_channels
+                echo "Очередь каналов сохранена (настройка выполнялась ранее)"
             fi
             save_failover_conf
             echo "Автопереключение включено"

@@ -1073,6 +1073,10 @@ ip4_mark_vpn_network() {
 			done
 		}
 	} &>/dev/null
+	# v642: rc хвоста (MASQUERADE/гостевые) не должен врать об ошибке — ядро правил
+	# уже применено в ip4__mark__create_chain; пустой default-route в момент init
+	# или отказ гостевого -A давали ложную «Создаем iptables правила ОШИБКА»
+	return 0
 }
 
 ip4_firewall_set_all_rules() {
