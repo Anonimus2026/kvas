@@ -246,7 +246,7 @@ case "${1}" in
 		# magic ELF check для бинарников
 		for _bn in hysteria xray wireproxy AdGuardHome; do
 			[ -f "$BKPDIR/$_bn" ] || continue
-			_hdr=$(head -c 4 "$BKPDIR/$_bn" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			_hdr=$(head -c 4 "$BKPDIR/$_bn" 2>/dev/null | grep -q "$(printf '\177ELF')" && echo 7f454c46 || :)
 			if [ "$_hdr" != "7f454c46" ]; then
 				echo "ВНИМАНИЕ: $_bn в бэкапе не ELF — пропущен"
 				rm -f "$BKPDIR/$_bn"
@@ -306,7 +306,7 @@ case "${1}" in
 		}
 		# hysteria: только ELF, с mkdir
 		if [ -f "${BKP}/hysteria" ]; then
-			_hdr=$(head -c 4 "${BKP}/hysteria" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			_hdr=$(head -c 4 "${BKP}/hysteria" 2>/dev/null | grep -q "$(printf '\177ELF')" && echo 7f454c46 || :)
 			if [ "$_hdr" = "7f454c46" ]; then
 				mkdir -p /opt/apps/kvas/hysteria/bin
 				if cp -f "${BKP}/hysteria" /opt/apps/kvas/hysteria/bin/hysteria 2>/dev/null; then
@@ -322,7 +322,7 @@ case "${1}" in
 		fi
 		# xray binary
 		if [ -f "${BKP}/xray" ]; then
-			_hdr=$(head -c 4 "${BKP}/xray" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			_hdr=$(head -c 4 "${BKP}/xray" 2>/dev/null | grep -q "$(printf '\177ELF')" && echo 7f454c46 || :)
 			if [ "$_hdr" = "7f454c46" ]; then
 				mkdir -p /opt/sbin
 				if cp -f "${BKP}/xray" /opt/sbin/xray 2>/dev/null; then
@@ -336,7 +336,7 @@ case "${1}" in
 		fi
 		[ -f "${BKP}/awg.conf" ] && { mkdir -p /opt/etc/awg; cp -f "${BKP}/awg.conf" /opt/etc/awg/awg.conf 2>/dev/null && echo "Восстановлен: awg.conf" && _restored=$((_restored + 1)); }
 		[ -f "${BKP}/wireproxy" ] && {
-			_hdr=$(head -c 4 "${BKP}/wireproxy" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			_hdr=$(head -c 4 "${BKP}/wireproxy" 2>/dev/null | grep -q "$(printf '\177ELF')" && echo 7f454c46 || :)
 			if [ "$_hdr" = "7f454c46" ]; then
 				mkdir -p /opt/apps/kvas/awg/bin
 				cp -f "${BKP}/wireproxy" /opt/apps/kvas/awg/bin/wireproxy 2>/dev/null && chmod 755 /opt/apps/kvas/awg/bin/wireproxy && echo "Восстановлен бинарник wireproxy" && _restored=$((_restored + 1))
@@ -352,7 +352,7 @@ case "${1}" in
 			cp -f /opt/apps/kvas/etc/init.d/S99adguard /opt/etc/init.d/S99adguardhome 2>/dev/null && chmod 755 /opt/etc/init.d/S99adguardhome && echo "Восстановлен: S99adguardhome (из пакета)" && _restored=$((_restored + 1))
 		fi
 		if [ -f "${BKP}/AdGuardHome" ]; then
-			_hdr=$(head -c 4 "${BKP}/AdGuardHome" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+			_hdr=$(head -c 4 "${BKP}/AdGuardHome" 2>/dev/null | grep -q "$(printf '\177ELF')" && echo 7f454c46 || :)
 			[ "$_hdr" = "7f454c46" ] && cp -f "${BKP}/AdGuardHome" /opt/bin/AdGuardHome 2>/dev/null && chmod 755 /opt/bin/AdGuardHome && echo "Восстановлен: AdGuardHome binary" && _restored=$((_restored + 1))
 		fi
 		[ -f "${BKP}/hosts" ] && cp -f "${BKP}/hosts" /opt/etc/hosts 2>/dev/null && echo "Восстановлен: hosts" && _restored=$((_restored + 1))

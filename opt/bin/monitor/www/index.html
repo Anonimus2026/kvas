@@ -2460,7 +2460,7 @@ function aggLog(btn){
     e.style.background = '#0d1117';
     e.style.border = '1px solid #30363d';
     e.style.color = '#c9d1d9';
-    e.textContent = d.log || '(лог пуст)';
+    e.textContent = newestFirst(d.log) || '(лог пуст)';
   }, 30000);
 }
 /* v688: реальный результат ФОНОВОЙ операции — через delay показываем лог
@@ -2734,12 +2734,17 @@ function loadTunnelTestInterfaces() {
 }
 
 
+function newestFirst(s) {
+  if (!s) return s;
+  return String(s).replace(/\n+$/, '').split('\n').reverse().join('\n');
+}
+
 function loadKvasLog(type) {
   var el = document.getElementById('logOutput');
   el.innerHTML = '<span style="color:#8b949e;">Загрузка...</span>';
   api('/cgi-bin/manage.sh?action=kvas_log&type=' + type, function(d) {
     if (d.ok) {
-      el.textContent = d.log || 'лог пуст';
+      el.textContent = newestFirst(d.log) || 'лог пуст';
     } else {
       el.textContent = 'Ошибка: ' + (d.error || 'неизвестная');
     }
