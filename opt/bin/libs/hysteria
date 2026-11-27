@@ -316,12 +316,22 @@ cmd_hysteria_add() {
     FP=$(echo "$QUERY" | sed -n -E 's/.*[?&]fp=([^&#]*).*/\1/p' | head -1)
     OBFS_TYPE=$(echo "$QUERY" | sed -n -E 's/.*[?&]obfs=([^&#]*).*/\1/p' | head -1)
     OBFS_PASS=$(echo "$QUERY" | sed -n -E 's/.*[?&]obfs-password=([^&#]*).*/\1/p' | head -1)
+    # v695: серт-обходы hysteria2 — insecure и pinSHA256 (та же idiom
+    # &-префикса, что v693; hysteria2 сам пишет insecure=1 и pinSHA256=hex)
+    INSECURE_RAW=$(echo "$QUERY" | sed -n -E 's/.*[?&]insecure=([^&#]*).*/\1/p' | head -1)
+    PIN_SHA256=$(echo "$QUERY" | sed -n -E 's/.*[?&]pinSHA256=([^&#]*).*/\1/p' | head -1)
 
     # Декодируем URL-encoded значения
     [ -n "$SNI" ] && SNI=$(urldecode "$SNI")
     [ -n "$FP" ] && FP=$(urldecode "$FP")
     [ -n "$OBFS_TYPE" ] && OBFS_TYPE=$(urldecode "$OBFS_TYPE")
     [ -n "$OBFS_PASS" ] && OBFS_PASS=$(urldecode "$OBFS_PASS")
+    [ -n "$PIN_SHA256" ] && PIN_SHA256=$(urldecode "$PIN_SHA256")
+    # v695: insecure=1|true (регистронезависимо) -> флаг; всё прочное — пусто
+    case "$(echo "$INSECURE_RAW" | tr 'A-Z' 'a-z')" in
+        1|true) INSECURE="true" ;;
+        *) INSECURE="" ;;
+    esac
 
     # Если SNI не задан, берём из имени сервера
     [ -z "$SNI" ] && SNI="$SERVER"
@@ -332,6 +342,8 @@ cmd_hysteria_add() {
     echo "  SNI: $SNI"
     echo "  FP: ${FP:-chrome}"
     echo "  OBFS: $OBFS_TYPE"
+    echo "  Insecure: ${INSECURE:-no}"
+    [ -n "$PIN_SHA256" ] && echo "  PinSHA256: ${PIN_SHA256}"
 
     if [ -z "$AUTH" ] || [ -z "$SERVER" ]; then
         echo -e "${RED}Ошибка парсинга ссылки.${NC}"
@@ -350,6 +362,16 @@ tls:
   sni: ${SNI}
   fingerprint: ${FP:-chrome}
 EOC
+
+    # v695: серт-обходы из ссылки — строго ПОСЛЕ heredoc и ДО obfs-блока:
+    # строки с отступом 2 должны идти непрерывно внутри tls-блока, иначе
+    # после obfs-блока они уйдут в маппинг obfs (YAML-вложенность)
+    if [ "$INSECURE" = "true" ]; then
+        echo "  insecure: true" >> "$FINAL_CONFIG_PATH"
+    fi
+    if [ -n "$PIN_SHA256" ]; then
+        echo "  pinSHA256: ${PIN_SHA256}" >> "$FINAL_CONFIG_PATH"
+    fi
 
     # Добавляем obfs если salamander
     if [ "$OBFS_TYPE" = "salamander" ] && [ -n "$OBFS_PASS" ]; then
