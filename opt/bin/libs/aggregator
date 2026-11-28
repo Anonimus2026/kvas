@@ -185,6 +185,16 @@ agg_is_dead(){ # $1=index
 	[ -n "${_d}" ] && [ "${_d}" != "0" ]
 }
 
+# v696: TTL метки живости — ALIVE_* действителен AGG_ALIVE_TTL (24 ч), дальше
+# метка считается протухшей: не в _have (отбор), не в UI, не в мерже подписки.
+# Раньше метка жила вечно: «живых куча» врала, а отбор при _have>=5 не
+# переключился и пул висел в manual (см. agg_sub_select v696).
+AGG_ALIVE_TTL=86400
+_agg_alive_ts(){ # $1=значение ALIVE_* -> 0 свежая / 1 протухла или нет
+	case "$1" in ''|*[!0-9]*|0) return 1 ;; esac
+	[ $(( $(date +%s) - $1 )) -le "${AGG_ALIVE_TTL}" ]
+}
+
 # ---------------- warm standby (v659) ----------------
 # Цель: при отказе активного сервера НЕ сканировать пул поштучно, а сразу
 # применить заранее проверенный кандидат (STANDBY/STANDBY2).
@@ -1066,6 +1076,10 @@ agg_fallback_sweep(){
 
 agg_fallback(){ # no live server: manual config + TG
 	local _psrc
+	# v696: пул УЖЕ в manual (повторный fallback) — сбрасываем cooldown sweep:
+	# иначе вторая «pool exhausted» уходила в manual без единой попытки
+	# восстановления (AGG_FALLBACK_SWEEP_SEC блокировал sweep после первой)
+	[ "$(agg_active_idx)" = "0" ] && agg_set FALLBACK_SWEEP_TS 0
 	# v676: последний живой только что помечен dead — пробуем воскресить пул
 	# прямо сейчас (см. agg_fallback_sweep) вместо ухода в manual до cron
 	if agg_fallback_sweep; then
@@ -1565,6 +1579,8 @@ agg_status_json(){ # for Web UI (manage.sh agg_status)
 		_f=$(agg_get "FAIL_${_i}"); [ -n "${_f}" ] || _f=0
 		# v672: метка живости (когда сервер последний раз проходил полный тест/пробу)
 		_al=$(agg_get "ALIVE_${_i}"); case "${_al}" in ''|*[!0-9]*) _al=0 ;; esac
+		# v696: протухшая метка (AGG_ALIVE_TTL) живой не считается
+		_agg_alive_ts "${_al}" || _al=0
 		# v689: дата пометки dead (тег [dead] в UI раньше был без времени)
 		_dts=$(agg_get "DEAD_${_i}"); case "${_dts}" in ''|*[!0-9]*) _dts=0 ;; esac
 		if agg_is_dead "${_i}"; then
@@ -1691,7 +1707,8 @@ agg_sub_fetch(){ # $1=force -> 0 обновлено / 1 skip / 2 fail (пул н
 			if [ -n "${_l}" ] && ! grep -qxF "${_l}" "${_tmp}.v"; then
 				_al=$(agg_get "ALIVE_${_i}")
 				_dk=$(agg_get "DEAD_${_i}")
-				if [ -n "${_al}" ] && [ "${_al}" != "0" ] && { [ -z "${_dk}" ] || [ "${_dk}" = "0" ]; }; then
+				# v696: «подтверждённо живые» — только непросроченные метки (TTL)
+				if _agg_alive_ts "${_al}" && { [ -z "${_dk}" ] || [ "${_dk}" = "0" ]; }; then
 					printf '%s\n' "${_l}"
 				fi
 			fi
@@ -1772,19 +1789,70 @@ _agg_state_remap(){ # $1=osf $2=oldlinks
 	_agg_old_links=""
 }
 
+# v696: переключение по УЖЕ имеющимся живым (ALIVE_*, свежие метки первыми).
+# Кандидаты тестируются по одному: isolated-тест -> apply -> активация; чужой
+# пул при этом не сканируем (требование: «живых много — работать с имеющимися,
+# обязательно активировать»). Контракт rc: 0 переключились / 1 не вышло / 2 infra.
+_agg_sub_switch_alive(){
+	local _total _i _al _act _cand="" _idx _link _rc _list _max
+	_total=$(agg_pool_count)
+	_act=$(agg_active_idx)
+	_i=1
+	while [ "${_i}" -le "${_total}" ]; do
+		if [ "${_i}" != "${_act}" ] && ! agg_is_dead "${_i}"; then
+			_al=$(agg_get "ALIVE_${_i}")
+			if _agg_alive_ts "${_al}"; then
+				_cand="${_cand}${_al} ${_i}
+"
+			fi
+		fi
+		_i=$((_i + 1))
+	done
+	[ -n "${_cand}" ] || return 1
+	# сортировка по убыванию свежести метки, бюджет = AGG_SUB_TARGET кандидатов
+	_max="${AGG_SUB_TARGET:-5}"
+	_list=$(printf '%s' "${_cand}" | sort -rn | head -"${_max}" | awk '{printf "%s ", $2}')
+	for _idx in ${_list}; do
+		_link=$(agg_pool_get "${_idx}")
+		[ -n "${_link}" ] || continue
+		_rc=0
+		agg_isolated_test "${_link}" || _rc=$?
+		if [ "${_rc}" = "0" ]; then
+			if agg_apply_link "${_idx}" "${_link}"; then
+				agg_set "DEAD_${_idx}" 0
+				agg_set "FAIL_${_idx}" 0
+				agg_set ACTIVE "${_idx}"
+				agg_set "ALIVE_${_idx}" "$(date +%s)"
+				tg_notify aggregator "Aggregator VLESS: no active server, switched to #${_idx} (alive on hand)"
+				printf 'Aggregator: switched to #%s (alive on hand, isolated test ok)\n' "${_idx}"
+				return 0
+			fi
+			# v678: изолированный тест ЖИВ — сбой apply это не fail
+			printf 'Aggregator: #%s alive on hand, but apply failed - trying next\n' "${_idx}"
+		elif [ "${_rc}" = "2" ]; then
+			printf 'Aggregator: infra down during alive-on-hand switch - stopped, nothing marked dead\n'
+			return 2
+		else
+			agg_count_fail "${_idx}"
+			printf 'Aggregator: #%s alive on hand failed isolated test (%s)\n' "${_idx}" "$(_agg_why)"
+		fi
+	done
+	return 1
+}
+
 agg_sub_select(){ # набрать AGG_SUB_TARGET живых; первый живой -> тоннель (если active пуст/мёртв)
 	local _total _i _idx _link _have=0 _tests=0 _dead_n=0 _rc _act _need=0 _sw=0 _al _start _iter
 	agg_enabled || return 0
 	_total=$(agg_pool_count)
 	[ "${_total}" -gt 0 ] || return 0
 	_act=$(agg_active_idx)
-	# живые на руках: ALIVE-метка есть (не dead), активный без метки — жив по
-	# пробам fastprobe (без переключения, по требованию «живой активный не трогаем»)
+	# живые на руках: непросроченная ALIVE-метка (не dead), активный без метки —
+	# жив по пробам fastprobe (без переключения, по требованию «живой активный не трогаем»)
 	_i=1
 	while [ "${_i}" -le "${_total}" ]; do
 		if ! agg_is_dead "${_i}"; then
 			_al=$(agg_get "ALIVE_${_i}")
-			if [ -n "${_al}" ] && [ "${_al}" != "0" ]; then
+			if _agg_alive_ts "${_al}"; then
 				_have=$((_have + 1))
 			elif [ "${_i}" = "${_act}" ]; then
 				_have=$((_have + 1))
@@ -1793,13 +1861,25 @@ agg_sub_select(){ # набрать AGG_SUB_TARGET живых; первый жи�
 		_i=$((_i + 1))
 	done
 	agg_set SUBALIVE "${_have}"
-	if [ "${_have}" -ge "${AGG_SUB_TARGET}" ]; then
+	# v696: «активного нет» фиксируем ДО idle-гейта — раньше _need считался после
+	# него: при _have>=5 отбор возвращал «idle» и пул навсегда висел в manual
+	if [ "${_act}" = "0" ] || agg_is_dead "${_act}"; then
+		_need=1
+	fi
+	if [ "${_need}" = "0" ] && [ "${_have}" -ge "${AGG_SUB_TARGET}" ]; then
 		printf 'Aggregator: subscription scan idle: %s/%s alive on hand\n' "${_have}" "${AGG_SUB_TARGET}"
 		return 0
 	fi
-	# переключаемся только если активного нет или он мёртв (живой — не трогаем)
-	if [ "${_act}" = "0" ] || agg_is_dead "${_act}"; then
-		_need=1
+	# v696: пул в manual, живые на руках — работаем с имеющимися (свежие метки
+	# первыми, до AGG_SUB_TARGET штук), остальной пул не сканируем
+	if [ "${_need}" = "1" ] && [ "${_have}" -gt 0 ]; then
+		printf 'Aggregator: no active server - switching from %s alive on hand (max %s tested)...\n' \
+			"${_have}" "${AGG_SUB_TARGET}"
+		_rc=0
+		_agg_sub_switch_alive || _rc=$?
+		[ "${_rc}" = "2" ] && return 0
+		[ "${_rc}" = "0" ] && return 0
+		printf 'Aggregator: alive on hand did not pass isolated test - full subscription scan\n'
 	fi
 	printf 'Aggregator: subscription scan for alive (%s/%s, up to %s tests)...\n' \
 		"${_have}" "${AGG_SUB_TARGET}" "${AGG_SUB_TEST_MAX}"
@@ -1827,6 +1907,9 @@ agg_sub_select(){ # набрать AGG_SUB_TARGET живых; первый жи�
 				if agg_apply_link "${_idx}" "${_link}"; then
 					printf 'Aggregator: switched to #%s (first alive from subscription)\n' "${_idx}"
 					tg_notify aggregator "Aggregator VLESS: subscription scan, switched to #${_idx}"
+					# v696: раньше здесь ставился только локальный _act — состояние
+					# ACTIVE оставалось 0, тоннель работал, а пул висел «в manual»
+					agg_set ACTIVE "${_idx}"
 					_act="${_idx}"; _sw=1; _need=0
 				else
 					printf 'Aggregator: #%s alive but apply failed (kept as reserve)\n' "${_idx}"

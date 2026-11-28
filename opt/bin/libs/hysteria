@@ -285,6 +285,10 @@ cmd_hysteria_add() {
 
     echo "Разбираем конфигурацию пира..."
     URL=$(echo "$URL" | tr -d '[:space:]')
+    # v696: обёртка ссылки в кавычки при вставке (copy-paste из мессенджеров/доков):
+    # кавычка уходит в AUTH -> строка auth: "токен открывает незакрытый quoted scalar
+    # в YAML -> демон падает с "yaml: line 2: found unexpected end of stream"
+    URL=$(printf '%s' "$URL" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
 
     # Убираем имя сервера после #
     URL_NO_FRAGMENT=$(echo "$URL" | sed 's/#.*//')
@@ -293,6 +297,8 @@ cmd_hysteria_add() {
     MAIN_PART=$(echo "$URL_NO_FRAGMENT" | sed -E 's|hysteria2://||;s|h2://||;s|\?.*||')
     AUTH=$(echo "$MAIN_PART" | cut -d'@' -f1)
     SERVER_PORT=$(echo "$MAIN_PART" | cut -d'@' -f2)
+    # v696: кавычки/апострофы вокруг auth (в т.ч. форма hysteria2://"токен@host)
+    AUTH=$(printf '%s' "$AUTH" | sed -e "s/^[\"' ]*//" -e "s/[\"' ]*$//")
     # v693: ссылки вида hysteria2://pass@host:443/?... — слеш перед ? попадает в
     # SERVER_PORT и уходит в config.yaml как server: host:443/ — срезаем весь /-суффикс
     SERVER_PORT="${SERVER_PORT%%/*}"
@@ -355,9 +361,12 @@ cmd_hysteria_add() {
     mkdir -p "$FINAL_CONFIG_DIR"
 
     # Генерируем конфиг
+    # v696: YAML-безопасный auth: экранируем \ и ", значение пишем в двойных
+    # кавычках — пароль с ведущей кавычкой/спецсимволом больше не ломает парсер
+    AUTH_Y=$(printf '%s' "$AUTH" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
     cat > "$FINAL_CONFIG_PATH" << EOC
 server: ${SERVER}:${PORT:-443}
-auth: ${AUTH}
+auth: "${AUTH_Y}"
 tls:
   sni: ${SNI}
   fingerprint: ${FP:-chrome}
